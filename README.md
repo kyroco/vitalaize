@@ -5,8 +5,8 @@ agents. Put it on an iPad (or any browser) and at a glance you see every
 Claude Code and Codex session at work, which one is waiting on you, what your
 GitHub builds are doing, and how the work trends over days and weeks.
 
-It runs on your own Mac. Nothing is sent anywhere except between your own
-Macs, if you connect more than one.
+It runs on your own Mac or Linux machine. Your session data is never sent
+anywhere except between your own machines, if you connect more than one.
 
 ![The Live tab: Claude and Codex sessions, GitHub Actions and deploy tiles](docs/images/live.jpg)
 
@@ -22,12 +22,16 @@ Macs, if you connect more than one.
   text you.
 - **GitHub Actions.** What is running, recent runs, a timeline of the last 6
   hours, and tiles for main, the merge queue, failures and your last deploys.
-- **Archive.** Every session is saved in a small database on the Mac, so you
-  can look back at any one: what it cost, what tools it used, what it changed.
+- **Archive.** Every session is saved in a small SQLite database on the
+  machine that runs the board, so you can look back at any one: what it cost,
+  what tools it used, what it changed.
 - **Trends.** A chart per measure, one bar per day: spend, tokens, cache hits,
   failed tool calls, lines added, GitHub run times and more. If you use both
   Claude and Codex, a row compares them, starting with how many tokens each
   spends per 1,000 lines of code. Hover over or tap any bar for its value.
+- **Korium** (optional). If your agents use [Korium](https://korium.ai), how
+  often their memory searches find something, how many saves work, and how
+  often code searches hit. See [About Korium](#about-korium).
 - **Production health** (optional). A second page with checks from New Relic.
 - **Light and dark.** Switch with the button next to Settings.
 
@@ -61,10 +65,42 @@ Macs, if you connect more than one.
 Open VitalAIze again any time to see the board, restart it, change the setup
 or remove it.
 
+## Install on Linux
+
+1. Download `vitalaize-<version>-linux-x86_64.tar.gz` (Intel and AMD) or
+   `vitalaize-<version>-linux-arm64.tar.gz` (ARM) from the
+   [latest release](https://github.com/kyroco/vitalaize/releases/latest).
+   It carries everything it runs on; you do not need Elixir or Erlang. It
+   runs on Ubuntu 22.04 or newer, Debian 12 or newer, and other Linux systems
+   of the same age or newer, and needs OpenSSL 3 (`libssl3`), which they
+   already have.
+2. Unpack it and make your settings file:
+
+   ```
+   tar -xzf vitalaize-*-linux-*.tar.gz
+   cd vitalaize
+   cp settings.example.exs settings.exs     # then edit it
+   ```
+
+3. Try it: `WALLBOARD_SETTINGS=$PWD/settings.exs bin/wallboard start`. It
+   prints the address to open.
+4. To keep it running, and start it whenever you log in:
+   `./systemd.sh on` (`./systemd.sh off` turns it off). To keep it running
+   after you log out too, run `loginctl enable-linger $USER` once.
+
+What differs from a Mac: there is no setup app, so you edit `settings.exs`;
+text alerts need a Mac (they use Messages); and the database lives in
+`~/.local/share/vitalaize`. To have other machines find the hub on the
+network by themselves, install `avahi-utils` on the hub; without it,
+collectors type the hub's address. A Linux machine can be a collector too:
+run the command from the hub's Settings page (Connect another Mac) there. It
+needs `python3` and `curl`.
+
 ## What you need
 
-- A Mac with Apple silicon (M1 or newer). You do not need Elixir or Erlang
-  to use the installer; the app carries everything it runs on.
+- A Mac with Apple silicon (M1 or newer), or a Linux machine (see above).
+  You do not need Elixir or Erlang to use the installer or the Linux
+  download; they carry everything they run on.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (the `claude`
   command), signed in.
 - The [GitHub CLI](https://cli.github.com) (`gh`), signed in with
@@ -90,9 +126,9 @@ _build/prod/rel/wallboard/bin/wallboard start
 ```
 
 It prints the address to open, like `Board is up: http://192.168.1.20:4747/`.
-To keep it running on a Mac (it starts when you log in and again if it ever
-stops), run `scripts/login-item.sh on`; `scripts/login-item.sh off` turns it
-off.
+To keep it running (it starts when you log in and again if it ever stops),
+run `scripts/login-item.sh on` on a Mac or `scripts/systemd.sh on` on Linux;
+`off` turns either one off.
 
 Everything specific to you lives in `settings.exs`. The example file explains
 each setting. At the least, set `github.repo` and the workflow file names, and
@@ -104,14 +140,6 @@ Apple Developer ID it signs them, and with `--notary-profile NAME` it also
 notarizes them (see the top of the script).
 
 Run the tests with `mix test`.
-
-### Linux
-
-The board itself is Elixir and should run on Linux from source, but it is not
-tested there yet. What differs: there is no setup app (edit `settings.exs`),
-hubs are not found on the network by themselves (collectors type the hub's
-address), text alerts need a Mac, and there is no login item (use a systemd
-service instead).
 
 ## Settings you may want
 
@@ -143,6 +171,20 @@ service instead).
 - **Your look.** The `theme` section holds every color and font, and `brand`
   holds the name and logo in the header.
 
+## About Korium
+
+[Korium](https://korium.ai) is another Kyroco project: shared company memory
+for people and AI agents. It keeps your team's decisions, with the reasons and
+sources behind them, so an agent can look up what the team already learned
+before it starts. It also gives agents code search tied to specific commits,
+reusable skills and workflows, and a Mac command line tool that indexes code
+locally. It works with Claude, OpenAI, Gemini and other assistants.
+
+VitalAIze does not need Korium. When your sessions use it, the Trends tab
+shows a Korium section: memory searches that found something, saves that
+worked, and code searches that hit. Set `korium: %{enabled: false}` to hide
+it. Learn more at [korium.ai](https://korium.ai).
+
 ## How it keeps up
 
 Each source has its own timer: sessions every few seconds, GitHub every 30
@@ -154,8 +196,9 @@ say "Loading…" beside a section while its history is still coming in.
 ## If something is off
 
 - **The iPad cannot reach the board.** Check that both are on the same Wi-Fi,
-  and that the Mac's firewall allows incoming connections for the board
-  (System Settings, Network, Firewall).
+  and that the firewall allows incoming connections on the board's port
+  (4747 unless you changed it): on a Mac in System Settings, Network,
+  Firewall; on Linux with ufw, `sudo ufw allow 4747/tcp`.
 - **"Add ?token= ..." on the page.** You set a `token`, and the address is
   missing it or has a different one.
 - **A panel shows "stale" in red.** It says why. Usually `gh` or `claude` is

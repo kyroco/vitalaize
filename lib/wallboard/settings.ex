@@ -157,7 +157,8 @@ defmodule Wallboard.Settings do
       collect_local: true,
       # Announce the board on the local network, so a collector Mac finds it.
       advertise: true,
-      path: "~/Library/Application Support/Wallboard/wallboard.db",
+      # nil picks this system's usual place; see db_path/1.
+      path: nil,
       machine: nil,
       backfill_days: 14,
       settle_seconds: 120,
@@ -428,7 +429,7 @@ defmodule Wallboard.Settings do
   # The page's saved values, read straight from the database file: the
   # settings are loaded before the database process starts.
   defp saved_overrides(settings) do
-    path = settings |> get_in([:archive, :path]) |> to_string() |> Path.expand()
+    path = settings |> get_in([:archive, :path]) |> db_path()
 
     with true <- File.regular?(path),
          {:ok, conn} <- Exqlite.Sqlite3.open(path, mode: :readonly) do
@@ -495,12 +496,36 @@ defmodule Wallboard.Settings do
     |> update_in([:codex, :dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:alerts, :phone], &blank_to_nil/1)
     |> update_in([:token], &blank_to_nil/1)
-    |> update_in([:archive, :path], &Path.expand/1)
+    |> update_in([:archive, :path], &db_path/1)
     |> update_in([:brand, :logo], fn
       nil -> nil
       "" -> nil
       logo -> Path.expand(logo)
     end)
+  end
+
+  @doc """
+  Where the database lives: the setting when there is one, otherwise the
+  usual place for app data on this system. On a Mac that is
+  ~/Library/Application Support/Wallboard; on Linux, $XDG_DATA_HOME/vitalaize
+  (~/.local/share/vitalaize when that is not set).
+  """
+  def db_path(path) when is_binary(path) and path != "", do: Path.expand(path)
+
+  def db_path(_) do
+    case :os.type() do
+      {:unix, :darwin} ->
+        Path.expand("~/Library/Application Support/Wallboard/wallboard.db")
+
+      _ ->
+        base =
+          case System.get_env("XDG_DATA_HOME") do
+            dir when is_binary(dir) and dir != "" -> dir
+            _ -> Path.expand("~/.local/share")
+          end
+
+        Path.join([base, "vitalaize", "wallboard.db"])
+    end
   end
 
   defp blank_to_nil(nil), do: nil

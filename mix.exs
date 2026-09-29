@@ -4,7 +4,7 @@ defmodule Wallboard.MixProject do
   def project do
     [
       app: :wallboard,
-      version: "0.1.0",
+      version: "0.2.0",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -66,7 +66,12 @@ defmodule Wallboard.ReleaseSteps do
   whose signature no longer matches.
   """
 
+  # Only a Mac build needs this; on Linux, Erlang uses the system's OpenSSL.
   def bundle_openssl(release) do
+    if match?({:unix, :darwin}, :os.type()), do: do_bundle_openssl(release), else: release
+  end
+
+  defp do_bundle_openssl(release) do
     for crypto <- Path.wildcard(Path.join(release.path, "lib/crypto-*/priv/lib/crypto.so")) do
       {out, 0} = System.cmd("otool", ["-L", crypto])
 
@@ -96,10 +101,17 @@ defmodule Wallboard.ReleaseSteps do
     release
   end
 
-  @doc "Puts the README and the example settings in the release folder."
+  @doc """
+  Puts the README, the example settings, the license and the Linux service
+  script in the release folder.
+  """
   def add_docs(release) do
-    files = ["README.md", "settings.example.exs"]
+    files = ["README.md", "settings.example.exs", "LICENSE", "NOTICE"]
     for file <- files, do: File.cp!(file, Path.join(release.path, file))
+
+    File.cp!("scripts/systemd.sh", Path.join(release.path, "systemd.sh"))
+    File.chmod!(Path.join(release.path, "systemd.sh"), 0o755)
+    files = files ++ ["systemd.sh"]
 
     # Listing them as overlays puts them in the tarball too.
     %{release | overlays: Enum.uniq(release.overlays ++ files)}

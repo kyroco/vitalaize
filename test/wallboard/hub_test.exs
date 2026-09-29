@@ -93,6 +93,32 @@ defmodule Wallboard.HubTest do
     refute Ingest.valid_token?(nil)
   end
 
+  test "the database goes where the setting says, or in this system's usual place" do
+    assert Settings.db_path("/tmp/x/board.db") == "/tmp/x/board.db"
+
+    default = Settings.db_path(nil)
+    assert String.ends_with?(default, "wallboard.db")
+
+    case :os.type() do
+      {:unix, :darwin} -> assert default =~ "Library/Application Support/Wallboard"
+      _ -> assert default =~ "vitalaize"
+    end
+  end
+
+  test "the connect script's Linux part is valid Python" do
+    script = Ingest.install_script("http://192.168.1.20:4747", "abc")
+    [_, rest] = String.split(script, "<<'WALLBOARD_PY'\n", parts: 2)
+    [python, _] = String.split(rest, "\nWALLBOARD_PY", parts: 2)
+    path = Path.join(System.tmp_dir!(), "wallboard-connect-test.py")
+    File.write!(path, python)
+
+    if System.find_executable("python3") do
+      assert {_, 0} = System.cmd("python3", ["-m", "py_compile", path], stderr_to_stdout: true)
+    end
+
+    File.rm(path)
+  end
+
   test "the upload script is valid shell" do
     script = Ingest.install_script("http://192.168.1.20:4747", "abc")
     path = Path.join(System.tmp_dir!(), "wallboard-install-test.sh")

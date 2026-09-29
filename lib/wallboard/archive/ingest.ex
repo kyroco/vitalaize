@@ -165,7 +165,7 @@ defmodule Wallboard.Archive.Ingest do
     account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
 
     dir=$(dirname "$path")
-    tmp=$(mktemp -t wallboard) || exit 0
+    tmp=$(mktemp "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
     # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
     if [ -d "$dir/$session/subagents" ]; then
       COPYFILE_DISABLE=1 tar -czf "$tmp" -C "$dir" "$session.jsonl" "$session/subagents"
@@ -201,7 +201,30 @@ defmodule Wallboard.Archive.Ingest do
     SETTINGS="$CONF/settings.json"
     [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
     cp "$SETTINGS" "$SETTINGS.before-wallboard"
-    # osascript's JavaScript is on every Mac, so no other tool is needed.
+    # On a Mac, osascript's JavaScript edits the settings with no other tool.
+    # Elsewhere (Linux), python3 does the same edit.
+    if ! command -v osascript >/dev/null 2>&1; then
+      command -v python3 >/dev/null 2>&1 || { echo "Needs python3 to edit $SETTINGS." >&2; exit 1; }
+      python3 - "$SETTINGS" "$SCRIPT" <<'WALLBOARD_PY'
+    import json, os, sys
+    path, script = sys.argv[1], sys.argv[2]
+    raw = open(path).read().strip()
+    s = json.loads(raw) if raw else {}
+    hooks = s.setdefault("hooks", {})
+    hook = {"type": "command", "command": script, "async": True, "timeout": 120}
+    for ev in ("Stop", "SessionEnd"):
+        lst = hooks.setdefault(ev, [])
+        if not any(h.get("command") == script for m in lst for h in m.get("hooks", [])):
+            lst.append({"hooks": [hook]})
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(s, indent=2) + "\\n")
+    os.replace(tmp, path)
+    WALLBOARD_PY
+      echo "Connected. Claude sessions on this machine now go to #{hub_url}."
+      echo "Your previous settings are in $SETTINGS.before-wallboard."
+      exit 0
+    fi
     osascript -l JavaScript - "$SETTINGS" "$SCRIPT" <<'WALLBOARD_JS'
     ObjC.import("Foundation");
     function run(argv) {

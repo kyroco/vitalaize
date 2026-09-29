@@ -40,7 +40,7 @@ defmodule Wallboard.MiscTest do
       })
 
     assert msg ==
-             "Wallboard: shop-2043 worker needs you. A permission prompt is waiting for your approval"
+             "VitalAIze: shop-2043 needs you. A permission prompt is waiting for your approval"
   end
 
   test "alerts go by iMessage unless settings say SMS" do

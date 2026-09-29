@@ -6,7 +6,8 @@ defmodule Wallboard.Alerts do
   an iMessage from whatever Apple ID is signed in there. The message and the
   phone number go in as separate arguments, never pasted into the script.
 
-  With no phone number in settings, alerts are off.
+  With no phone number in settings, alerts are off. Messages is a Mac app, so
+  on Linux a text is logged as not sent.
   """
 
   require Logger
@@ -44,7 +45,7 @@ defmodule Wallboard.Alerts do
   @doc "The text message for one session."
   def message(session) do
     why = session.why |> to_string() |> String.slice(0, 240)
-    "Wallboard: #{session.name} worker needs you. #{why}"
+    "VitalAIze: #{session.name} needs you. #{why}"
   end
 
   @doc ~S(How to send: "SMS" for a plain text, anything else means iMessage.)
