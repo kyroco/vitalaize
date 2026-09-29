@@ -5,8 +5,8 @@ agents. Put it on an iPad (or any browser) and at a glance you see every
 Claude Code and Codex session at work, which one is waiting on you, what your
 GitHub builds are doing, and how the work trends over days and weeks.
 
-It runs on your own Mac. Nothing is sent anywhere except between your own
-Macs, if you connect more than one.
+It runs on your own Mac or Linux machine. Your session data is never sent
+anywhere except between your own machines, if you connect more than one.
 
 ![The Live tab: Claude and Codex sessions, GitHub Actions and deploy tiles](docs/images/live.jpg)
 
@@ -22,8 +22,9 @@ Macs, if you connect more than one.
   text you.
 - **GitHub Actions.** What is running, recent runs, a timeline of the last 6
   hours, and tiles for main, the merge queue, failures and your last deploys.
-- **Archive.** Every session is saved in a small database on the Mac, so you
-  can look back at any one: what it cost, what tools it used, what it changed.
+- **Archive.** Every session is saved in a small SQLite database on the
+  machine that runs the board, so you can look back at any one: what it cost,
+  what tools it used, what it changed.
 - **Trends.** A chart per measure, one bar per day: spend, tokens, cache hits,
   failed tool calls, lines added, GitHub run times and more. If you use both
   Claude and Codex, a row compares them, starting with how many tokens each
@@ -125,9 +126,9 @@ _build/prod/rel/wallboard/bin/wallboard start
 ```
 
 It prints the address to open, like `Board is up: http://192.168.1.20:4747/`.
-To keep it running on a Mac (it starts when you log in and again if it ever
-stops), run `scripts/login-item.sh on`; `scripts/login-item.sh off` turns it
-off.
+To keep it running (it starts when you log in and again if it ever stops),
+run `scripts/login-item.sh on` on a Mac or `scripts/systemd.sh on` on Linux;
+`off` turns either one off.
 
 Everything specific to you lives in `settings.exs`. The example file explains
 each setting. At the least, set `github.repo` and the workflow file names, and
@@ -139,8 +140,6 @@ Apple Developer ID it signs them, and with `--notary-profile NAME` it also
 notarizes them (see the top of the script).
 
 Run the tests with `mix test`.
-
-On Linux, `scripts/systemd.sh on` does the same with a systemd service.
 
 ## Settings you may want
 
@@ -197,8 +196,9 @@ say "Loading…" beside a section while its history is still coming in.
 ## If something is off
 
 - **The iPad cannot reach the board.** Check that both are on the same Wi-Fi,
-  and that the Mac's firewall allows incoming connections for the board
-  (System Settings, Network, Firewall).
+  and that the firewall allows incoming connections on the board's port
+  (4747 unless you changed it): on a Mac in System Settings, Network,
+  Firewall; on Linux with ufw, `sudo ufw allow 4747/tcp`.
 - **"Add ?token= ..." on the page.** You set a `token`, and the address is
   missing it or has a different one.
 - **A panel shows "stale" in red.** It says why. Usually `gh` or `claude` is
