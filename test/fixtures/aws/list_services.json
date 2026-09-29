@@ -1,0 +1,11 @@
+{
+    "serviceArns": [
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-embed",
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-site",
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-extraction",
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-worker",
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-app",
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-cloudflared",
+        "arn:aws:ecs:us-east-1:210987654321:service/shop-dev/shop-dev-web"
+    ]
+}

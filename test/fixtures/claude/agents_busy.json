@@ -1,0 +1,35 @@
+[
+  {
+    "pid": 32714,
+    "id": "4a662dec",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790371084182,
+    "sessionId": "4a662dec-bc58-4e90-a48d-35e761f5cd59",
+    "name": "planner",
+    "status": "busy",
+    "state": "working"
+  },
+  {
+    "pid": 71543,
+    "id": "50af260c",
+    "cwd": "/Users/dev/projects/shop/.claude/worktrees/shop-2057",
+    "kind": "background",
+    "startedAt": 1790624773690,
+    "sessionId": "50af260c-a2cc-45fc-a10c-87712ffe240e",
+    "name": "shop-2057",
+    "status": "busy",
+    "state": "working"
+  },
+  {
+    "pid": 91796,
+    "id": "d299768e",
+    "cwd": "/Users/dev/projects/wallboard",
+    "kind": "background",
+    "startedAt": 1790631608517,
+    "sessionId": "d299768e-2531-4395-a7ec-bf457e22c263",
+    "name": "wallboard",
+    "status": "busy",
+    "state": "working"
+  }
+]

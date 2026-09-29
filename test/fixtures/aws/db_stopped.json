@@ -1,0 +1,8 @@
+{
+  "DBInstances": [
+    {
+      "DBInstanceIdentifier": "shop-dev-db",
+      "DBInstanceStatus": "stopped"
+    }
+  ]
+}

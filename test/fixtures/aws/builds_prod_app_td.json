@@ -1,0 +1,14 @@
+{
+  "taskDefinition": {
+    "containerDefinitions": [
+      {
+        "name": "app",
+        "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/shop:9847f3f92fd1ed5f867df3d3d207707859761b01-api"
+      },
+      {
+        "name": "adot-collector",
+        "image": "public.ecr.aws/aws-observability/aws-otel-collector:v0.48.0"
+      }
+    ]
+  }
+}

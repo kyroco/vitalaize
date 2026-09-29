@@ -1,0 +1,21 @@
+.claude/
+/_build/
+/deps/
+/cover/
+erl_crash.dump
+# Your own settings hold your token and phone number. Keep them out of git;
+# settings.example.exs is the shared starting point.
+/settings.exs
+/settings.*.local.exs
+macos/build/
+macos/dist/
+
+# Build output, local data and editor files.
+*.pkg
+*.tar.gz
+*.db
+*.db-shm
+*.db-wal
+.env*
+.DS_Store
+.elixir_ls/

@@ -1,0 +1,12 @@
+{
+  "imageDetails": [
+    {
+      "imageDigest": "sha256:689fd9e1d12c74ca193b9e28c1102e029d2756e50e21208a7fe29ad33b0a910d",
+      "imageTags": [
+        "src-api-9847f3f92fd1ed5f867df3d3d207707859761b01",
+        "dev-verified-9847f3f92fd1ed5f867df3d3d207707859761b01-api",
+        "9847f3f92fd1ed5f867df3d3d207707859761b01-api"
+      ]
+    }
+  ]
+}

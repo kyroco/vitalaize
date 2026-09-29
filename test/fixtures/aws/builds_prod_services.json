@@ -1,0 +1,12 @@
+{
+  "services": [
+    {
+      "serviceName": "shop-prod-app",
+      "taskDefinition": "arn:aws:ecs:us-east-1:123456789012:task-definition/shop-prod-app:109"
+    },
+    {
+      "serviceName": "shop-prod-web",
+      "taskDefinition": "arn:aws:ecs:us-east-1:123456789012:task-definition/shop-prod-web:69"
+    }
+  ]
+}

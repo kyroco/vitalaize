@@ -1,0 +1,182 @@
+# Wallboard settings. Copy this file to settings.exs and change what you need.
+# Anything you delete falls back to the default shown here.
+#
+# This is one Elixir map. Text goes in "double quotes", lists in [square
+# brackets], and every line inside the map ends with a comma.
+
+%{
+  # The web address is http://<this Mac's address>:<port>/
+  port: 4747,
+
+  # Optional. With no token, anyone on the same network can open the board.
+  # Set one (for example the output of: openssl rand -hex 16) and the first
+  # visit from each device needs /?token=<token> at the end of the address.
+  # Worth setting if you take your Mac to cafes or hotels with the board on.
+  token: nil,
+
+  # Seconds before the board flips to the other page. 0 turns rotation off.
+  rotate_seconds: 30,
+
+  # Time zone for every time on the board.
+  timezone: "America/New_York",
+
+  # Your name and logo in the header. logo is a path to an .svg or .png file.
+  # With no logo, the name is shown as text.
+  brand: %{
+    name: "Kyroco",
+    logo: nil,
+    page2_title: "Production health · New Relic"
+  },
+
+  # Claude Code sessions. List every Claude config folder you use; each one
+  # is checked with `claude agents --json`. With more than one, each session
+  # shows which account it belongs to.
+  claude: %{
+    config_dirs: ["~/.claude"],
+    poll_seconds: 5,
+    # A working session gets a ringed, darker dot after this many minutes.
+    long_running_minutes: 45
+  },
+
+  # Token use and cost, read from Claude Code's transcripts in each config
+  # folder above. Costs use API list prices, set per model under prices; add
+  # or change one like this (dollars per million tokens, context in tokens):
+  #   prices: %{"claude-opus-5-5" => %{label: "Opus 5.5", input: 4.0, output: 20.0, cache_read: 0.20, context: 1_000_000}}
+  usage: %{
+    poll_seconds: 30,
+    days_back: 21
+  },
+
+  # Text alerts. When a Claude session starts waiting on you, this Mac sends
+  # an iMessage from the Apple ID signed in to its Messages app, to this
+  # number. Leave it nil and alerts are off.
+  alerts: %{
+    phone: nil,
+    # "iMessage", or "SMS" for a plain text sent through your iPhone. SMS
+    # reaches numbers that are not on iMessage, such as Google Voice, and
+    # needs Text Message Forwarding on (iPhone Settings, Messages).
+    via: "iMessage"
+  },
+
+  # GitHub, read through the `gh` command, which must be signed in
+  # (gh auth login).
+  github: %{
+    repo: "your-org/your-repo",
+    branch: "main",
+    poll_seconds: 30,
+    deploy_poll_seconds: 120,
+    # The workflow file that gates merges, and the check name on pull requests.
+    gate_workflow: "ci.yml",
+    gate_check: "ci",
+    # Which workflow files are your dev and prod deploys.
+    dev_deploy: "deploy-staging.yml",
+    prod_deploy: "deploy-production.yml",
+    # Deploy workflows to track even when their last run is days old.
+    deploy_workflows: ["deploy-staging.yml", "deploy-production.yml"],
+    # Rows of the "last 6 hours" timeline, each with its workflow files.
+    lanes: [
+      %{label: "CI", workflows: ["ci.yml"]},
+      %{label: "Staging", workflows: ["deploy-staging.yml"]},
+      %{label: "Production", workflows: ["deploy-production.yml"]}
+    ]
+  },
+
+  # Whether dev is awake or asleep, read from AWS through the `aws` command.
+  # Off until you name a read-only AWS profile; then the Dev tile shows
+  # Awake, Asleep, Waking or Going to sleep instead of the last deploy.
+  dev_power: %{
+    # The AWS profile to read with, from ~/.aws/config. nil turns this off.
+    aws_profile: nil,
+    # nil uses the profile's own region.
+    region: nil,
+    # Dev's database and its ECS cluster.
+    database: nil,
+    cluster: nil,
+    poll_seconds: 60
+  },
+
+  # Keeps every Claude session in a database on this Mac, so the Archive tab
+  # can show sessions after they end or their transcripts are deleted. A
+  # session is saved once it has been quiet for settle_seconds; the first
+  # start saves the last backfill_days.
+  archive: %{
+    enabled: true,
+    path: "~/Library/Application Support/Wallboard/wallboard.db",
+    # This Mac's name in the database. nil uses its network name.
+    machine: nil,
+    backfill_days: 14,
+    settle_seconds: 120,
+    poll_seconds: 60,
+    # GitHub runs and jobs are saved too, every 5 minutes. Each run's jobs
+    # take one call, so at most this many runs get theirs per round.
+    github_poll_seconds: 300,
+    github_jobs_per_round: 100
+  },
+
+  # Whether prod runs the same build as dev, read from AWS. Off until you name
+  # a read-only AWS profile for prod; then the Prod tile says Current when
+  # both run the same images and Behind when dev has a different one. The
+  # reads only look at settings, so they never wake a sleeping dev.
+  builds: %{
+    # AWS profiles from ~/.aws/config. dev_profile nil uses dev_power's.
+    prod_profile: nil,
+    dev_profile: nil,
+    region: "us-east-1",
+    # The ECR repository both environments' images come from.
+    repository: nil,
+    dev: %{cluster: nil, services: []},
+    prod: %{cluster: nil, services: []},
+    poll_seconds: 60
+  },
+
+  # New Relic, read through its NerdGraph API. It is page 2 of the board.
+  new_relic: %{
+    # false removes page 2: the board stays on page 1 and never asks
+    # 1Password or New Relic for anything.
+    enabled: true,
+    # Where the User API key (it starts with NRAK-) lives in 1Password. The
+    # board runs `op read` with this once at startup and keeps the key in
+    # memory only. Example: "op://Private/New Relic/credential"
+    api_key_ref: nil,
+    # Your New Relic account number.
+    account_id: nil,
+    # "us" or "eu"
+    region: "us",
+    poll_seconds: 60,
+    # The first monitor check is the big one on page 2. The rest fill the
+    # "More checks" row. Two kinds:
+    #   %{name: "Heartbeat", monitor: "Name of the synthetic monitor"}
+    #   %{name: "Errors today", nrql: "SELECT count(*) FROM TransactionError SINCE today", unit: ""}
+    checks: [],
+    # How many spaces the "More checks" row has, filled or empty.
+    slots: 3
+  },
+
+  # The look. These are the Kyroco colors and fonts; change them to make the
+  # board yours. Colors are CSS colors. Font files live in fonts_dir (nil
+  # means the fonts that come with the board).
+  theme: %{
+    page: "#f1efed",
+    surface: "#ffffff",
+    text: "#1f1a17",
+    text_body: "#6a625c",
+    text_muted: "#746a61",
+    border: "#e7e2dd",
+    border_strong: "#d2cdc8",
+    track: "#efe9e4",
+    accent: "#e44456",
+    alert: "#c13340",
+    info: "#2e6b7c",
+    info_light: "#7bb4c4",
+    ok: "#16a34a",
+    warn: "#f59e0b",
+    warn_deep: "#b45309",
+    radius: "4px",
+    font_body: "system-ui, -apple-system, sans-serif",
+    font_display: "'Playfair Display', Georgia, serif",
+    font_css_url:
+      "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500&display=swap",
+    fonts_dir: nil,
+    font_faces: []
+  }
+}

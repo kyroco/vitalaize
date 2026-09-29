@@ -1,0 +1,1766 @@
+{
+ "total_count": 26,
+ "jobs": [
+  {
+   "id": 109148317162,
+   "run_id": 36487639186,
+   "name": "Changed files route",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:40:19Z",
+   "completed_at": "2026-09-28T21:40:57Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:40:20Z",
+     "completed_at": "2026-09-28T21:40:21Z"
+    },
+    {
+     "name": "Publish the toolchain pins",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:40:21Z",
+     "completed_at": "2026-09-28T21:40:21Z"
+    },
+    {
+     "name": "Checkout full history",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:40:21Z",
+     "completed_at": "2026-09-28T21:40:49Z"
+    },
+    {
+     "name": "Select the event diff base",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:40:49Z",
+     "completed_at": "2026-09-28T21:40:49Z"
+    },
+    {
+     "name": "Prove the router's cases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:40:49Z",
+     "completed_at": "2026-09-28T21:40:55Z"
+    },
+    {
+     "name": "Route changed files",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:40:55Z",
+     "completed_at": "2026-09-28T21:40:55Z"
+    },
+    {
+     "name": "Post Checkout full history",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:40:55Z",
+     "completed_at": "2026-09-28T21:40:55Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:40:55Z",
+     "completed_at": "2026-09-28T21:40:55Z"
+    }
+   ]
+  },
+  {
+   "id": 109148566085,
+   "run_id": 36487639186,
+   "name": "Security / Security",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:41:00Z",
+   "completed_at": "2026-09-28T21:41:22Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:41:01Z",
+     "completed_at": "2026-09-28T21:41:02Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:41:02Z",
+     "completed_at": "2026-09-28T21:41:07Z"
+    },
+    {
+     "name": "Set up Elixir",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:41:07Z",
+     "completed_at": "2026-09-28T21:41:14Z"
+    },
+    {
+     "name": "Check the installed OTP is the exact pin",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:41:14Z",
+     "completed_at": "2026-09-28T21:41:14Z"
+    },
+    {
+     "name": "Install Sobelow at the locked version",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:41:14Z",
+     "completed_at": "2026-09-28T21:41:18Z"
+    },
+    {
+     "name": "Scan every app with a lib/*/router.ex",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:41:18Z",
+     "completed_at": "2026-09-28T21:41:20Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:41:20Z",
+     "completed_at": "2026-09-28T21:41:20Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:41:20Z",
+     "completed_at": "2026-09-28T21:41:20Z"
+    }
+   ]
+  },
+  {
+   "id": 109148566106,
+   "run_id": 36487639186,
+   "name": "Build / Build",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:41:00Z",
+   "completed_at": "2026-09-28T21:43:07Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:41:01Z",
+     "completed_at": "2026-09-28T21:41:02Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:41:02Z",
+     "completed_at": "2026-09-28T21:41:07Z"
+    },
+    {
+     "name": "Compile",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:41:07Z",
+     "completed_at": "2026-09-28T21:42:42Z"
+    },
+    {
+     "name": "Save the build for this run's jobs",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:42:42Z",
+     "completed_at": "2026-09-28T21:42:59Z"
+    },
+    {
+     "name": "Post Compile",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:42:59Z",
+     "completed_at": "2026-09-28T21:43:04Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 8,
+     "started_at": "2026-09-28T21:43:04Z",
+     "completed_at": "2026-09-28T21:43:05Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 9,
+     "started_at": "2026-09-28T21:43:05Z",
+     "completed_at": "2026-09-28T21:43:05Z"
+    }
+   ]
+  },
+  {
+   "id": 109148566150,
+   "run_id": 36487639186,
+   "name": "Shell / Shell",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:41:01Z",
+   "completed_at": "2026-09-28T21:41:17Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:41:03Z",
+     "completed_at": "2026-09-28T21:41:04Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:41:04Z",
+     "completed_at": "2026-09-28T21:41:12Z"
+    },
+    {
+     "name": "Install shellcheck",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:41:12Z",
+     "completed_at": "2026-09-28T21:41:14Z"
+    },
+    {
+     "name": "Select the event diff base",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:41:14Z",
+     "completed_at": "2026-09-28T21:41:14Z"
+    },
+    {
+     "name": "Prove the lint can fail",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:41:14Z",
+     "completed_at": "2026-09-28T21:41:15Z"
+    },
+    {
+     "name": "Lint changed shell scripts",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:41:15Z",
+     "completed_at": "2026-09-28T21:41:15Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:41:15Z",
+     "completed_at": "2026-09-28T21:41:15Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:41:15Z",
+     "completed_at": "2026-09-28T21:41:15Z"
+    }
+   ]
+  },
+  {
+   "id": 109148567923,
+   "run_id": 36487639186,
+   "name": "Terraform",
+   "status": "completed",
+   "conclusion": "skipped",
+   "started_at": "2026-09-28T21:40:58Z",
+   "completed_at": "2026-09-28T21:40:58Z",
+   "steps": []
+  },
+  {
+   "id": 109148568429,
+   "run_id": 36487639186,
+   "name": "Workflows",
+   "status": "completed",
+   "conclusion": "skipped",
+   "started_at": "2026-09-28T21:40:58Z",
+   "completed_at": "2026-09-28T21:40:58Z",
+   "steps": []
+  },
+  {
+   "id": 109149334831,
+   "run_id": 36487639186,
+   "name": "Static / Dialyzer",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:44:22Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:12Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:17Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:17Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Cache the Dialyzer PLT",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Cache the Dialyzer PLT (restore only in the merge queue)",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Check what dialyzer is asked to analyse",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:35Z"
+    },
+    {
+     "name": "Dialyzer",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:43:35Z",
+     "completed_at": "2026-09-28T21:44:20Z"
+    },
+    {
+     "name": "Post Cache the Dialyzer PLT",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:44:20Z",
+     "completed_at": "2026-09-28T21:44:20Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:44:20Z",
+     "completed_at": "2026-09-28T21:44:20Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:44:20Z",
+     "completed_at": "2026-09-28T21:44:20Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:44:20Z",
+     "completed_at": "2026-09-28T21:44:20Z"
+    }
+   ]
+  },
+  {
+   "id": 109149334849,
+   "run_id": 36487639186,
+   "name": "Tests / Tests 4",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:46:43Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:13Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:13Z",
+     "completed_at": "2026-09-28T21:43:17Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:17Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:44:12Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:44:12Z",
+     "completed_at": "2026-09-28T21:44:14Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:14Z",
+     "completed_at": "2026-09-28T21:46:40Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 11,
+     "started_at": "2026-09-28T21:46:40Z",
+     "completed_at": "2026-09-28T21:46:40Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:46:40Z",
+     "completed_at": "2026-09-28T21:46:41Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:46:41Z",
+     "completed_at": "2026-09-28T21:46:41Z"
+    }
+   ]
+  },
+  {
+   "id": 109149334912,
+   "run_id": 36487639186,
+   "name": "Static / Static checks (credo)",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:46:18Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:13Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:13Z",
+     "completed_at": "2026-09-28T21:43:21Z"
+    },
+    {
+     "name": "Select this shard's rows",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:21Z",
+     "completed_at": "2026-09-28T21:43:21Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:21Z",
+     "completed_at": "2026-09-28T21:43:42Z"
+    },
+    {
+     "name": "Run the static checks the change selects",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:42Z",
+     "completed_at": "2026-09-28T21:46:15Z"
+    },
+    {
+     "name": "A changelog entry, or the no-changelog label",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 6,
+     "started_at": "2026-09-28T21:46:15Z",
+     "completed_at": "2026-09-28T21:46:15Z"
+    },
+    {
+     "name": "Check the attestations",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 7,
+     "started_at": "2026-09-28T21:46:15Z",
+     "completed_at": "2026-09-28T21:46:15Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:46:15Z",
+     "completed_at": "2026-09-28T21:46:15Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:46:15Z",
+     "completed_at": "2026-09-28T21:46:16Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:46:16Z",
+     "completed_at": "2026-09-28T21:46:16Z"
+    }
+   ]
+  },
+  {
+   "id": 109149334929,
+   "run_id": 36487639186,
+   "name": "Static / Static checks (hooks)",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:44:46Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:11Z",
+     "completed_at": "2026-09-28T21:43:12Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:19Z"
+    },
+    {
+     "name": "Select this shard's rows",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:19Z",
+     "completed_at": "2026-09-28T21:43:20Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:20Z",
+     "completed_at": "2026-09-28T21:43:41Z"
+    },
+    {
+     "name": "Run the static checks the change selects",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:41Z",
+     "completed_at": "2026-09-28T21:44:44Z"
+    },
+    {
+     "name": "A changelog entry, or the no-changelog label",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:44Z",
+     "completed_at": "2026-09-28T21:44:44Z"
+    },
+    {
+     "name": "Check the attestations",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:44Z",
+     "completed_at": "2026-09-28T21:44:44Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:44:44Z",
+     "completed_at": "2026-09-28T21:44:44Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:44:44Z",
+     "completed_at": "2026-09-28T21:44:44Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:44:44Z",
+     "completed_at": "2026-09-28T21:44:44Z"
+    }
+   ]
+  },
+  {
+   "id": 109149334932,
+   "run_id": 36487639186,
+   "name": "Static / Static checks (other)",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:12Z",
+   "completed_at": "2026-09-28T21:45:04Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:13Z",
+     "completed_at": "2026-09-28T21:43:14Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:14Z",
+     "completed_at": "2026-09-28T21:43:22Z"
+    },
+    {
+     "name": "Select this shard's rows",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:22Z",
+     "completed_at": "2026-09-28T21:43:22Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:22Z",
+     "completed_at": "2026-09-28T21:43:48Z"
+    },
+    {
+     "name": "Run the static checks the change selects",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:48Z",
+     "completed_at": "2026-09-28T21:44:58Z"
+    },
+    {
+     "name": "A changelog entry, or the no-changelog label",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:58Z",
+     "completed_at": "2026-09-28T21:44:58Z"
+    },
+    {
+     "name": "Check the attestations",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:58Z",
+     "completed_at": "2026-09-28T21:45:00Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:45:00Z",
+     "completed_at": "2026-09-28T21:45:00Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:45:00Z",
+     "completed_at": "2026-09-28T21:45:00Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:45:00Z",
+     "completed_at": "2026-09-28T21:45:00Z"
+    }
+   ]
+  },
+  {
+   "id": 109149334970,
+   "run_id": 36487639186,
+   "name": "Tests / Tests 2",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:46:56Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:11Z",
+     "completed_at": "2026-09-28T21:43:12Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:17Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:17Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:44:10Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:44:10Z",
+     "completed_at": "2026-09-28T21:44:13Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:13Z",
+     "completed_at": "2026-09-28T21:46:52Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 11,
+     "started_at": "2026-09-28T21:46:52Z",
+     "completed_at": "2026-09-28T21:46:52Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:46:52Z",
+     "completed_at": "2026-09-28T21:46:53Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:46:53Z",
+     "completed_at": "2026-09-28T21:46:53Z"
+    }
+   ]
+  },
+  {
+   "id": 109149334971,
+   "run_id": 36487639186,
+   "name": "Tests / Tests 1",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:47:39Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:12Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:17Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:17Z",
+     "completed_at": "2026-09-28T21:43:34Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:34Z",
+     "completed_at": "2026-09-28T21:44:15Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:44:15Z",
+     "completed_at": "2026-09-28T21:44:18Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:18Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 11,
+     "started_at": "2026-09-28T21:47:35Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:47:35Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:47:35Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    }
+   ]
+  },
+  {
+   "id": 109149335007,
+   "run_id": 36487639186,
+   "name": "Tests / Tests 3",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:47:19Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:12Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:17Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:17Z",
+     "completed_at": "2026-09-28T21:43:35Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:35Z",
+     "completed_at": "2026-09-28T21:44:16Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:44:16Z",
+     "completed_at": "2026-09-28T21:44:18Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:18Z",
+     "completed_at": "2026-09-28T21:47:15Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 11,
+     "started_at": "2026-09-28T21:47:15Z",
+     "completed_at": "2026-09-28T21:47:15Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 12,
+     "started_at": "2026-09-28T21:47:15Z",
+     "completed_at": "2026-09-28T21:47:15Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:47:15Z",
+     "completed_at": "2026-09-28T21:47:15Z"
+    }
+   ]
+  },
+  {
+   "id": 109149335084,
+   "run_id": 36487639186,
+   "name": "Static / Static checks (elixir)",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:10Z",
+   "completed_at": "2026-09-28T21:44:51Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:11Z",
+     "completed_at": "2026-09-28T21:43:12Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:12Z",
+     "completed_at": "2026-09-28T21:43:19Z"
+    },
+    {
+     "name": "Select this shard's rows",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:19Z",
+     "completed_at": "2026-09-28T21:43:19Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:19Z",
+     "completed_at": "2026-09-28T21:43:54Z"
+    },
+    {
+     "name": "Run the static checks the change selects",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:54Z",
+     "completed_at": "2026-09-28T21:44:48Z"
+    },
+    {
+     "name": "A changelog entry, or the no-changelog label",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:48Z",
+     "completed_at": "2026-09-28T21:44:48Z"
+    },
+    {
+     "name": "Check the attestations",
+     "status": "completed",
+     "conclusion": "skipped",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:48Z",
+     "completed_at": "2026-09-28T21:44:48Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:44:48Z",
+     "completed_at": "2026-09-28T21:44:48Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:44:48Z",
+     "completed_at": "2026-09-28T21:44:48Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:44:48Z",
+     "completed_at": "2026-09-28T21:44:48Z"
+    }
+   ]
+  },
+  {
+   "id": 109149335094,
+   "run_id": 36487639186,
+   "name": "E2E / Select",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:11Z",
+   "completed_at": "2026-09-28T21:43:22Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:13Z",
+     "completed_at": "2026-09-28T21:43:14Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:14Z",
+     "completed_at": "2026-09-28T21:43:19Z"
+    },
+    {
+     "name": "Count the files and size the matrix",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:19Z",
+     "completed_at": "2026-09-28T21:43:20Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:43:20Z",
+     "completed_at": "2026-09-28T21:43:20Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:43:20Z",
+     "completed_at": "2026-09-28T21:43:20Z"
+    }
+   ]
+  },
+  {
+   "id": 109149336189,
+   "run_id": 36487639186,
+   "name": "Plan checks",
+   "status": "completed",
+   "conclusion": "skipped",
+   "started_at": "2026-09-28T21:43:08Z",
+   "completed_at": "2026-09-28T21:43:08Z",
+   "steps": []
+  },
+  {
+   "id": 109149336375,
+   "run_id": 36487639186,
+   "name": "Grammars",
+   "status": "completed",
+   "conclusion": "skipped",
+   "started_at": "2026-09-28T21:43:08Z",
+   "completed_at": "2026-09-28T21:43:08Z",
+   "steps": []
+  },
+  {
+   "id": 109149336385,
+   "run_id": 36487639186,
+   "name": "Native",
+   "status": "completed",
+   "conclusion": "skipped",
+   "started_at": "2026-09-28T21:43:08Z",
+   "completed_at": "2026-09-28T21:43:08Z",
+   "steps": []
+  },
+  {
+   "id": 109149421783,
+   "run_id": 36487639186,
+   "name": "E2E / E2E 5",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:25Z",
+   "completed_at": "2026-09-28T21:45:49Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:26Z",
+     "completed_at": "2026-09-28T21:43:27Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:27Z",
+     "completed_at": "2026-09-28T21:43:31Z"
+    },
+    {
+     "name": "Select the files",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:31Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:50Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:50Z",
+     "completed_at": "2026-09-28T21:44:30Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:30Z",
+     "completed_at": "2026-09-28T21:44:33Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:33Z",
+     "completed_at": "2026-09-28T21:45:46Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:45:46Z",
+     "completed_at": "2026-09-28T21:45:46Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:45:46Z",
+     "completed_at": "2026-09-28T21:45:47Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:45:47Z",
+     "completed_at": "2026-09-28T21:45:47Z"
+    }
+   ]
+  },
+  {
+   "id": 109149421963,
+   "run_id": 36487639186,
+   "name": "E2E / E2E 4",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:25Z",
+   "completed_at": "2026-09-28T21:46:34Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:26Z",
+     "completed_at": "2026-09-28T21:43:27Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:27Z",
+     "completed_at": "2026-09-28T21:43:31Z"
+    },
+    {
+     "name": "Select the files",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:31Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:47Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:47Z",
+     "completed_at": "2026-09-28T21:44:26Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:26Z",
+     "completed_at": "2026-09-28T21:44:28Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:28Z",
+     "completed_at": "2026-09-28T21:46:32Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:46:32Z",
+     "completed_at": "2026-09-28T21:46:32Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:46:32Z",
+     "completed_at": "2026-09-28T21:46:32Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:46:32Z",
+     "completed_at": "2026-09-28T21:46:32Z"
+    }
+   ]
+  },
+  {
+   "id": 109149421980,
+   "run_id": 36487639186,
+   "name": "E2E / E2E 2",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:25Z",
+   "completed_at": "2026-09-28T21:46:23Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:26Z",
+     "completed_at": "2026-09-28T21:43:27Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:27Z",
+     "completed_at": "2026-09-28T21:43:29Z"
+    },
+    {
+     "name": "Select the files",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:29Z",
+     "completed_at": "2026-09-28T21:43:30Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:30Z",
+     "completed_at": "2026-09-28T21:43:44Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:44Z",
+     "completed_at": "2026-09-28T21:44:22Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:22Z",
+     "completed_at": "2026-09-28T21:44:24Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:24Z",
+     "completed_at": "2026-09-28T21:46:20Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:46:20Z",
+     "completed_at": "2026-09-28T21:46:20Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:46:20Z",
+     "completed_at": "2026-09-28T21:46:21Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:46:21Z",
+     "completed_at": "2026-09-28T21:46:21Z"
+    }
+   ]
+  },
+  {
+   "id": 109149421989,
+   "run_id": 36487639186,
+   "name": "E2E / E2E 3",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:25Z",
+   "completed_at": "2026-09-28T21:46:20Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:26Z",
+     "completed_at": "2026-09-28T21:43:27Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:27Z",
+     "completed_at": "2026-09-28T21:43:38Z"
+    },
+    {
+     "name": "Select the files",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:38Z",
+     "completed_at": "2026-09-28T21:43:39Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:39Z",
+     "completed_at": "2026-09-28T21:43:54Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:54Z",
+     "completed_at": "2026-09-28T21:44:32Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:32Z",
+     "completed_at": "2026-09-28T21:44:34Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:34Z",
+     "completed_at": "2026-09-28T21:46:18Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:46:18Z",
+     "completed_at": "2026-09-28T21:46:18Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:46:18Z",
+     "completed_at": "2026-09-28T21:46:18Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:46:18Z",
+     "completed_at": "2026-09-28T21:46:18Z"
+    }
+   ]
+  },
+  {
+   "id": 109149422051,
+   "run_id": 36487639186,
+   "name": "E2E / E2E 1",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:43:25Z",
+   "completed_at": "2026-09-28T21:47:38Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:43:26Z",
+     "completed_at": "2026-09-28T21:43:27Z"
+    },
+    {
+     "name": "Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:43:27Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Select the files",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:32Z"
+    },
+    {
+     "name": "Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:43:32Z",
+     "completed_at": "2026-09-28T21:43:48Z"
+    },
+    {
+     "name": "Start the test databases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:43:48Z",
+     "completed_at": "2026-09-28T21:44:25Z"
+    },
+    {
+     "name": "Install universal-ctags",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:44:25Z",
+     "completed_at": "2026-09-28T21:44:28Z"
+    },
+    {
+     "name": "Run the tests",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:44:28Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    },
+    {
+     "name": "Post Restore the gate build",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 13,
+     "started_at": "2026-09-28T21:47:35Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    },
+    {
+     "name": "Post Run actions/checkout@v5",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 14,
+     "started_at": "2026-09-28T21:47:35Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 15,
+     "started_at": "2026-09-28T21:47:35Z",
+     "completed_at": "2026-09-28T21:47:35Z"
+    }
+   ]
+  },
+  {
+   "id": 109150910099,
+   "run_id": 36487639186,
+   "name": "ci",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:47:41Z",
+   "completed_at": "2026-09-28T21:47:59Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:47:43Z",
+     "completed_at": "2026-09-28T21:47:43Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:47:43Z",
+     "completed_at": "2026-09-28T21:47:48Z"
+    },
+    {
+     "name": "Prove the verdict's cases",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:47:48Z",
+     "completed_at": "2026-09-28T21:47:58Z"
+    },
+    {
+     "name": "Count the jobs that are still stubs",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-09-28T21:47:58Z",
+     "completed_at": "2026-09-28T21:47:58Z"
+    },
+    {
+     "name": "Decide",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-09-28T21:47:58Z",
+     "completed_at": "2026-09-28T21:47:58Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 10,
+     "started_at": "2026-09-28T21:47:58Z",
+     "completed_at": "2026-09-28T21:47:58Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 11,
+     "started_at": "2026-09-28T21:47:58Z",
+     "completed_at": "2026-09-28T21:47:58Z"
+    }
+   ]
+  },
+  {
+   "id": 109151029127,
+   "run_id": 36487639186,
+   "name": "Drop the build bundle",
+   "status": "completed",
+   "conclusion": "success",
+   "started_at": "2026-09-28T21:48:02Z",
+   "completed_at": "2026-09-28T21:48:09Z",
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-09-28T21:48:03Z",
+     "completed_at": "2026-09-28T21:48:04Z"
+    },
+    {
+     "name": "Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-09-28T21:48:04Z",
+     "completed_at": "2026-09-28T21:48:05Z"
+    },
+    {
+     "name": "Delete the build bundles no rerun will want",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-09-28T21:48:05Z",
+     "completed_at": "2026-09-28T21:48:08Z"
+    },
+    {
+     "name": "Post Checkout",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-09-28T21:48:08Z",
+     "completed_at": "2026-09-28T21:48:08Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-09-28T21:48:08Z",
+     "completed_at": "2026-09-28T21:48:08Z"
+    }
+   ]
+  }
+ ]
+}

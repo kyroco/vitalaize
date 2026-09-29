@@ -1,0 +1,116 @@
+[
+  {
+    "pid": 32714,
+    "id": "4a662dec",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790371084182,
+    "sessionId": "4a662dec-bc58-4e90-a48d-35e761f5cd59",
+    "name": "planner",
+    "status": "busy",
+    "state": "working"
+  },
+  {
+    "id": "6fa4d1aa",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790600285179,
+    "sessionId": "6fa4d1aa-25a3-464e-a689-082aaa65c8e3",
+    "name": "shop-2032",
+    "state": "stopped"
+  },
+  {
+    "id": "7b7a453c",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790602902662,
+    "sessionId": "7b7a453c-5db1-4c11-a986-11c73c803596",
+    "name": "shop-2033",
+    "state": "done"
+  },
+  {
+    "id": "0257cee8",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790603986500,
+    "sessionId": "0257cee8-81f4-4968-a176-5ac2d144988f",
+    "name": "shop-2034",
+    "state": "done"
+  },
+  {
+    "id": "97a04926",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790603986953,
+    "sessionId": "97a04926-9540-4f12-a07e-bb874fb3ba95",
+    "name": "shop-2035",
+    "state": "stopped"
+  },
+  {
+    "id": "71fede5a",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790608879155,
+    "sessionId": "71fede5a-759c-4875-a527-3fa56c3ba84f",
+    "name": "shop-2036",
+    "state": "stopped"
+  },
+  {
+    "id": "72ab7342",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790614315894,
+    "sessionId": "72ab7342-8020-4d93-ac84-768afe59f72f",
+    "name": "shop-2039",
+    "state": "stopped"
+  },
+  {
+    "id": "ce1c779f",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790615053450,
+    "sessionId": "ce1c779f-ed00-4783-a1e3-24b6ac2fd19a",
+    "name": "shop-2040",
+    "state": "done"
+  },
+  {
+    "id": "ec2f3eb9",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790615832278,
+    "sessionId": "ec2f3eb9-0e2f-451f-a6c2-a06fb2939204",
+    "name": "shop-2041",
+    "state": "stopped"
+  },
+  {
+    "id": "200ece8b",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790617030082,
+    "sessionId": "200ece8b-6f1a-42f4-ac4a-f1c82f943e9e",
+    "name": "shop-2043",
+    "state": "stopped"
+  },
+  {
+    "pid": 71543,
+    "id": "50af260c",
+    "cwd": "/Users/dev/projects/shop/.claude/worktrees/shop-2057",
+    "kind": "background",
+    "startedAt": 1790624773690,
+    "sessionId": "50af260c-a2cc-45fc-a10c-87712ffe240e",
+    "name": "shop-2057",
+    "status": "busy",
+    "state": "working"
+  },
+  {
+    "pid": 91796,
+    "id": "d299768e",
+    "cwd": "/Users/dev/projects/wallboard",
+    "kind": "background",
+    "startedAt": 1790631608517,
+    "sessionId": "d299768e-2531-4395-a7ec-bf457e22c263",
+    "name": "wallboard",
+    "status": "busy",
+    "state": "working"
+  }
+]

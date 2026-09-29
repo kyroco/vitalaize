@@ -1,0 +1,16 @@
+#!/bin/sh
+# Opens VitalAIze for the person at the Mac once it is installed, so setup
+# starts right away. The installer runs this as root, so the app is opened
+# as the signed-in person. Installs from the command line (`installer
+# -pkg`) are left alone.
+
+[ -n "$COMMAND_LINE_INSTALL" ] && exit 0
+
+user=$(/usr/bin/stat -f%Su /dev/console)
+if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "loginwindow" ]; then
+  exit 0
+fi
+
+uid=$(/usr/bin/id -u "$user")
+/bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" /usr/bin/open -a "/Applications/VitalAIze.app" || true
+exit 0

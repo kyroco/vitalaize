@@ -1,0 +1,54 @@
+{
+  "services": [
+    {
+      "serviceName": "shop-dev-embed",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    },
+    {
+      "serviceName": "shop-dev-site",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    },
+    {
+      "serviceName": "shop-dev-extraction",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    },
+    {
+      "serviceName": "shop-dev-worker",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    },
+    {
+      "serviceName": "shop-dev-app",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    },
+    {
+      "serviceName": "shop-dev-cloudflared",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    },
+    {
+      "serviceName": "shop-dev-web",
+      "status": "ACTIVE",
+      "desiredCount": 0,
+      "runningCount": 0,
+      "pendingCount": 0
+    }
+  ],
+  "failures": []
+}
