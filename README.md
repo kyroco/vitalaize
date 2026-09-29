@@ -28,6 +28,9 @@ Macs, if you connect more than one.
   failed tool calls, lines added, GitHub run times and more. If you use both
   Claude and Codex, a row compares them, starting with how many tokens each
   spends per 1,000 lines of code. Hover over or tap any bar for its value.
+- **Korium** (optional). If your agents use [Korium](https://korium.ai), how
+  often their memory searches find something, how many saves work, and how
+  often code searches hit. See [About Korium](#about-korium).
 - **Production health** (optional). A second page with checks from New Relic.
 - **Light and dark.** Switch with the button next to Settings.
 
@@ -142,6 +145,20 @@ service instead).
   Claude plan your bill is different; read the dollars as a measure of work.
 - **Your look.** The `theme` section holds every color and font, and `brand`
   holds the name and logo in the header.
+
+## About Korium
+
+[Korium](https://korium.ai) is another Kyroco project: shared company memory
+for people and AI agents. It keeps your team's decisions, with the reasons and
+sources behind them, so an agent can look up what the team already learned
+before it starts. It also gives agents code search tied to specific commits,
+reusable skills and workflows, and a Mac command line tool that indexes code
+locally. It works with Claude, OpenAI, Gemini and other assistants.
+
+VitalAIze does not need Korium. When your sessions use it, the Trends tab
+shows a Korium section: memory searches that found something, saves that
+worked, and code searches that hit. Set `korium: %{enabled: false}` to hide
+it. Learn more at [korium.ai](https://korium.ai).
 
 ## How it keeps up
 
