@@ -1,0 +1,72 @@
+#!/bin/sh
+# Keeps the board running on Linux: it starts when you log in and starts
+# again if it ever stops. It sets up a systemd user service.
+#
+#   ./systemd.sh on     turn it on (and start it now)
+#   ./systemd.sh off    turn it off (and stop it now)
+#
+# It works from the downloaded release (this script sits beside bin/) and
+# from a source checkout (scripts/systemd.sh, after MIX_ENV=prod mix
+# release). Either way it uses settings.exs from that folder.
+#
+# To keep the board running after you log out, also run once:
+#   loginctl enable-linger "$USER"
+set -e
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+if [ -x "$HERE/bin/wallboard" ]; then
+  REL="$HERE"
+  ROOT="$HERE"
+else
+  ROOT=$(cd "$HERE/.." && pwd)
+  REL="$ROOT/_build/prod/rel/wallboard"
+fi
+SETTINGS="$ROOT/settings.exs"
+NAME=vitalaize
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+UNIT="$UNIT_DIR/$NAME.service"
+
+case "$1" in
+  on)
+    [ -x "$REL/bin/wallboard" ] || { echo "Build the release first: MIX_ENV=prod mix release"; exit 1; }
+    [ -f "$SETTINGS" ] || { echo "No settings.exs in $ROOT. Copy settings.example.exs and fill it in."; exit 1; }
+    command -v systemctl >/dev/null 2>&1 || { echo "This needs systemd (systemctl)."; exit 1; }
+
+    # A board started by hand holds the port, so stop it first.
+    "$REL/bin/wallboard" stop >/dev/null 2>&1 || true
+
+    mkdir -p "$UNIT_DIR"
+    cat > "$UNIT" <<EOF
+[Unit]
+Description=VitalAIze board
+After=network-online.target
+
+[Service]
+ExecStart=$REL/bin/wallboard start
+WorkingDirectory=$ROOT
+Environment=WALLBOARD_SETTINGS=$SETTINGS
+Environment=RELEASE_DISTRIBUTION=none
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+EOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$NAME.service"
+    echo "The board is on, and will start whenever you log in."
+    echo "Its log: journalctl --user -u $NAME -f"
+    ;;
+  off)
+    systemctl --user disable --now "$NAME.service" >/dev/null 2>&1 || true
+    rm -f "$UNIT"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    echo "The board is off and will not start at login."
+    ;;
+  *)
+    echo "Usage: $0 on|off"
+    exit 1
+    ;;
+esac

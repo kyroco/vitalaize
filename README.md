@@ -61,10 +61,42 @@ Macs, if you connect more than one.
 Open VitalAIze again any time to see the board, restart it, change the setup
 or remove it.
 
+## Install on Linux
+
+1. Download `vitalaize-<version>-linux-x86_64.tar.gz` (Intel and AMD) or
+   `vitalaize-<version>-linux-arm64.tar.gz` (ARM) from the
+   [latest release](https://github.com/kyroco/vitalaize/releases/latest).
+   It carries everything it runs on; you do not need Elixir or Erlang. It
+   runs on Ubuntu 22.04 or newer, Debian 12 or newer, and other Linux systems
+   of the same age or newer, and needs OpenSSL 3 (`libssl3`), which they
+   already have.
+2. Unpack it and make your settings file:
+
+   ```
+   tar -xzf vitalaize-*-linux-*.tar.gz
+   cd vitalaize
+   cp settings.example.exs settings.exs     # then edit it
+   ```
+
+3. Try it: `WALLBOARD_SETTINGS=$PWD/settings.exs bin/wallboard start`. It
+   prints the address to open.
+4. To keep it running, and start it whenever you log in:
+   `./systemd.sh on` (`./systemd.sh off` turns it off). To keep it running
+   after you log out too, run `loginctl enable-linger $USER` once.
+
+What differs from a Mac: there is no setup app, so you edit `settings.exs`;
+text alerts need a Mac (they use Messages); and the database lives in
+`~/.local/share/vitalaize`. To have other machines find the hub on the
+network by themselves, install `avahi-utils` on the hub; without it,
+collectors type the hub's address. A Linux machine can be a collector too:
+run the command from the hub's Settings page (Connect another Mac) there. It
+needs `python3` and `curl`.
+
 ## What you need
 
-- A Mac with Apple silicon (M1 or newer). You do not need Elixir or Erlang
-  to use the installer; the app carries everything it runs on.
+- A Mac with Apple silicon (M1 or newer), or a Linux machine (see above).
+  You do not need Elixir or Erlang to use the installer or the Linux
+  download; they carry everything they run on.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (the `claude`
   command), signed in.
 - The [GitHub CLI](https://cli.github.com) (`gh`), signed in with
@@ -105,13 +137,7 @@ notarizes them (see the top of the script).
 
 Run the tests with `mix test`.
 
-### Linux
-
-The board itself is Elixir and should run on Linux from source, but it is not
-tested there yet. What differs: there is no setup app (edit `settings.exs`),
-hubs are not found on the network by themselves (collectors type the hub's
-address), text alerts need a Mac, and there is no login item (use a systemd
-service instead).
+On Linux, `scripts/systemd.sh on` does the same with a systemd service.
 
 ## Settings you may want
 

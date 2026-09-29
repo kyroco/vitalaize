@@ -101,7 +101,9 @@
   # start saves the last backfill_days.
   archive: %{
     enabled: true,
-    path: "~/Library/Application Support/Wallboard/wallboard.db",
+    # nil: ~/Library/Application Support/Wallboard on a Mac,
+    # ~/.local/share/vitalaize on Linux.
+    path: nil,
     # This Mac's name in the database. nil uses its network name.
     machine: nil,
     backfill_days: 14,
