@@ -5,94 +5,35 @@ agents. Put it on an iPad (or any browser) and at a glance you see every
 Claude Code and Codex session at work, on this machine and your others, which
 one is waiting on you, what your GitHub builds are doing across all your
 repositories, and how the work trends over days and weeks. When a session
-needs you, it can tell you by Messages, Slack, ntfy or Pushover.
-
-It runs on your own Mac or Linux machine. Your session data is never sent
-anywhere except between your own machines, if you connect more than one, and
-the short alert text that goes to Slack, ntfy or Pushover if you turn those
-on (see [Known limits](#known-limits)).
+needs you, it can tell you by Messages, Slack, ntfy or Pushover. It runs on
+your own Mac or Linux machine, and needs Claude Code and the GitHub CLI
+(`gh`), both signed in; Codex is optional.
 
 ![The Agents tab: Claude and Codex sessions under the status line](docs/images/live.jpg)
 
-## What it shows
-
-Across the top, always in view: a status line for all your repositories, then
-the tabs (Agents, Git, and New Relic if you use it). The board turns from tab
-to tab on its own; tap a tab to pick one, and tap Pin to stay on it.
-
-- **Status line.** Main, the merge queue, what is running, failures in the
-  last day, and your dev and prod deploys. With several repositories it adds
-  them up: Main says "3 of 6 green" and names the red one.
-- **Agents tab.** One card per Claude Code or Codex session, marked with that
-  tool's icon and the repository it works in. Each card says whether the
-  session is working (green), idle, or needs you (orange), plus how full its
-  context is, its model and effort, lines added and removed, its helper
-  agents, and its cost (Claude) or tokens and plan use (Codex). A Claude
-  session on one of your other machines shows here while it needs you.
-- **Needs you.** When a session stops to ask you something, a banner runs
-  across the screen and its card moves to the top. This works for Claude
-  sessions on this machine and on your other machines, and for Codex
-  sessions on this machine once its hook is set up (see
-  [Codex needing you](#codex-needing-you)). The board can also send you an
-  alert (see [Alerts](#alerts)).
-- **Git tab.** A column per repository, up to four across: its main, what is
-  running, recent runs and a timeline of the last 6 hours. With more than four,
-  the busiest get the columns (anything running or failed first, then the most
-  recent run), and the rest sit below as one line each until they run or go
-  red. Tap a repository for every workflow's recent runs, its merge queue and
-  its failures.
-- **Archive.** Every session is saved in a small SQLite database on the
-  machine that runs the board, so you can look back at any one: what it cost,
-  what tools it used, what it changed. Tap Archive at the top of the Agents
-  tab.
-- **Trends.** A chart per measure, one bar per day: spend, tokens, cache hits,
-  failed tool calls, lines added, GitHub run times and more. If you use both
-  Claude and Codex, a row compares them, starting with how many tokens each
-  spends per 1,000 lines of code. Hover over or tap any bar for its value.
-  Tap Trends at the top of the Agents tab.
-- **Korium** (optional). If your agents use [Korium](https://korium.ai), how
-  often their memory searches find something, how many saves work, and how
-  often code searches hit. See [About Korium](#about-korium).
-- **New Relic tab** (optional). Production health checks from New Relic.
-- **New version.** When a newer VitalAIze is out, a note next to Settings
-  says "Version 0.4.0 is available" (or whichever it is) and links to it.
-  The board asks GitHub once a day. See
-  [Settings you may want](#settings-you-may-want) to turn it off.
-- **Light and dark.** Switch with the button next to Settings.
-
-![The Git tab: four busy repositories in columns, two quiet ones below](docs/images/git.jpg)
-
-![The Trends view: Claude and Codex compared, then each tool's own charts](docs/images/trends.jpg)
-
-![The Agents tab in dark mode](docs/images/dark.jpg)
+The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
+what each part of the board shows, settings and alerts, connecting other
+machines, known limits, building from source and how it works.
 
 ## What's new in 0.3.0
 
-- **Several repositories.** The status line adds them all up, and the Git
-  tab gives each busy one its own column.
-- **Alerts anywhere.** Besides Messages on a Mac, alerts now go to Slack,
-  ntfy (iPhone or Android) or Pushover, so a Linux hub can alert you too.
-- **Alerts for your other machines.** A connected machine tells the hub the
-  moment one of its Claude sessions starts waiting, so its card says Needs
-  you and you get the alert.
-- **Codex.** Codex sessions can show Needs you (new, see
-  [Known limits](#known-limits)), and connected machines send their Codex
-  sessions to the hub's Archive and Trends, not only their Claude ones.
-- **New version note.** The board tells you when a newer version is out.
-- **Checked on every change.** Each pull request runs the tests, a code
-  style check and a compiler warning check on Linux and macOS, and each
-  release builds its Linux downloads and checks that each one starts.
+- **Several repositories**, added up in the status line, with a column each
+  on the Git tab.
+- **Alerts anywhere**: Slack, ntfy (iPhone or Android) and Pushover, besides
+  Messages on a Mac.
+- **Alerts for your other machines**: a connected machine tells the hub the
+  moment one of its Claude sessions starts waiting on you.
+- **Codex**: Codex sessions can show Needs you (new, and not yet tried with
+  a real Codex), and connected machines send their Codex sessions to the hub.
+- **A note when a new version is out**, which you can turn off in Settings.
 
 If you run 0.2.0 on Linux, upgrade. Every copy of that download had the same
 built-in secret for remote control, so if you started the board by hand
 (not with `systemd.sh`), anyone on your network who also had the download
-could run commands on your machine. 0.3.0 turns remote control off unless
-you ask for it by setting `RELEASE_DISTRIBUTION`; if you do, also set
-`RELEASE_COOKIE` to a secret of your own. On a machine connected by 0.2.0 or
-earlier, run the command from the hub's Settings page (Connect another Mac)
-once more to add the new hooks, or on a Mac with the app, open VitalAIze and
-run the setup again. The command hooks up one Claude folder, `~/.claude`;
-for another, run it again with `CLAUDE_CONFIG_DIR` set to that folder.
+could run commands on your machine. 0.3.0 turns remote control off. On a
+machine connected by 0.2.0 or earlier, run the command from the hub's
+Settings page (Connect another Mac) once more, or on a Mac with the app, run
+its setup again, to add the new hooks.
 
 ## Install on a Mac
 
@@ -122,8 +63,8 @@ for another, run it again with `CLAUDE_CONFIG_DIR` set to that folder.
    Display & Brightness settings so the screen stays on.
 6. Choose how alerts reach you. Setup asks only for a phone number, for
    Messages. For Slack, ntfy or Pushover, open the board on this Mac, tap
-   **Settings** and fill in the Alerts section (see [Alerts](#alerts)). You
-   can change the repositories there too.
+   **Settings** and fill in the Alerts section. You can change the
+   repositories there too.
 
 Open VitalAIze again any time to see the board, restart it, change the setup
 or remove it.
@@ -152,307 +93,35 @@ or remove it.
    after you log out too, run `loginctl enable-linger $USER` once.
 
 What differs from a Mac: there is no setup app, so you edit `settings.exs`
-(or the board's Settings page once it runs; see [Settings you may
-want](#settings-you-may-want) for who can open it). List your repositories
-in `github.repos` (see [Build from source](#build-from-source) for the
-shape). Text alerts by Messages need a Mac, so use Slack, ntfy or Pushover
-instead (see [Alerts](#alerts)). The database lives in
-`~/.local/share/vitalaize`. To have other machines find the hub on the
-network by themselves, install `avahi-utils` on the hub; without it,
-collectors type the hub's address.
+(or the board's Settings page, which opens only in a browser on the same
+machine until you set `token`). List your repositories in `github.repos`.
+Text alerts by Messages need a Mac, so use Slack, ntfy or Pushover instead.
+The database lives in `~/.local/share/vitalaize`. To have other machines
+find the hub on the network by themselves, install `avahi-utils` on the hub;
+without it, collectors type the hub's address.
 
 A Linux machine can be a collector too: run the command from the hub's
 Settings page (Connect another Mac) there. It hooks up `~/.claude`, or the
 folder in `CLAUDE_CONFIG_DIR`, so run it once per Claude folder. It needs
 `python3` and `curl`, and to report prompts you approve or deny as they
-happen, `claude` and `perl` (see [Known limits](#known-limits)). Like the
-app, the command hooks up Codex too when the machine has it. Codex runs a
-new hook only once you trust it, so afterwards type `/hooks` in Codex on
-that machine and trust the two `wallboard-upload.sh` hooks.
+happen, `claude` and `perl`. Like the app, the command hooks up Codex too
+when the machine has it. Codex runs a new hook only once you trust it, so
+afterwards type `/hooks` in Codex on that machine and trust the two
+`wallboard-upload.sh` hooks.
 
-## What you need
-
-- A Mac with Apple silicon (M1 or newer), or a Linux machine (see above).
-  You do not need Elixir or Erlang to use the installer or the Linux
-  download; they carry everything they run on.
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (the `claude`
-  command), signed in.
-- The [GitHub CLI](https://cli.github.com) (`gh`), signed in with
-  `gh auth login`.
-- Optional: [Codex](https://github.com/openai/codex), for Codex sessions.
-- Optional: the AWS CLI (`aws`) with read-only profiles, to show whether dev
-  is awake and whether prod runs the same build as dev.
-- Optional: New Relic and the 1Password CLI (`op`), for the production page.
-- Optional, for alerts: the Messages app signed in (Mac only), a Slack
-  incoming webhook, the ntfy app, or a Pushover account.
-
-## Build from source
-
-You need Elixir 1.18 or newer and Erlang/OTP, plus a C compiler (Xcode's
-command line tools on a Mac) for the SQLite driver.
-
-```
-git clone https://github.com/kyroco/vitalaize.git
-cd vitalaize
-mix deps.get
-cp settings.example.exs settings.exs     # then edit it
-MIX_ENV=prod mix release
-_build/prod/rel/wallboard/bin/wallboard start
-```
-
-It prints the address to open, like `Board is up: http://192.168.1.20:4747/`.
-To keep it running (it starts when you log in and again if it ever stops),
-run `scripts/login-item.sh on` on a Mac or `scripts/systemd.sh on` on Linux;
-`off` turns either one off.
-
-Everything specific to you lives in `settings.exs`. The example file explains
-each setting. At the least, set your repositories (`github.repos`, below)
-and the workflow file names, and `claude.config_dirs` if your Claude folder
-is not `~/.claude`. Anything you leave out uses the default shown in the
-example file.
-
-To follow several repositories, list them in `github.repos`. The rest of the
-`github` section applies to each; an entry can be a map that changes any of it
-for one repository, such as its gate workflow or timeline rows. A file with
-only `github.repo` keeps working as it always has.
-
-```elixir
-github: %{
-  gate_workflow: "ci.yml",
-  repos: [
-    "acme/api",
-    %{repo: "acme/mobile", gate_workflow: "build.yml"}
-  ]
-}
-```
-
-To build the Mac app and its installer yourself: `macos/build.sh`. With an
-Apple Developer ID it signs them, and with `--notary-profile NAME` it also
-notarizes them (see the top of the script).
-
-Run the tests with `mix test`. Before you push, run the same three checks
-GitHub runs on Linux and macOS for every pull request, which fail on bad code
-style or any compiler warning:
-
-```
-mix format --check-formatted
-MIX_ENV=test mix compile --warnings-as-errors --force
-mix test --warnings-as-errors
-```
-
-`mix format` fixes the style for you.
-
-To make a release:
-
-1. Set the version in `mix.exs`, merge it, and push a tag for it from main,
-   like `git tag v0.3.0 && git push origin v0.3.0`.
-2. GitHub builds both Linux downloads on Ubuntu 22.04 (Intel and ARM), checks
-   that each one starts, and puts them on a draft release for that tag.
-3. Build the Mac installer on a Mac with `macos/build.sh` (it needs the
-   Developer ID), add it with `gh release upload v0.3.0 VitalAIze-0.3.0.pkg`,
-   then write the notes and publish the draft.
-
-Push the tag before making the release, so there is only the one draft. A
-published release only gets Linux downloads it does not have yet; to replace
-one, delete it from the release first.
-
-## Settings you may want
-
-Change these in `settings.exs`. Most of them are also on the board's
-Settings page (tap Settings at the top); New Relic's key and checks, the
-theme and the logo are in the file only. Values saved on the page win over
-the file. Without a board password, the Settings page opens only in a
-browser on the machine that runs the board; with one, any device that has
-signed in with it can open it. On a Linux hub with no screen, set `token`
-in `settings.exs` first.
-
-- **Keep it private.** Anyone on the same network can open the board. It is
-  read-only and shows no keys, but it does show pull request titles and what
-  your sessions ask you. Set `token` in `settings.exs` (or a board password
-  on the Settings page, which takes effect after a restart); the first visit
-  from each device then needs `/?token=<your token>` at the end of the
-  address.
-- **Several repositories.** List them in `github.repos`, or one per line
-  under Repositories on the Settings page. Dev and Prod follow the first one.
-  Each repository costs about 600 GitHub calls an hour, and GitHub allows
-  5,000, so keep it to six. For the first couple of hours after you add
-  repositories, the archive also fills in their older runs, which takes up
-  to about 1,300 more calls an hour.
-- **New version note.** On by default. To turn it off, untick "Tell me when
-  a new version is out" under Board on the Settings page, or set
-  `updates: %{check: false}`. With it off, the board never checks for a new
-  version.
-- **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
-  rather than per-token prices, so its cards show tokens and plan use. Set
-  `codex: %{enabled: false}` to leave it out.
-- **New Relic tab.** Set `new_relic: %{enabled: false}` if you do not use
-  New Relic. Otherwise set `api_key_ref` to where your New Relic User API key
-  lives in 1Password (`"op://Vault/Item/field"`), `account_id`, and the
-  `checks` to show. The key is read once at start and kept in memory only.
-- **Dev awake or asleep.** If your dev environment sleeps at night, set
-  `dev_power.aws_profile`, `database` and `cluster`, and the Dev tile shows
-  Awake, Asleep, Waking or Going to sleep.
-- **Prod builds.** Set `builds.prod_profile` and the ECR repository and ECS
-  services, and the Prod tile says whether prod runs the same build as dev.
-- **Costs.** Claude costs use the API list prices in `usage.prices`. On a
-  Claude plan your bill is different; read the dollars as a measure of work.
-- **Your look.** The `theme` section holds every color and font, and `brand`
-  holds the name and logo in the header.
-
-## Alerts
-
-Once each time a session starts waiting on you, the board sends an alert on
-every channel you set up. Set them in the Alerts section of the Settings
-page, or in `alerts` in `settings.exs`. Use as many as you like; leave one
-empty to turn it off.
-
-![The Alerts section of the Settings page](docs/images/settings-alerts.jpg)
-
-- **Messages** (Mac only): set `phone` to your number. The Mac sends an
-  iMessage from the Apple ID signed in there. The first time, macOS asks
-  whether the board may control Messages. If the number is not on iMessage,
-  set `via` to `"SMS"` (needs Text Message Forwarding on your iPhone).
-- **Slack**: make an incoming webhook for a channel and set `slack_webhook`
-  to its address.
-- **ntfy** (free, iPhone or Android): pick a topic name that is hard to
-  guess, since anyone who knows it can read it. Subscribe to it in the ntfy
-  app, and set `ntfy_topic`. Set `ntfy_server` if you run your own.
-- **Pushover**: set `pushover_user` to your user key, and `pushover_token`
-  to the API token of an app you make at pushover.net.
-
-Alerts cover:
-
-- Claude sessions on the machine that runs the board.
-- Claude sessions on every machine connected to it. A connected machine
-  tells the hub the moment one of its sessions starts waiting (a permission
-  prompt, a question, or a form from an MCP server), and the card shows
-  Needs you on the hub's board, marked with that machine's name, until the
-  session moves on. Its alert waits a few seconds and is skipped if you
-  answer first, and at most 20 go out in 10 minutes. If the hub cannot be
-  reached, the session carries on as usual, and a hub that restarts forgets
-  the waits already under way.
-- Codex sessions on the machine that runs the board, once its Codex hook is
-  set up (below). Codex sessions on other machines reach the hub's Archive
-  and Trends, but do not show Needs you or alert yet.
-
-## Codex needing you
-
-Codex writes nothing to its session file while it waits on you, so VitalAIze
-needs a small Codex hook to know. The board keeps it at
-`~/.codex/vitalaize/hook.sh`. Add these entries to `~/.codex/hooks.json`,
-next to any hooks you already have there:
-
-```json
-{
-  "hooks": {
-    "PermissionRequest": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-    "PostToolUse": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-    "SubagentStop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-    "Interrupt": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}]
-  }
-}
-```
-
-Then open Codex, type `/hooks` and trust them: Codex skips a new or changed
-hook until you do. A Codex card then shows **Needs you** (and sends an
-alert, if alerts are on) when Codex asks to run something, or, in a session
-you started yourself in Codex, when a turn ends on a question, meaning the
-last paragraph of its reply ends in a question mark. It clears when Codex
-moves on or you reply. The card names only the program Codex wants to run,
-never the whole command, since that can hold a password. The hook keeps only
-the latest thing Codex sent it for each session and each helper agent, in
-`~/.codex/vitalaize`, and the board removes those after a week.
-
-This is new: see [Known limits](#known-limits) before you rely on it.
-
-## Known limits
-
-- **Sessions cross your network unencrypted.** A connected machine sends
-  the hub each session's whole transcript (what you typed, what the agent
-  replied and ran), and the questions a waiting session asks, over plain
-  HTTP. The key that lets it in travels the same way. Anyone who can watch
-  traffic on your network can read them. Connect machines only on a network
-  you trust, such as your home or office Wi-Fi, not a café's.
-- **Alerts leave your machines.** An alert names the session and says what
-  it asks, such as the question it put to you or the end of Codex's reply.
-  Sent by Slack, ntfy or Pushover, that text passes through their servers.
-  Anyone who knows your ntfy topic can read it too, so pick one that is hard
-  to guess, or run your own ntfy server.
-- **Codex "Needs you" has not yet been seen working with a real Codex.** It
-  may mark a card wrongly or send a wrong alert. To help check it, turn on
-  recording with `touch ~/.codex/vitalaize/capture-on`. Every call Codex
-  makes to the hook is then added to `~/.codex/vitalaize/payloads.jsonl`.
-  Use Codex as usual (a run where it asks for your approval is the most
-  useful), then `rm ~/.codex/vitalaize/capture-on` and send that file to the
-  VitalAIze team. It holds what you typed and what Codex ran, so read it
-  first and leave out anything private.
-- **A card can say Needs you for longer than it should.** In these cases it
-  stays until the session's next step (often your next prompt):
-  - On a connected machine without `claude` or `perl` on its PATH. That
-    machine checks `claude agents` every few seconds while a session waits,
-    to notice a prompt you approved, denied or closed with Esc. Without
-    them, nothing notices until the session does something else. The check
-    also gives up after about a minute if the session never shows as
-    waiting, and after 12 hours at most.
-  - On Codex, after you approve a command: Codex says nothing when the
-    command starts, so the card stays until the command finishes.
-  - On Codex, a card waiting on your approval stays up to 12 hours, even
-    past the idle time, so you can find it after a night away.
-- **A Codex card can clear too early.** If Codex runs other commands at the
-  same time as the one waiting on you, the first of those to finish clears
-  the card although Codex still waits.
-- **A connected machine that goes quiet.** A session on another machine that
-  says nothing for a day is dropped from the board.
-
-## About Korium
-
-[Korium](https://korium.ai) is another Kyroco project: shared company memory
-for people and AI agents. It keeps your team's decisions, with the reasons and
-sources behind them, so an agent can look up what the team already learned
-before it starts. It also gives agents code search tied to specific commits,
-reusable skills and workflows, and a Mac command line tool that indexes code
-locally. It works with Claude, OpenAI, Gemini and other assistants.
-
-VitalAIze does not need Korium. When your sessions use it, the Trends tab
-shows a Korium section: memory searches that found something, saves that
-worked, and code searches that hit. Set `korium: %{enabled: false}` to hide
-it. Learn more at [korium.ai](https://korium.ai).
-
-## How it keeps up
-
-Each source has its own timer: sessions every few seconds, GitHub every 30
-seconds (about 600 calls an hour per repository with two runs going, so six
-stay inside GitHub's limit of 5,000), New Relic every minute. Only what
-changed is sent to the screen. If one source fails, its panel keeps its last
-good data, says how old it is and why, and the rest of the board carries on.
-Trends say "Loading…" beside a section while its history is still coming in.
-
-## If something is off
-
-- **The iPad cannot reach the board.** Check that both are on the same Wi-Fi,
-  and that the firewall allows incoming connections on the board's port
-  (4747 unless you changed it): on a Mac in System Settings, Network,
-  Firewall; on Linux with ufw, `sudo ufw allow 4747/tcp`.
-- **"Add ?token= ..." on the page.** You set a `token`, and the address is
-  missing it or has a different one.
-- **A panel shows "stale" in red.** It says why. Usually `gh` or `claude` is
-  signed out, or the Mac lost its connection.
-- **No alerts.** The board's log says which channel failed and why. For
-  Messages, check `alerts.phone`, that Messages is signed in, and that macOS
-  allowed the board to control Messages (System Settings, Privacy & Security,
-  Automation). For Slack, ntfy or Pushover, check the address, topic or keys,
-  and that the board's machine can reach the internet.
+Sessions from other machines travel to the hub unencrypted, so connect
+machines only on a network you trust. See the known limits in the
+[wiki](https://github.com/kyroco/vitalaize/wiki) before you do.
 
 ## Questions and ideas
 
-Ask for help in [Q&A](https://github.com/kyroco/vitalaize/discussions/categories/q-a)
-and suggest features in
+Read the [wiki](https://github.com/kyroco/vitalaize/wiki) first. Ask for
+help in
+[Q&A](https://github.com/kyroco/vitalaize/discussions/categories/q-a) and
+suggest features in
 [Ideas](https://github.com/kyroco/vitalaize/discussions/categories/ideas),
-both in [Discussions](https://github.com/kyroco/vitalaize/discussions). Report
-bugs in [Issues](https://github.com/kyroco/vitalaize/issues).
+both in [Discussions](https://github.com/kyroco/vitalaize/discussions).
+Report bugs in [Issues](https://github.com/kyroco/vitalaize/issues).
 
 ## License
 
