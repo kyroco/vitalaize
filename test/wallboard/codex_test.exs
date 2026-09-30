@@ -133,6 +133,158 @@ defmodule Wallboard.CodexTest do
     assert t.running
   end
 
+  describe "needs you, from the hook" do
+    alias Wallboard.Sources.Codex
+
+    # A turn that started at 13:00:00 and is still running.
+    defp running_tally do
+      CodexTranscript.read_lines(
+        lines()
+        |> String.split("\n")
+        |> Enum.drop(-1)
+        |> Enum.join("\n")
+      )
+    end
+
+    defp at(time), do: DateTime.to_unix(~U[2026-09-29 13:00:00Z]) + time
+
+    test "a message that ends on a question is one" do
+      assert Codex.question("Done.\n\nWhich color do you like?") == "Which color do you like?"
+      assert Codex.question("Should I open the PR?**\n") == "Should I open the PR?**"
+      assert Codex.question(~s[Ship it now ("yes" or "no")?]) =~ "Ship it now"
+
+      assert Codex.question("Is this right?\nI think\nit is?") ==
+               "Is this right? I think it is?"
+
+      # A question earlier in the message, then a finished answer, is not.
+      assert Codex.question("Why did it fail?\n\nThe test had a typo; fixed.") == nil
+      assert Codex.question("All green.") == nil
+      assert Codex.question(nil) == nil
+    end
+
+    test "an approval request needs you, and says what it wants to run" do
+      t = running_tally()
+      mark = %{"hook_event_name" => "PermissionRequest", "at" => at(30)}
+
+      assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => "git push"}), t) ==
+               "Asks to run: git push"
+
+      assert Codex.waiting(
+               Map.put(mark, "tool_input", %{"command" => ["/bin/zsh", "-lc", "rm -r x"]}),
+               t
+             ) == "Asks to run: /bin/zsh -lc rm -r x"
+
+      assert Codex.waiting(Map.put(mark, "tool_name", "mcp__linear__save_issue"), t) ==
+               "Asks for your approval to use mcp__linear__save_issue"
+
+      assert Codex.waiting(mark, t) == "Asks for your approval"
+    end
+
+    test "a turn that ended on a question needs you; any later hook call clears it" do
+      t = CodexTranscript.read_lines(lines())
+      stop = %{"hook_event_name" => "Stop", "at" => at(30)}
+
+      assert Codex.waiting(Map.put(stop, "last_assistant_message", "Which one?"), t) ==
+               "Which one?"
+
+      assert Codex.waiting(Map.put(stop, "last_assistant_message", "Done."), t) == nil
+
+      for event <- ["UserPromptSubmit", "PostToolUse", "SessionEnd"] do
+        assert Codex.waiting(%{"hook_event_name" => event, "at" => at(30)}, t) == nil
+      end
+
+      assert Codex.waiting(nil, t) == nil
+    end
+
+    test "a hook call from before the current turn started is out of date" do
+      t = running_tally()
+
+      mark = %{
+        "hook_event_name" => "Stop",
+        "last_assistant_message" => "Which one?",
+        "at" => at(-60)
+      }
+
+      assert Codex.waiting(mark, t) == nil
+    end
+
+    test "the card shows needs you, why, and since when" do
+      t = Map.merge(running_tally(), %{mtime: at(40), path: "p"})
+
+      mark = %{
+        "hook_event_name" => "PermissionRequest",
+        "tool_input" => %{"command" => "git push"},
+        "at" => at(30)
+      }
+
+      card = Codex.card(t, [], "Fix it", at(45), mark)
+      assert {card.status, card.why} == {:needs, "Asks to run: git push"}
+      assert card.since == DateTime.from_unix!(at(30))
+      assert card.waiting_since == card.since
+
+      plain = Codex.card(t, [], "Fix it", at(45))
+      assert {plain.status, plain.why, plain.waiting_since} == {:working, nil, nil}
+    end
+
+    test "only a session that newly needs you is texted, and none on the first poll" do
+      a = %{key: "codex:a", status: :needs}
+      b = %{key: "codex:b", status: :needs}
+      c = %{key: "codex:c", status: :idle}
+
+      {newly, keys} = Codex.newly_needing([a, c], nil)
+      assert newly == []
+      assert keys == MapSet.new(["codex:a"])
+
+      {newly, keys} = Codex.newly_needing([a, b, c], keys)
+      assert newly == [b]
+      assert keys == MapSet.new(["codex:a", "codex:b"])
+    end
+
+    test "the board keeps the hook in place and reads its calls from each Codex folder" do
+      dir = Path.join(System.tmp_dir!(), "codex-hook-#{System.unique_integer([:positive])}")
+      marks = Path.join(dir, "vitalaize")
+      File.mkdir_p!(marks)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      now = DateTime.utc_now()
+      now_s = DateTime.to_unix(now)
+
+      File.write!(
+        Path.join(marks, "#{@id}.json"),
+        Jason.encode!(%{session_id: @id, hook_event_name: "Stop", last_assistant_message: "Ok?"})
+      )
+
+      stale = Path.join(marks, "old.json")
+      File.write!(stale, Jason.encode!(%{session_id: "old", hook_event_name: "Stop"}))
+      File.touch!(stale, now_s - 3 * 3600)
+
+      gone = Path.join(marks, "gone.json")
+      File.write!(gone, Jason.encode!(%{session_id: "gone", hook_event_name: "Stop"}))
+      File.touch!(gone, now_s - 8 * 24 * 3600)
+
+      File.write!(Path.join(marks, "bad.json"), "not json")
+
+      settings = %{codex: %{enabled: true, dirs: [dir], idle_minutes: 120}, alerts: %{phone: nil}}
+
+      found = Codex.marks(settings, now)
+      assert Map.keys(found) == [@id]
+      assert found[@id]["last_assistant_message"] == "Ok?"
+      assert is_integer(found[@id]["at"])
+      assert File.exists?(stale)
+      refute File.exists?(gone)
+
+      # A poll puts the shipped hook next to the calls, once.
+      {:ok, %{sessions: []}, memory} = Codex.poll(settings, nil, nil, now)
+      assert File.read!(Path.join(marks, "hook.sh")) == Codex.hook_script()
+      assert memory.hook
+
+      # A folder that is not there is not made.
+      missing = Path.join(dir, "no-codex-here")
+      Codex.poll(put_in(settings.codex.dirs, [missing]), nil, nil, now)
+      refute File.exists?(missing)
+    end
+  end
+
   test "the thread id comes from a session file's name" do
     assert CodexTranscript.id_from_path("/x/rollout-2026-09-22T12-03-00-#{@id}.jsonl") == @id
     assert CodexTranscript.id_from_path("/x/#{@id}.jsonl") == @id

@@ -1,6 +1,6 @@
 defmodule Wallboard.Alerts do
   @moduledoc """
-  Texts the board's owner when a Claude session newly needs them.
+  Texts the board's owner when a Claude or Codex session newly needs them.
 
   It runs notify.applescript, which tells the Messages app on this Mac to send
   an iMessage from whatever Apple ID is signed in there. The message and the

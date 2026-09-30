@@ -154,9 +154,31 @@ Run the tests with `mix test`.
   may control Messages. If the number is not on iMessage, set `alerts.via` to
   `"SMS"` (needs Text Message Forwarding on your iPhone).
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
-  rather than per-token prices, so its cards show tokens and plan use. Codex
-  writes nothing while it waits on you, so a Codex session never shows as
-  needing you. Set `codex: %{enabled: false}` to leave it out.
+  rather than per-token prices, so its cards show tokens and plan use. Set
+  `codex: %{enabled: false}` to leave it out.
+- **Codex needing you.** Codex writes nothing to its session file while it
+  waits on you, so VitalAIze needs a small Codex hook to know. The board
+  keeps it at `~/.codex/vitalaize/hook.sh`. Add these entries to
+  `~/.codex/hooks.json`, next to any hooks you already have there:
+
+  ```json
+  {
+    "hooks": {
+      "PermissionRequest": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "PostToolUse": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "Stop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}]
+    }
+  }
+  ```
+
+  Then open Codex, type `/hooks` and trust them: Codex skips a new or
+  changed hook until you do. A Codex card then shows **Needs you** (and
+  sends a text, if alerts are on) when Codex asks to run something, or when
+  a turn ends on a question, meaning the last paragraph of its reply ends in
+  a question mark. It clears when Codex moves on or you reply. The hook keeps
+  only the latest thing Codex sent it for each session, in
+  `~/.codex/vitalaize`, and the board removes those after a week.
 - **Production page.** Set `new_relic: %{enabled: false}` if you do not use
   New Relic. Otherwise set `api_key_ref` to where your New Relic User API key
   lives in 1Password (`"op://Vault/Item/field"`), `account_id`, and the
