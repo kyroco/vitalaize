@@ -255,6 +255,7 @@ button { font: inherit; }
 .tab.on { background: var(--border); color: var(--text); }
 .link-button { border: 0; background: none; padding: 5px 8px; margin: 0; font-size: 12px; font-weight: 700; color: var(--info); cursor: pointer; }
 .link-button:disabled { color: var(--text-muted); cursor: default; }
+.link-button.update-note { color: var(--ok); text-decoration: none; }
 .session-card.tappable, .archive-card { cursor: pointer; }
 .archive-card { font: inherit; color: inherit; text-align: left; width: 100%; min-width: 0; }
 .archive-card .sc-task { font-size: 13px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

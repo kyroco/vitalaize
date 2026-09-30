@@ -63,7 +63,10 @@ defmodule Wallboard.Application do
          name: :usage,
          source: Wallboard.Sources.Usage,
          interval_ms: settings.usage.poll_seconds * 1000,
-         timeout_ms: 600_000}
+         timeout_ms: 600_000},
+        # Runs every minute so turning the check on or off shows within the
+        # minute; GitHub itself is asked once a day.
+        {Wallboard.Poller, name: :release, source: Wallboard.Sources.Release, interval_ms: 60_000}
       ] ++
         if(Wallboard.Sources.DevPower.enabled?(settings),
           do: [
@@ -145,8 +148,13 @@ defmodule Wallboard.Application do
     if settings.token == nil,
       do: Logger.info("No token set, so anyone on this network can open the board.")
 
-    if settings.alerts.phone == nil,
-      do: Logger.info("Text alerts are off (no phone number in settings).")
+    case Wallboard.Alerts.channels(settings) do
+      [] ->
+        Logger.info("Alerts are off (no phone, Slack, ntfy or Pushover in settings).")
+
+      channels ->
+        Logger.info("Alerts go by #{Enum.map_join(channels, ", ", &Wallboard.Alerts.name/1)}.")
+    end
   end
 
   @impl true

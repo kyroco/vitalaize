@@ -49,7 +49,17 @@ defmodule Wallboard.Settings do
       phone: nil,
       # "iMessage", or "SMS" for a plain text sent through your iPhone (needs
       # Text Message Forwarding), which reaches numbers not on iMessage.
-      via: "iMessage"
+      via: "iMessage",
+      # Alerts that work without a Mac. Each one that is set gets every alert.
+      # A Slack incoming webhook address (https://hooks.slack.com/...).
+      slack_webhook: nil,
+      # An ntfy topic. Anyone who knows it can read it, so make it hard to
+      # guess. nil for ntfy_server means https://ntfy.sh.
+      ntfy_topic: nil,
+      ntfy_server: nil,
+      # Your Pushover user key and the API token of an app you made there.
+      pushover_user: nil,
+      pushover_token: nil
     },
     usage: %{
       poll_seconds: 30,
@@ -155,6 +165,9 @@ defmodule Wallboard.Settings do
     },
     # Whether this team uses Korium. Off hides the Korium numbers.
     korium: %{enabled: true},
+    # Once a day, ask GitHub for the latest release and show a note by
+    # Settings when it is newer than this board.
+    updates: %{check: true},
     archive: %{
       enabled: true,
       # Save this Mac's own Claude sessions. Off makes a hub that only keeps
@@ -302,7 +315,9 @@ defmodule Wallboard.Settings do
           "0 stops the pages turning"},
          {[:timezone], "Time zone", :string, false, "Like America/New_York"},
          {[:token], "Board password", :secret, true,
-          "Optional. With one, other devices need ?token= once, and can change settings"}
+          "Optional. With one, other devices need ?token= once, and can change settings"},
+         {[:updates, :check], "Tell me when a new version is out", :boolean, false,
+          "Checks GitHub once a day"}
        ]},
       {"What this board shows",
        [
@@ -312,10 +327,19 @@ defmodule Wallboard.Settings do
          {[:archive, :collect_local], "Save this Mac's Claude sessions", :boolean, true,
           "Off for a hub that only keeps what other Macs send"}
        ]},
-      {"Text alerts",
+      {"Alerts",
        [
-         {[:alerts, :phone], "Phone number", :string, false, "Empty turns texts off"},
-         {[:alerts, :via], "Send as", {:choice, ["iMessage", "SMS"]}, false, nil}
+         {[:alerts, :phone], "Phone number (Messages)", :string, false,
+          "Mac only. Empty turns texts off"},
+         {[:alerts, :via], "Send as", {:choice, ["iMessage", "SMS"]}, false, nil},
+         {[:alerts, :slack_webhook], "Slack webhook", :secret, false,
+          "An incoming webhook address. Empty turns Slack off"},
+         {[:alerts, :ntfy_topic], "ntfy topic", :secret, false,
+          "Hard to guess, since anyone with it can read it. Empty turns ntfy off"},
+         {[:alerts, :ntfy_server], "ntfy server", :string, false, "Empty uses https://ntfy.sh"},
+         {[:alerts, :pushover_user], "Pushover user key", :secret, false, nil},
+         {[:alerts, :pushover_token], "Pushover app token", :secret, false,
+          "Both Pushover fields are needed"}
        ]},
       {"Claude",
        [
@@ -427,6 +451,19 @@ defmodule Wallboard.Settings do
 
       path == [:archive, :hub_url] and not (value =~ ~r{^https?://[^\s/]+}) ->
         {:error, "use an address like http://192.168.1.20:4747"}
+
+      path == [:alerts, :slack_webhook] and not (value =~ ~r{^https://\S+$}) ->
+        {:error, "use the https:// address Slack gave you"}
+
+      path == [:alerts, :ntfy_topic] and not (value =~ ~r/^[\w-]{1,64}$/) ->
+        {:error, "use letters, numbers, - and _ only"}
+
+      path == [:alerts, :ntfy_server] and not (value =~ ~r{^https?://[^\s/?#]+(/[^\s?#]*)?$}) ->
+        {:error, "use an address like https://ntfy.sh"}
+
+      path in [[:alerts, :pushover_user], [:alerts, :pushover_token]] and
+          not (value =~ ~r/^\w+$/) ->
+        {:error, "use the key exactly as Pushover shows it"}
 
       true ->
         {:ok, value}
@@ -595,12 +632,20 @@ defmodule Wallboard.Settings do
     end)
   end
 
-  defp normalize(settings) do
+  @doc false
+  def normalize(settings) do
     settings
     |> update_in([:claude, :config_dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:codex, :dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
-    |> update_in([:alerts, :phone], &blank_to_nil/1)
+    |> update_in([:alerts], fn alerts ->
+      Enum.reduce(
+        [:phone, :slack_webhook, :ntfy_topic, :ntfy_server, :pushover_user, :pushover_token],
+        alerts,
+        fn key, acc -> Map.update(acc, key, nil, &blank_to_nil/1) end
+      )
+    end)
     |> update_in([:token], &blank_to_nil/1)
+    |> Map.update(:updates, @defaults.updates, &updates/1)
     |> update_in([:archive, :path], &db_path/1)
     |> update_in([:brand, :logo], fn
       nil -> nil
@@ -632,6 +677,13 @@ defmodule Wallboard.Settings do
         Path.join([base, "vitalaize", "wallboard.db"])
     end
   end
+
+  # The file may say `updates: false` or leave `check` out; the rest of the
+  # board only ever sees %{check: true} or %{check: false}.
+  defp updates(%{check: check}), do: %{check: check == true}
+  defp updates(%{}), do: @defaults.updates
+  defp updates(nil), do: @defaults.updates
+  defp updates(_), do: %{check: false}
 
   defp blank_to_nil(nil), do: nil
 

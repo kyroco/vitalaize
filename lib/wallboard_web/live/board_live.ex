@@ -65,6 +65,7 @@ defmodule WallboardWeb.BoardLive do
     usage = Poller.snapshot(:usage)
     dev = Poller.snapshot(:dev_power)
     builds = Poller.snapshot(:builds)
+    release = Poller.snapshot(:release)
 
     socket =
       socket
@@ -75,7 +76,7 @@ defmodule WallboardWeb.BoardLive do
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
       |> assign(dev: dev.facts, dev_meta: dev.meta, dev_on?: DevPower.enabled?(settings))
-      |> assign(builds: builds.facts)
+      |> assign(builds: builds.facts, release: release.facts)
       |> assign(
         archive_on?: settings.archive.enabled,
         machine: if(settings.archive.enabled, do: Collector.machine(settings)),
@@ -119,6 +120,9 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_info({:source, :builds, facts, _meta}, socket),
     do: {:noreply, assign(socket, builds: facts)}
+
+  def handle_info({:source, :release, facts, _meta}, socket),
+    do: {:noreply, assign(socket, release: facts)}
 
   def handle_info({:source_meta, name, meta}, socket) do
     key =
@@ -323,6 +327,7 @@ defmodule WallboardWeb.BoardLive do
           title={@product}
           tabs={@tabs}
           metas={[@claude_meta, @github_meta]}
+          release={@release}
         />
         <.needs_banner needs={@needs} />
         <.tiles
@@ -409,6 +414,8 @@ defmodule WallboardWeb.BoardLive do
   attr :title, :string, required: true
   attr :tabs, :list, required: true
   attr :metas, :list, required: true
+  # A newer release than this board runs, or nil (see Wallboard.Sources.Release).
+  attr :release, :map, default: nil
 
   # The name, then the switches and the clock. The browser owns which page
   # dot is on and whether Pin is on, so those attributes survive updates.
@@ -446,6 +453,15 @@ defmodule WallboardWeb.BoardLive do
         ><circle cx="12" cy="12" r="4.5" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
         <span class="theme-word"></span>
       </button>
+      <a
+        :if={@release}
+        class="link-button header-link update-note"
+        href={@release.url}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Version {@release.version} is available
+      </a>
       <a class="link-button header-link" href="/settings">Settings</a>
       <%!-- With one tab there is nothing to rotate, so no pin and no dots. --%>
       <button
