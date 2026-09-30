@@ -30,10 +30,10 @@ defmodule WallboardWeb.IngestController do
           send_resp(conn, 200, "saved\n")
 
         {:error, reason} ->
-          send_resp(conn, 422, reason <> "\n")
+          error(conn, 422, reason)
       end
     else
-      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+      {:error, status, reason} -> error(conn, status, reason)
     end
   end
 
@@ -58,7 +58,7 @@ defmodule WallboardWeb.IngestController do
          :ok <- report(hook, params["machine"], account, params["at"]) do
       send_resp(conn, 200, "ok\n")
     else
-      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+      {:error, status, reason} -> error(conn, status, reason)
     end
   end
 
@@ -116,7 +116,7 @@ defmodule WallboardWeb.IngestController do
         |> send_resp(200, Ingest.install_script(hub_url(settings), Ingest.token()))
 
       {:error, status, reason} ->
-        send_resp(conn, status, reason <> "\n")
+        error(conn, status, reason)
     end
   end
 
@@ -131,7 +131,7 @@ defmodule WallboardWeb.IngestController do
         |> send_resp(200, Ingest.upload_script(hub_url(settings), Ingest.token()))
 
       {:error, status, reason} ->
-        send_resp(conn, status, reason <> "\n")
+        error(conn, status, reason)
     end
   end
 
@@ -146,8 +146,15 @@ defmodule WallboardWeb.IngestController do
         |> send_resp(200, Ingest.codex_upload_script(hub_url(settings), Ingest.token()))
 
       {:error, status, reason} ->
-        send_resp(conn, status, reason <> "\n")
+        error(conn, status, reason)
     end
+  end
+
+  # Plain text, so a browser never reads an error as a page.
+  defp error(conn, status, reason) do
+    conn
+    |> put_resp_content_type("text/plain")
+    |> send_resp(status, reason <> "\n")
   end
 
   @doc "The address other Macs reach this board at."

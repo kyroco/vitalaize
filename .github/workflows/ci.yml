@@ -1,5 +1,6 @@
 # Runs the tests, plus the code style and compiler warning checks, on Linux
-# and macOS for every pull request and every push to main. On a version tag
+# and macOS, and a security scan of the Elixir code on Linux, for every pull
+# request and every push to main. On a version tag
 # (v0.3.0) it also builds the two Linux downloads on real Intel and ARM
 # machines, checks each one starts, and attaches them to that tag's GitHub
 # release.
@@ -75,6 +76,93 @@ jobs:
       - name: Tests
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: mix test --warnings-as-errors
+
+  # Sobelow reads the Elixir code for security problems, since GitHub's own
+  # scanner (CodeQL) cannot read Elixir. The check fails on anything at
+  # medium confidence or above. SOBELOW holds every setting; the one skipped
+  # finding, Config.HTTPS, is there because the board serves plain HTTP on
+  # the local network on purpose (see .sobelow-conf).
+  security:
+    name: Security scan (Sobelow)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      sarif: ${{ steps.findings.outputs.written }}
+    env:
+      MIX_ENV: test
+      SOBELOW: --no-config --private --exit medium --threshold medium --no-skip --ignore Config.HTTPS
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        id: beam
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      # The same cache as the Linux tests, so it is usually already there.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      # Prints each finding in the log and fails the check on any. CI does
+      # not read .sobelow-conf: every setting is here, so a pull request
+      # cannot turn the check off, or skip more, without changing this file.
+      # --no-skip ignores `# sobelow_skip` comments and a .sobelow-skips
+      # file. The one skip, and its reason, match .sobelow-conf.
+      - name: Sobelow
+        # SOBELOW is split into its flags on purpose.
+        run: |
+          # shellcheck disable=SC2086
+          mix sobelow $SOBELOW --verbose
+      # The same findings as SARIF, for the Security tab. --out, not a
+      # redirect, so compiler output never lands in the file. Sobelow exits
+      # 1 when it finds something; the step above already failed for that.
+      - name: Findings file
+        id: findings
+        if: ${{ !cancelled() }}
+        run: |
+          # shellcheck disable=SC2086
+          mix sobelow $SOBELOW --format sarif --out sobelow.sarif || [ $? -eq 1 ]
+          if [ -s sobelow.sarif ]; then echo "written=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ !cancelled() && steps.findings.outputs.written == 'true' }}
+        with:
+          name: sobelow-sarif
+          path: sobelow.sarif
+          retention-days: 7
+
+  # Puts the findings under the repo's Security tab. Its own job, because
+  # uploading needs security-events: write, and the scan above runs code
+  # from the pull request and its dependencies while it builds; this job
+  # runs none. A pull request from a fork gets no permission to upload, so
+  # there the log of the Sobelow step is the report.
+  security-upload:
+    name: Security scan upload
+    needs: security
+    if: ${{ !cancelled() && needs.security.outputs.sarif == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      # Only so the upload can match findings to lines; nothing here runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: sobelow-sarif
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: sobelow.sarif
+          category: sobelow
 
   linux-download:
     name: Linux download (${{ matrix.arch }})
