@@ -322,7 +322,7 @@ enum Setup {
                 // folders stay connected.
                 do {
                     let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh")
-                    try hookUp(folder: folder, script: script, file: "hooks.json")
+                    try hookUp(folder: folder, script: script, file: "hooks.json", wanted: codexHooks)
                     hookedCodex = folder
                     say("Codex skips a new hook until you trust it: type /hooks in Codex and trust the two wallboard-upload.sh hooks")
                 } catch {
@@ -414,10 +414,27 @@ enum Setup {
         }
     }
 
-    /// Saves the upload script in a Claude folder and adds the two hooks to
+    /// The Claude Code hooks the upload script runs from, with each one's
+    /// matcher. Stop and SessionEnd send the transcript; the rest tell the
+    /// hub the moment a session starts or stops waiting on you. The same
+    /// list is Wallboard.Archive.Ingest.hooks/0 on the board.
+    static let uploadHooks: [(event: String, matcher: String?)] = [
+        ("Stop", nil),
+        ("SessionEnd", nil),
+        ("Notification", "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input"),
+        ("PreToolUse", "AskUserQuestion"),
+        ("PostToolUse", nil),
+        ("UserPromptSubmit", nil),
+    ]
+
+    /// Codex's upload script sends transcripts only, so it keeps two hooks.
+    static let codexHooks: [(event: String, matcher: String?)] = [("Stop", nil), ("SessionEnd", nil)]
+
+    /// Saves the upload script in a Claude folder and adds its hooks to
     /// that folder's settings.json, after backing it up. For ~/.codex the
-    /// file is hooks.json, which has the same shape.
-    static func hookUp(folder: String, script: String, file: String = "settings.json") throws {
+    /// file is hooks.json, which has the same shape, with codexHooks.
+    static func hookUp(folder: String, script: String, file: String = "settings.json",
+                       wanted: [(event: String, matcher: String?)] = uploadHooks) throws {
         let dir = URL(fileURLWithPath: folder)
         let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -436,10 +453,14 @@ enum Setup {
 
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         let hook: [String: Any] = ["type": "command", "command": scriptURL.path, "async": true, "timeout": 120]
-        for event in ["Stop", "SessionEnd"] {
+        for (event, matcher) in wanted {
             var list = hooks[event] as? [[String: Any]] ?? []
             let has = list.contains { m in ((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path } }
-            if !has { list.append(["hooks": [hook]]) }
+            if !has {
+                var entry: [String: Any] = ["hooks": [hook]]
+                if let matcher = matcher { entry["matcher"] = matcher }
+                list.append(entry)
+            }
             hooks[event] = list
         }
         settings["hooks"] = hooks
@@ -448,14 +469,15 @@ enum Setup {
     }
 
     /// Takes the hooks back out; everything else in the file stays.
-    static func unhook(folder: String, file: String = "settings.json") {
+    static func unhook(folder: String, file: String = "settings.json",
+                       wanted: [(event: String, matcher: String?)] = uploadHooks) {
         let dir = URL(fileURLWithPath: folder)
         let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
         let settingsURL = dir.appendingPathComponent(file)
         if let data = try? Data(contentsOf: settingsURL),
            var settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            var hooks = settings["hooks"] as? [String: Any] {
-            for event in ["Stop", "SessionEnd"] {
+            for (event, _) in wanted {
                 let list = (hooks[event] as? [[String: Any]] ?? []).filter { m in
                     !((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path }
                 }
@@ -482,7 +504,7 @@ enum Setup {
         }
         if let folder = record?.hookedCodex {
             say("Disconnecting \(folder)")
-            unhook(folder: folder, file: "hooks.json")
+            unhook(folder: folder, file: "hooks.json", wanted: codexHooks)
         }
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")
