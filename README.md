@@ -8,20 +8,31 @@ GitHub builds are doing, and how the work trends over days and weeks.
 It runs on your own Mac or Linux machine. Your session data is never sent
 anywhere except between your own machines, if you connect more than one.
 
-![The Live tab: Claude and Codex sessions, GitHub Actions and deploy tiles](docs/images/live.jpg)
+![The Agents tab: Claude and Codex sessions under the status line](docs/images/live.jpg)
 
 ## What it shows
 
-- **Live sessions.** One card per Claude Code or Codex session, marked with
-  that tool's icon. Each card says whether the session is working (green), idle,
-  or needs you (orange), plus how full its context is, its model and effort,
-  lines added and removed, its helper agents, and its cost (Claude) or tokens
-  and plan use (Codex).
+Across the top, always in view: a status line for all your repositories, then
+tabs. The board turns from tab to tab on its own; tap a tab to pick one, and
+tap Pin to stay on it.
+
+- **Status line.** Main, the merge queue, what is running, failures in the
+  last day, and your dev and prod deploys. With several repositories it adds
+  them up: Main says "5 of 6 green" and names the red one.
+- **Agents tab.** One card per Claude Code or Codex session, marked with that
+  tool's icon and the repository it works in. Each card says whether the
+  session is working (green), idle, or needs you (orange), plus how full its
+  context is, its model and effort, lines added and removed, its helper
+  agents, and its cost (Claude) or tokens and plan use (Codex).
 - **Needs you.** When a Claude session stops to ask you something, a banner
   runs across the screen and its card moves to the top. Your Mac can also
   text you.
-- **GitHub Actions.** What is running, recent runs, a timeline of the last 6
-  hours, and tiles for main, the merge queue, failures and your last deploys.
+- **Git tab.** A column per repository, up to four across: its main, what is
+  running, recent runs and a timeline of the last 6 hours. With more than four,
+  the busiest get the columns (anything running or failed first, then the most
+  recent run), and the rest sit below as one line each until they run or go
+  red. Tap a repository for every workflow's recent runs, its merge queue and
+  its failures.
 - **Archive.** Every session is saved in a small SQLite database on the
   machine that runs the board, so you can look back at any one: what it cost,
   what tools it used, what it changed.
@@ -32,12 +43,14 @@ anywhere except between your own machines, if you connect more than one.
 - **Korium** (optional). If your agents use [Korium](https://korium.ai), how
   often their memory searches find something, how many saves work, and how
   often code searches hit. See [About Korium](#about-korium).
-- **Production health** (optional). A second page with checks from New Relic.
+- **New Relic tab** (optional). Production health checks from New Relic.
 - **Light and dark.** Switch with the button next to Settings.
 
-![The Trends tab: Claude and Codex compared, then each tool's own charts](docs/images/trends.jpg)
+![The Git tab: four busy repositories in columns, two quiet ones below](docs/images/git.jpg)
 
-![The Live tab in dark mode](docs/images/dark.jpg)
+![The Trends view: Claude and Codex compared, then each tool's own charts](docs/images/trends.jpg)
+
+![The Agents tab in dark mode](docs/images/dark.jpg)
 
 ## Install on a Mac
 
@@ -50,11 +63,13 @@ anywhere except between your own machines, if you connect more than one.
    - **Hub and collector**, for your main Mac: it runs the board and saves
      this Mac's sessions.
    - **Hub only**: it runs the board and keeps what other Macs send it.
-   - **Collector only**, for your other Macs: it sends this Mac's sessions to
-     a hub. It finds hubs on your network by itself; you paste the hub's key
-     from the hub's Settings page (Connect another Mac).
-4. It fills in what it can find (your Claude and Codex folders, the GitHub
-   repository your sessions work in and its workflows, your AWS profiles) and
+   - **Collector only**, for your other Macs: it sends this Mac's Claude and
+     Codex sessions to a hub. It finds hubs on your network by itself; you
+     paste the hub's key from the hub's Settings page (Connect another Mac).
+     Codex runs a new hook only once you trust it, so afterwards type
+     `/hooks` in Codex and trust the two `wallboard-upload.sh` hooks.
+4. It fills in what it can find (your Claude and Codex folders, every GitHub
+   repository your sessions work in and their workflows, your AWS profiles) and
    asks you to check it. Click **Install**. The board starts now and again
    every time you log in.
 5. On your iPad, open the address VitalAIze shows in Safari, tap Share, then
@@ -95,7 +110,8 @@ instead (see Alerts below); and the database lives in
 network by themselves, install `avahi-utils` on the hub; without it,
 collectors type the hub's address. A Linux machine can be a collector too:
 run the command from the hub's Settings page (Connect another Mac) there. It
-needs `python3` and `curl`.
+needs `python3` and `curl`. Like the app, the command hooks up Codex too when
+the machine has it, and says to trust the new hooks with `/hooks` in Codex.
 
 ## What you need
 
@@ -136,6 +152,21 @@ Everything specific to you lives in `settings.exs`. The example file explains
 each setting. At the least, set `github.repo` and the workflow file names, and
 `claude.config_dirs` if your Claude folder is not `~/.claude`. Anything you
 leave out uses the default shown in the example file.
+
+To follow several repositories, list them in `github.repos`. The rest of the
+`github` section applies to each; an entry can be a map that changes any of it
+for one repository, such as its gate workflow or timeline rows. A file with
+only `github.repo` keeps working as it always has.
+
+```elixir
+github: %{
+  gate_workflow: "ci.yml",
+  repos: [
+    "acme/api",
+    %{repo: "acme/mobile", gate_workflow: "build.yml"}
+  ]
+}
+```
 
 To build the Mac app and its installer yourself: `macos/build.sh`. With an
 Apple Developer ID it signs them, and with `--notary-profile NAME` it also
@@ -179,7 +210,8 @@ one, delete it from the release first.
   - Pushover: set `pushover_user` to your user key, and `pushover_token` to
     the API token of an app you make at pushover.net.
 
-  Alerts cover the Claude sessions on the machine that runs the board. A
+  Alerts cover the Claude sessions on the machine that runs the board, and
+  its Codex sessions once the Codex hook below is set up. A
   hub does not alert for sessions on the Macs that send it their sessions,
   since those arrive only when a turn ends.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
@@ -228,7 +260,7 @@ one, delete it from the release first.
   useful), then `rm ~/.codex/vitalaize/capture-on` and send that file to the
   VitalAIze team. It holds what you typed and what Codex ran, so read it
   first and leave out anything private.
-- **Production page.** Set `new_relic: %{enabled: false}` if you do not use
+- **New Relic tab.** Set `new_relic: %{enabled: false}` if you do not use
   New Relic. Otherwise set `api_key_ref` to where your New Relic User API key
   lives in 1Password (`"op://Vault/Item/field"`), `account_id`, and the
   `checks` to show. The key is read once at start and kept in memory only.
@@ -259,7 +291,8 @@ it. Learn more at [korium.ai](https://korium.ai).
 ## How it keeps up
 
 Each source has its own timer: sessions every few seconds, GitHub every 30
-seconds (well inside GitHub's limit), New Relic every minute. Only what changed
+seconds (about 600 calls an hour per repository, so six stay inside GitHub's
+limit of 5,000), New Relic every minute. Only what changed
 is sent to the screen. If one source fails, its panel keeps its last good
 data, says how old it is and why, and the rest of the board carries on. Trends
 say "Loading…" beside a section while its history is still coming in.

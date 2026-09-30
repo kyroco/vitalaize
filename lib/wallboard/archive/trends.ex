@@ -101,13 +101,13 @@ defmodule Wallboard.Archive.Trends do
   of each run (which carry runner time), a batch every few minutes.
   """
   def github_loading(settings) do
-    repo = settings.github.repo
+    repos = Wallboard.Settings.repo_names(settings)
 
     cond do
-      !Store.get_meta("github_backfill:" <> repo) ->
+      Enum.any?(repos, &(!Store.get_meta("github_backfill:" <> &1))) ->
         "Loading…"
 
-      (n = Store.runs_missing_jobs_count(repo)) > 0 ->
+      (n = repos |> Enum.map(&Store.runs_missing_jobs_count/1) |> Enum.sum()) > 0 ->
         "Loading job times, #{thousands(n)} #{if n == 1, do: "run", else: "runs"} to go"
 
       true ->
@@ -156,7 +156,8 @@ defmodule Wallboard.Archive.Trends do
     back = settings.archive.backfill_days
 
     starts =
-      [{"claude_since", 0}, {"github_backfill:" <> settings.github.repo, back}]
+      ([{"claude_since", 0}] ++
+         Enum.map(Wallboard.Settings.repo_names(settings), &{"github_backfill:" <> &1, back}))
       |> Enum.flat_map(fn {key, days_back} ->
         with v when is_binary(v) <- Store.get_meta(key),
              {:ok, d} <- Date.from_iso8601(v) do
@@ -173,7 +174,14 @@ defmodule Wallboard.Archive.Trends do
   # The metrics
 
   defp metrics(settings) do
-    gate = settings.github.gate_workflow
+    gate =
+      case settings
+           |> Wallboard.Settings.github_repos()
+           |> Enum.map(& &1.gate_workflow)
+           |> Enum.uniq() do
+        [one] -> one
+        _ -> "gate"
+      end
 
     [
       %{
@@ -402,10 +410,45 @@ defmodule Wallboard.Archive.Trends do
   defp add(a, b) when is_list(a), do: a ++ b
   defp add(a, b), do: a + b
 
+  # One repository's runs, runner time and gate times by the hour. Dev and
+  # Prod deploys count only for the first repository, as on the status line.
+  defp github_hours({gh, index}, from) do
+    {dev, prod} = if index == 0, do: {gh.dev_deploy, gh.prod_deploy}, else: {"", ""}
+
+    Store.query(
+      """
+      SELECT created_at / 3600 AS h, count(*) AS runs,
+        sum(conclusion IN ('success', 'failure')) AS runs_done,
+        sum(conclusion = 'failure') AS runs_failed,
+        sum(workflow = ?2 AND conclusion = 'success') AS deploys_dev,
+        sum(workflow = ?3 AND conclusion = 'success') AS deploys_prod
+      FROM gh_runs WHERE repo = ?4 AND created_at >= ?1 GROUP BY h
+      """,
+      [from, dev, prod, gh.repo]
+    ) ++
+      Store.query(
+        """
+        SELECT completed_at / 3600 AS h, sum(duration_s) AS runner_s, count(*) AS jobs
+        FROM gh_jobs WHERE repo = ?2 AND completed_at >= ?1 GROUP BY h
+        """,
+        [from, gh.repo]
+      ) ++
+      Enum.map(
+        Store.query(
+          """
+          SELECT created_at / 3600 AS h, duration_s FROM gh_runs
+          WHERE repo = ?3 AND created_at >= ?1 AND workflow = ?2
+            AND conclusion = 'success' AND duration_s IS NOT NULL
+          """,
+          [from, gh.gate_workflow, gh.repo]
+        ),
+        &%{h: &1.h, gate_durations: [&1.duration_s]}
+      )
+  end
+
   # Every source, summed by the hour in SQL, then by local day here.
   defp day_sums(settings, since) do
     from = since |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix() |> Kernel.-(86_400)
-    gh = settings.github
 
     hourly =
       Store.query(
@@ -436,35 +479,10 @@ defmodule Wallboard.Archive.Trends do
           """,
           [from]
         ) ++
-        Store.query(
-          """
-          SELECT created_at / 3600 AS h, count(*) AS runs,
-            sum(conclusion IN ('success', 'failure')) AS runs_done,
-            sum(conclusion = 'failure') AS runs_failed,
-            sum(workflow = ?2 AND conclusion = 'success') AS deploys_dev,
-            sum(workflow = ?3 AND conclusion = 'success') AS deploys_prod
-          FROM gh_runs WHERE repo = ?4 AND created_at >= ?1 GROUP BY h
-          """,
-          [from, gh.dev_deploy, gh.prod_deploy, gh.repo]
-        ) ++
-        Store.query(
-          """
-          SELECT completed_at / 3600 AS h, sum(duration_s) AS runner_s, count(*) AS jobs
-          FROM gh_jobs WHERE repo = ?2 AND completed_at >= ?1 GROUP BY h
-          """,
-          [from, gh.repo]
-        ) ++
-        Enum.map(
-          Store.query(
-            """
-            SELECT created_at / 3600 AS h, duration_s FROM gh_runs
-            WHERE repo = ?3 AND created_at >= ?1 AND workflow = ?2
-              AND conclusion = 'success' AND duration_s IS NOT NULL
-            """,
-            [from, gh.gate_workflow, gh.repo]
-          ),
-          &%{h: &1.h, gate_durations: [&1.duration_s]}
-        )
+        (settings
+         |> Wallboard.Settings.github_repos()
+         |> Enum.with_index()
+         |> Enum.flat_map(&github_hours(&1, from)))
 
     hourly
     |> Enum.group_by(&local_day(&1.h * 3600))

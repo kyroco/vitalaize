@@ -77,6 +77,13 @@
   # GitHub, read through the `gh` command, which must be signed in
   # (gh auth login).
   github: %{
+    # Several repositories: list them here, and everything else in this
+    # section applies to each. An entry can be a map that changes any of it
+    # for that one repository, for example
+    #   repos: ["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]
+    # The Git tab gives up to four a column each; Dev and Prod follow the
+    # first. Left empty, the board follows `repo` alone.
+    repos: [],
     repo: "your-org/your-repo",
     branch: "main",
     poll_seconds: 30,

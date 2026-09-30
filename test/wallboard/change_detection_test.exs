@@ -5,7 +5,7 @@ defmodule Wallboard.ChangeDetectionTest do
   alias Wallboard.{Fixtures, Poller}
   alias Wallboard.Sources.{Claude, GitHub}
 
-  defp github_facts do
+  defp repo_facts do
     {:ok, runs} = GitHub.parse_runs(Fixtures.read!("github/runs_24h.json"))
     {:ok, repo} = GitHub.parse_graphql(Fixtures.read!("github/graphql.json"), "ci")
 
@@ -18,6 +18,9 @@ defmodule Wallboard.ChangeDetectionTest do
       jobs: %{}
     }
   end
+
+  defp github_facts(facts \\ repo_facts()),
+    do: %{repos: [%{repo: "acme/shop", facts: facts, error: nil}]}
 
   defp claude_facts do
     {:ok, agents} = Claude.parse_agents(Fixtures.read!("claude/agents_busy.json"))
@@ -35,21 +38,35 @@ defmodule Wallboard.ChangeDetectionTest do
   end
 
   test "only re-checking the deploys is not a change" do
-    a = github_facts()
-    refute Poller.changed?(GitHub, a, %{a | deploys_checked_at: ~U[2026-09-28 21:54:00Z]})
+    a = repo_facts()
+
+    refute Poller.changed?(
+             GitHub,
+             github_facts(a),
+             github_facts(%{a | deploys_checked_at: ~U[2026-09-28 21:54:00Z]})
+           )
   end
 
   test "a new run is a change" do
-    a = github_facts()
+    a = repo_facts()
     [first | rest] = a.runs
     b = %{a | runs: [%{first | id: 1, status: :in_progress, conclusion: nil} | [first | rest]]}
-    assert Poller.changed?(GitHub, a, b)
+    assert Poller.changed?(GitHub, github_facts(a), github_facts(b))
   end
 
   test "a pull request's gate turning red is a change" do
-    a = github_facts()
+    a = repo_facts()
     b = %{a | prs: Enum.map(a.prs, &%{&1 | gate: :failed})}
-    assert Poller.changed?(GitHub, a, b)
+    assert Poller.changed?(GitHub, github_facts(a), github_facts(b))
+  end
+
+  test "one repository's read failing is a change, and another repository's run is too" do
+    a = github_facts()
+    failed = %{a | repos: [%{hd(a.repos) | error: "gh: timed out"}]}
+    assert Poller.changed?(GitHub, a, failed)
+
+    second = %{a | repos: a.repos ++ [%{repo: "acme/api", facts: repo_facts(), error: nil}]}
+    assert Poller.changed?(GitHub, a, second)
   end
 
   test "the same Claude sessions twice is not a change" do

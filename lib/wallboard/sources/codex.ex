@@ -508,6 +508,7 @@ defmodule Wallboard.Sources.Codex do
       account: nil,
       kind: "codex",
       folder: folder(t.cwd),
+      cwd: t.cwd,
       started_by: started_by(t.originator),
       status: status,
       task: short_prompt(t.last_prompt) || t.cwd,
