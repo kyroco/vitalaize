@@ -34,6 +34,7 @@ defmodule Wallboard.MixProject do
       {:phoenix_html, "~> 4.2"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
+      {:plug, "1.15.4", override: true},
       {:exqlite, "~> 0.41.0"},
       # Security scanner for Phoenix code. CI runs it; run it yourself with
       # `mix sobelow`.
