@@ -45,9 +45,10 @@ enum Detect {
 
     // MARK: GitHub
 
-    /// The GitHub repository most of the recent Claude sessions worked in,
-    /// from the git remotes of the folders they ran in: "owner/name".
-    static func githubRepo(folders: [String]) -> String? {
+    /// Every GitHub repository the recent Claude sessions worked in, from the
+    /// git remotes of the folders they ran in, as "owner/name": the one most
+    /// sessions used first.
+    static func githubRepos(folders: [String]) -> [String] {
         let cwdPattern = try! NSRegularExpression(pattern: #""cwd":"([^"]+)""#)
         var cwds = Set<String>()
         for t in recentTranscripts(in: folders) {
@@ -62,7 +63,7 @@ enum Detect {
             let r = Shell.run("/usr/bin/git", ["-C", cwd, "remote", "get-url", "origin"], timeout: 10)
             if r.ok, let repo = parseGitHub(r.output) { counts[repo, default: 0] += 1 }
         }
-        return counts.max { $0.value < $1.value }?.key
+        return counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map(\.key)
     }
 
     /// "git@github.com:owner/name.git" or "https://github.com/owner/name" to "owner/name".
@@ -162,6 +163,7 @@ enum Detect {
           brand: g.([:brand, :name]), port: g.([:port]),
           phone: g.([:alerts, :phone]), via: g.([:alerts, :via]),
           repo: g.([:github, :repo]), branch: g.([:github, :branch]),
+          repos: Enum.map(List.wrap(g.([:github, :repos])), fn %{repo: r} -> r; r -> r end),
           gate: g.([:github, :gate_workflow]), dev: g.([:github, :dev_deploy]),
           prod: g.([:github, :prod_deploy]),
           dev_profile: g.([:dev_power, :aws_profile]), prod_profile: g.([:builds, :prod_profile]),

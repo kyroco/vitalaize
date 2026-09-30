@@ -35,6 +35,12 @@ struct Choices: Codable {
     var boardName: String = "Kyroco"
     var port: Int = 4747
     var repo: String = ""
+    /// The other repositories the board follows, after `repo`. Optional so
+    /// choices saved before several repositories still load.
+    var otherRepos: [String]? = nil
+    /// The repositories an earlier settings file listed. While the list stays
+    /// the same, that file's own entries (and any settings of their own) stay.
+    var importedRepos: [String]? = nil
     var branch: String = "main"
     var gateWorkflow: String = ""
     var devWorkflow: String = ""
@@ -135,8 +141,12 @@ enum Setup {
             if let v = old["korium"] as? Bool { c.korium = v }
             if let v = old["codex"] as? Bool { c.codex = v }
             if let dirs = old["dirs"] as? [String], !dirs.isEmpty { c.claudeFolders = dirs }
-            if let repo = str("repo") {
+            // A file lists several repositories in `repos`, or names one in `repo`.
+            let listed = (old["repos"] as? [String] ?? []).filter { !$0.isEmpty }
+            if let repo = listed.first ?? str("repo") {
                 c.repo = repo
+                c.otherRepos = Array(listed.dropFirst())
+                c.importedRepos = listed.isEmpty ? [repo] : listed
                 c.branch = str("branch") ?? c.branch
                 c.gateWorkflow = str("gate") ?? ""
                 c.devWorkflow = str("dev") ?? ""
@@ -146,8 +156,13 @@ enum Setup {
             }
         }
 
-        if let repo = Detect.githubRepo(folders: c.claudeFolders) {
+        // The repositories the sessions work in: the busiest first, and its
+        // workflows fill in the questions; the rest follow it. Six at most,
+        // since each costs about 600 GitHub calls an hour of the 5,000 allowed.
+        let found = Detect.githubRepos(folders: c.claudeFolders)
+        if let repo = found.first {
             c.repo = repo
+            c.otherRepos = Array(found.dropFirst().prefix(5))
             c.branch = Detect.defaultBranch(repo: repo) ?? "main"
             let guess = Detect.guessWorkflows(Detect.workflows(repo: repo))
             c.gateWorkflow = guess.gate
@@ -195,6 +210,14 @@ enum Setup {
             github.append("deploy_workflows: [\(deploys)]")
             github.append("lanes: [\(lanes)]")
         }
+        // Every repository goes in `repos`, even one: the board keeps the
+        // settings an imported file gave a repository only while its name is
+        // still in the list. An imported file's own list is kept while it
+        // stays the same.
+        let repos = [c.repo] + (c.otherRepos ?? []).filter { !$0.isEmpty && $0 != c.repo }
+        if !(c.importedSettings != nil && c.importedRepos == repos) {
+            github.append("repos: [\(repos.map(ex).joined(separator: ", "))]")
+        }
 
         let answers = """
         %{
@@ -217,7 +240,7 @@ enum Setup {
 
         let header = """
         # Written by the VitalAIze app. Change the board from its settings page
-        # (Settings, top right of the Claude sessions panel), or run the app
+        # (Settings, at the top beside the clock), or run the app
         # again and pick Reconfigure. Edits here are kept until the next
         # Reconfigure.
 
@@ -226,9 +249,10 @@ enum Setup {
         if c.importedSettings != nil {
             return header + """
             # Your earlier settings file is the base; the answers below win.
+            # A repository the base gives settings of its own keeps them.
             {base, _} = Code.eval_file(Path.join(__DIR__, "settings.imported.exs"))
 
-            Wallboard.Settings.merge(
+            Wallboard.Settings.apply_overrides(
               base,
               \(answers)
             )

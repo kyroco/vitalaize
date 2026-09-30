@@ -135,7 +135,12 @@ defmodule Wallboard.Settings do
         }
       }
     },
+    # Everything here applies to each repository in `repos`; an entry there
+    # can be a map that changes any of it for that one repository. With
+    # `repos` empty the board follows `repo` alone, as files from before
+    # several repositories do.
     github: %{
+      repos: [],
       repo: "your-org/your-repo",
       branch: "main",
       poll_seconds: 30,
@@ -276,7 +281,7 @@ defmodule Wallboard.Settings do
 
     settings =
       settings
-      |> merge(saved_overrides(settings))
+      |> apply_overrides(saved_overrides(settings))
       |> normalize()
 
     :persistent_term.put(@key, settings)
@@ -351,7 +356,8 @@ defmodule Wallboard.Settings do
        ]},
       {"GitHub",
        [
-         {[:github, :repo], "Repository", :string, false, "owner/name"},
+         {[:github, :repos], "Repositories", :repos, false,
+          "owner/name, one per line. Dev and Prod follow the first one"},
          {[:github, :branch], "Main branch", :string, false, nil},
          {[:github, :gate_workflow], "Gate workflow file", :string, false, nil},
          {[:github, :dev_deploy], "Dev deploy workflow file", :string, false, nil},
@@ -387,7 +393,7 @@ defmodule Wallboard.Settings do
 
       case parse(type, raw, path) do
         {:ok, value} ->
-          if value == get_in(base, path),
+          if value == current(base, path, type),
             do: {over, errors},
             else: {put_path(over, path, value), errors}
 
@@ -401,7 +407,20 @@ defmodule Wallboard.Settings do
     end
   end
 
+  @doc "A field's value as the settings page shows it: the repositories by name."
+  def current(settings, [:github, :repos], :repos), do: repo_names(settings)
+  def current(settings, path, _type), do: get_in(settings, path)
+
   defp parse(:boolean, raw, _path), do: {:ok, raw in ["true", "on"]}
+
+  defp parse(:repos, raw, _path) do
+    names = raw |> String.split(~r/[\s,]+/) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
+    case Enum.reject(names, &repo_name?/1) do
+      [] -> {:ok, names}
+      [bad | _] -> {:error, "#{bad} is not owner/name"}
+    end
+  end
 
   defp parse(:integer, raw, _path) do
     case Integer.parse(String.trim(raw)) do
@@ -425,9 +444,6 @@ defmodule Wallboard.Settings do
     cond do
       value == "" ->
         {:ok, nil}
-
-      path == [:github, :repo] and not (value =~ ~r{^[\w.-]+/[\w.-]+$}) ->
-        {:error, "use owner/name"}
 
       path in [[:dev_power, :aws_profile], [:builds, :prod_profile]] and
           not (value =~ ~r/^[\w.-]+$/) ->
@@ -492,8 +508,9 @@ defmodule Wallboard.Settings do
 
   # Only the page's own keys become atoms, so a stored value can never make
   # new atoms.
-  defp atomize(map) do
-    for {_, fs} <- editable(), {path, _, _, _, _} <- fs, reduce: %{} do
+  @doc false
+  def atomize(map) do
+    for {_, fs} <- editable(), {path, _, _, _, _} <- fs, reduce: legacy_repo(map) do
       acc ->
         keys = Enum.map(path, &Atom.to_string/1)
 
@@ -503,6 +520,94 @@ defmodule Wallboard.Settings do
         end
     end
   end
+
+  # Before several repositories, the page saved one as github.repo. It stays
+  # that, so a board updated in place keeps following it just as before: it
+  # stands in for the file's `repo`, and a file that lists `repos` wins. The
+  # page shows it, and saving the page turns it into the list.
+  defp legacy_repo(%{"github" => %{"repo" => repo}}) when is_binary(repo) do
+    if repo_name?(repo), do: %{github: %{repo: repo}}, else: %{}
+  end
+
+  defp legacy_repo(_), do: %{}
+
+  @doc """
+  Lays the settings page's saved values over the file's. The page saves
+  repositories by name; one the file describes with a map of its own
+  settings keeps them.
+  """
+  def apply_overrides(file, overrides), do: file |> merge(overrides) |> keep_repo_details(file)
+
+  defp keep_repo_details(settings, file) do
+    details =
+      for %{repo: name} = entry when is_binary(name) <- List.wrap(get_in(file, [:github, :repos])),
+          into: %{},
+          do: {String.trim(name), entry}
+
+    update_in(settings, [:github, :repos], fn repos ->
+      Enum.map(List.wrap(repos), fn
+        name when is_binary(name) -> Map.get(details, name, name)
+        entry -> entry
+      end)
+    end)
+  end
+
+  @doc """
+  Every repository the board follows, in settings order, each as the full
+  GitHub settings for it: the shared ones with that entry's own laid over
+  them. The first is the one Dev and Prod read. With `repos` empty it is
+  `repo` alone.
+  """
+  def github_repos(settings) do
+    shared = Map.drop(settings.github, [:repos])
+
+    settings.github
+    |> repo_entries()
+    |> Enum.map(fn
+      name when is_binary(name) ->
+        Map.put(shared, :repo, String.trim(name))
+
+      %{repo: name} = entry when is_binary(name) ->
+        shared |> merge(entry) |> Map.put(:repo, String.trim(name))
+
+      _ ->
+        nil
+    end)
+    |> Enum.filter(&(&1 && repo_name?(&1.repo)))
+    |> Enum.uniq_by(& &1.repo)
+  end
+
+  @doc """
+  Entries the board leaves out because they are not owner/name, as written:
+  from `repos`, or `repo` when `repos` is empty.
+  """
+  def skipped_repos(settings) do
+    settings.github
+    |> repo_entries()
+    |> Enum.map(fn
+      %{repo: name} when is_binary(name) -> String.trim(name)
+      name when is_binary(name) -> String.trim(name)
+      other -> other
+    end)
+    |> Enum.reject(&repo_name?/1)
+    |> Enum.map(fn
+      name when is_binary(name) -> name
+      other -> inspect(other)
+    end)
+  end
+
+  defp repo_entries(gh) do
+    case List.wrap(gh[:repos]) do
+      [] -> List.wrap(gh[:repo])
+      list -> list
+    end
+  end
+
+  @doc "The names (owner/name) of the repositories the board follows."
+  def repo_names(settings), do: settings |> github_repos() |> Enum.map(& &1.repo)
+
+  @doc "True for an owner/name repository name."
+  def repo_name?(name), do: is_binary(name) and name =~ ~r{^[\w.-]+/[\w.-]+$}
 
   defp has_path?(map, [k]), do: is_map(map) and Map.has_key?(map, k)
   defp has_path?(map, [k | rest]), do: is_map(map) and has_path?(Map.get(map, k), rest)

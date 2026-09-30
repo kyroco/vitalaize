@@ -198,6 +198,7 @@ defmodule Wallboard.Sources.Claude do
       account: account,
       kind: agent.kind,
       folder: agent.cwd && Path.basename(agent.cwd),
+      cwd: agent.cwd,
       status: status,
       task: task(agent, job),
       why: if(status == :needs, do: why(agent, job), else: nil),
