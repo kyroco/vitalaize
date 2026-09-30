@@ -89,7 +89,8 @@ or remove it.
    after you log out too, run `loginctl enable-linger $USER` once.
 
 What differs from a Mac: there is no setup app, so you edit `settings.exs`;
-text alerts need a Mac (they use Messages); and the database lives in
+text alerts by Messages need a Mac, so use Slack, ntfy or Pushover
+instead (see Alerts below); and the database lives in
 `~/.local/share/vitalaize`. To have other machines find the hub on the
 network by themselves, install `avahi-utils` on the hub; without it,
 collectors type the hub's address. A Linux machine can be a collector too:
@@ -109,7 +110,8 @@ needs `python3` and `curl`.
 - Optional: the AWS CLI (`aws`) with read-only profiles, to show whether dev
   is awake and whether prod runs the same build as dev.
 - Optional: New Relic and the 1Password CLI (`op`), for the production page.
-- Optional: the Messages app signed in, for text alerts.
+- Optional, for alerts: the Messages app signed in (Mac only), a Slack
+  incoming webhook, the ntfy app, or a Pushover account.
 
 ## Build from source
 
@@ -139,7 +141,22 @@ To build the Mac app and its installer yourself: `macos/build.sh`. With an
 Apple Developer ID it signs them, and with `--notary-profile NAME` it also
 notarizes them (see the top of the script).
 
-Run the tests with `mix test`.
+Run the tests with `mix test`. GitHub runs them too, on Linux and macOS, for
+every pull request.
+
+To make a release:
+
+1. Set the version in `mix.exs`, merge it, and push a tag for it from main,
+   like `git tag v0.3.0 && git push origin v0.3.0`.
+2. GitHub builds both Linux downloads on Ubuntu 22.04 (Intel and ARM), checks
+   that each one starts, and puts them on a draft release for that tag.
+3. Build the Mac installer on a Mac with `macos/build.sh` (it needs the
+   Developer ID), add it with `gh release upload v0.3.0 VitalAIze-0.3.0.pkg`,
+   then write the notes and publish the draft.
+
+Push the tag before making the release, so there is only the one draft. A
+published release only gets Linux downloads it does not have yet; to replace
+one, delete it from the release first.
 
 ## Settings you may want
 
@@ -148,11 +165,23 @@ Run the tests with `mix test`.
   your sessions ask you. Set `token` in `settings.exs` (or a board password on
   the Settings page); the first visit from each device then needs
   `/?token=<your token>` at the end of the address.
-- **Text alerts.** Set `alerts.phone` to your number. The Mac running the
-  board sends an iMessage from the Apple ID signed in there, once each time a
-  session starts waiting on you. The first time, macOS asks whether the board
-  may control Messages. If the number is not on iMessage, set `alerts.via` to
-  `"SMS"` (needs Text Message Forwarding on your iPhone).
+- **Alerts.** Once each time a session starts waiting on you, the board sends
+  an alert on every channel you set up, in `alerts` or on the Settings page:
+  - Messages (Mac only): set `phone` to your number. The Mac sends an iMessage
+    from the Apple ID signed in there. The first time, macOS asks whether the
+    board may control Messages. If the number is not on iMessage, set `via`
+    to `"SMS"` (needs Text Message Forwarding on your iPhone).
+  - Slack: make an incoming webhook for a channel and set `slack_webhook` to
+    its address.
+  - ntfy (free, iPhone or Android): pick a topic name that is hard to guess,
+    subscribe to it in the ntfy app, and set `ntfy_topic`. Set `ntfy_server`
+    if you run your own.
+  - Pushover: set `pushover_user` to your user key, and `pushover_token` to
+    the API token of an app you make at pushover.net.
+
+  Alerts cover the Claude sessions on the machine that runs the board. A
+  hub does not alert for sessions on the Macs that send it their sessions,
+  since those arrive only when a turn ends.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
   rather than per-token prices, so its cards show tokens and plan use. Set
   `codex: %{enabled: false}` to leave it out.
@@ -177,7 +206,7 @@ Run the tests with `mix test`.
 
   Then open Codex, type `/hooks` and trust them: Codex skips a new or
   changed hook until you do. A Codex card then shows **Needs you** (and
-  sends a text, if alerts are on) when Codex asks to run something, or when
+  sends an alert, if alerts are on) when Codex asks to run something, or when
   a turn ends on a question, meaning the last paragraph of its reply ends in
   a question mark. It clears when Codex moves on or you reply. The card names
   only the program Codex wants to run, never the whole command, since that
@@ -233,9 +262,11 @@ say "Loading…" beside a section while its history is still coming in.
   missing it or has a different one.
 - **A panel shows "stale" in red.** It says why. Usually `gh` or `claude` is
   signed out, or the Mac lost its connection.
-- **No texts.** Check `alerts.phone`, that Messages is signed in, and that
-  macOS allowed the board to control Messages (System Settings, Privacy &
-  Security, Automation).
+- **No alerts.** The board's log says which channel failed and why. For
+  Messages, check `alerts.phone`, that Messages is signed in, and that macOS
+  allowed the board to control Messages (System Settings, Privacy & Security,
+  Automation). For Slack, ntfy or Pushover, check the address, topic or keys,
+  and that the board's machine can reach the internet.
 
 ## License
 

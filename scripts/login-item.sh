@@ -12,6 +12,9 @@ set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 REL="$ROOT/_build/prod/rel/wallboard"
+# The board's process shows its folder with symlinks resolved, so resolve
+# them here too, or a board in a linked folder is never found to stop.
+[ -d "$REL" ] && REL=$(cd "$REL" && pwd -P)
 SETTINGS="$ROOT/settings.exs"
 LABEL=local.wallboard
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -23,9 +26,15 @@ case "$1" in
     [ -x "$REL/bin/wallboard" ] || { echo "Build the release first: MIX_ENV=prod mix release"; exit 1; }
     [ -f "$SETTINGS" ] || { echo "No settings.exs in $ROOT. Copy settings.example.exs and fill it in."; exit 1; }
 
-    # A board started by hand holds the port, so stop it first.
-    "$REL/bin/wallboard" stop >/dev/null 2>&1 || true
+    # A board started by hand holds the port, so stop any board running from
+    # this folder first. It is found by its process, since boards run without
+    # Erlang remote connections and so cannot be asked to stop.
     launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+    for pid in $(pgrep -f 'bin/beam' || true); do
+      case "$(ps -o args= -p "$pid")" in
+        "$REL"/erts-*/bin/beam*) kill "$pid" 2>/dev/null || true ;;
+      esac
+    done
     sleep 2
 
     mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
