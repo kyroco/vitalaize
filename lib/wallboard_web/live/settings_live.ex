@@ -12,16 +12,18 @@ defmodule WallboardWeb.SettingsLive do
   use WallboardWeb, :live_view
 
   alias Wallboard.{Settings, Store}
-  alias Wallboard.Archive.{Collector, MachineKeys}
+  alias Wallboard.Archive.{Collector, Ingest, MachineKeys}
   alias WallboardWeb.IngestController
 
   @impl true
   def mount(_params, _session, socket) do
-    allowed? = connected?(socket) and allowed?(socket)
+    local? = connected?(socket) and local?(socket)
+    allowed? = connected?(socket) and (local? or Settings.get().token != nil)
 
     socket =
       assign(socket,
         allowed?: allowed?,
+        local?: local?,
         connected?: connected?(socket),
         errors: %{},
         notice: nil,
@@ -34,16 +36,14 @@ defmodule WallboardWeb.SettingsLive do
     {:ok, if(allowed?, do: load(socket), else: socket)}
   end
 
-  defp allowed?(socket) do
-    settings = Settings.get()
-
-    local? =
-      case get_connect_info(socket, :peer_data) do
-        %{address: addr} -> this_mac?(addr)
-        _ -> false
-      end
-
-    local? or settings.token != nil
+  # The connect key, and taking a machine's key away, stay on this Mac: the
+  # board's password travels over plain http, so another device that has
+  # it may not be the owner's.
+  defp local?(socket) do
+    case get_connect_info(socket, :peer_data) do
+      %{address: addr} -> this_mac?(addr)
+      _ -> false
+    end
   end
 
   @doc """
@@ -81,6 +81,10 @@ defmodule WallboardWeb.SettingsLive do
       values: values(settings),
       hub_url: IngestController.hub_url(settings),
       key: if(settings.archive.enabled, do: MachineKeys.connect_key()),
+      install_sha:
+        if(settings.archive.enabled,
+          do: sha256(Ingest.install_script(IngestController.hub_url(settings)))
+        ),
       keys: if(settings.archive.enabled, do: MachineKeys.list(), else: []),
       old_tries: if(settings.archive.enabled, do: MachineKeys.old_tries(), else: []),
       machines: machines(settings),
@@ -137,6 +141,10 @@ defmodule WallboardWeb.SettingsLive do
   @impl true
   def handle_event(_event, _params, %{assigns: %{allowed?: false}} = socket),
     do: {:noreply, socket}
+
+  def handle_event(event, _params, %{assigns: %{local?: false}} = socket)
+      when event in ~w(toggle_key new_key disconnect),
+      do: {:noreply, socket}
 
   def handle_event("save", %{"s" => values}, socket) do
     before = Settings.get()
@@ -293,17 +301,22 @@ defmodule WallboardWeb.SettingsLive do
           background, so Claude never waits on it.
         </p>
         <p class="detail-note">
-          The connect key below never leaves the machine you paste it on. Each request that machine
-          sends is signed with its own key instead, so nobody on the network can read a key or send
-          as that machine. The sessions themselves still cross the network as they are.
+          The command checks the script it downloads before running it, then asks for the connect
+          key below. Paste it there, where it stays hidden and out of Terminal's history. The key
+          never leaves that machine: every request it sends is signed with a key of its own instead.
+          The sessions themselves still cross the network as they are.
         </p>
         <p class="detail-note">
           When that Mac has Codex, its Codex sessions come too, through two hooks in Codex's
           hooks.json. Codex runs a new hook only once you trust it, so type /hooks in Codex there
           afterwards and trust the two wallboard-upload.sh hooks.
         </p>
-        <pre class="settings-code">{install_command(@hub_url, if(@show_key?, do: @key, else: "••••••••"))}</pre>
-        <div class="row">
+        <pre class="settings-code">{install_command(@hub_url, @install_sha)}</pre>
+        <p :if={!@local?} class="detail-note">
+          Open this page on the Mac that runs the board to see the connect key or disconnect a machine.
+        </p>
+        <pre :if={@local?} class="settings-code">Connect key: {if @show_key?, do: @key, else: "••••••••"}</pre>
+        <div :if={@local?} class="row">
           <button class="link-button" phx-click="toggle_key">
             {if @show_key?, do: "Hide key", else: "Show key"}
           </button>
@@ -355,7 +368,12 @@ defmodule WallboardWeb.SettingsLive do
             <td>{day(k.created_at)}</td>
             <td>{if k.last_used_at, do: day(k.last_used_at), else: "not yet"}</td>
             <td>
-              <button class="link-button" phx-click="disconnect" phx-value-key={k.key_id}>
+              <button
+                :if={@local?}
+                class="link-button"
+                phx-click="disconnect"
+                phx-value-key={k.key_id}
+              >
                 {if @confirm_disconnect == k.key_id,
                   do: "Tap again to disconnect",
                   else: "Disconnect"}
@@ -443,11 +461,18 @@ defmodule WallboardWeb.SettingsLive do
   end
 
   @doc """
-  The command another machine runs to connect. The key goes to the script
-  on that machine, never over the network: the script only signs with it.
+  The command another machine runs to connect. The script comes over plain
+  http, so the command runs it only when its SHA-256 is `sha`; anyone on
+  the network who changed it would otherwise be handed the connect key.
+  The script then asks for the key.
   """
-  def install_command(hub, key),
-    do: ~s(curl -fsS #{hub}/ingest/install.sh | WALLBOARD_KEY="#{key}" sh)
+  def install_command(hub, sha) do
+    ~s[f=$(mktemp) && curl -fsSo "$f" #{hub}/ingest/install.sh && ] <>
+      ~s[if test "$( (sha256sum || shasum -a 256) < "$f" 2>/dev/null | cut -c1-64)" = #{sha}; ] <>
+      ~s[then sh "$f"; else echo "That is not the hub's connect script." >&2; fi; rm -f "$f"]
+  end
+
+  defp sha256(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
 
   defp day(unix), do: Calendar.strftime(DateTime.from_unix!(unix), "%b %-d")
 end

@@ -110,8 +110,8 @@ instead (see Alerts below); and the database lives in
 network by themselves, install `avahi-utils` on the hub; without it,
 collectors type the hub's address. A Linux machine can be a collector too:
 run the command from the hub's Settings page (Connect another machine)
-there. It needs `python3`, `curl`, and `perl` or `openssl` to sign what it
-sends. Like the app, the command hooks up Codex too when
+there, and paste the connect key when it asks. It needs `python3` and
+`curl`. Like the app, the command hooks up Codex too when
 the machine has it, and says to trust the new hooks with `/hooks` in Codex.
 
 ## What you need
@@ -201,17 +201,26 @@ one, delete it from the release first.
   made on that machine from the connect key on the hub's Settings page. No
   key is ever sent over the network: each upload and each "waiting" message
   is signed with the machine's key and stamped with the time, so nobody on
-  the network can read a key, send as one of your machines, or send an old
-  request again. Settings lists every connected machine, and Disconnect
-  takes one machine's key away without touching the others. Making a new
-  connect key leaves connected machines as they are. Both clocks need to be
+  the network can read a key, send as one of your machines, change what it
+  sends, or send an old request again. The connect command checks the
+  script it downloads before running it, and asks for the connect key at a
+  prompt that keeps it hidden and out of Terminal's history. The connect
+  key shows, and machines can be disconnected, only on the hub's own Mac.
+  Settings lists every connected machine, and Disconnect takes one
+  machine's key away without touching the others. Both clocks need to be
   right to within five minutes, which they are when the machines set their
   time automatically. The hub refuses an upload that would unpack to more
-  than 512 MB. One limit remains: the hub is reached over plain http, so
-  the session transcripts themselves cross your network unencrypted, where
-  anyone on it could read them. Connect machines only on a network you
-  trust. (https would mean self-signed certificates that Safari on the iPad
-  warns about, so the board does not use it.)
+  than 512 MB, and reads at most two uploads at once.
+
+  What this does not cover. The hub is reached over plain http, so the
+  session transcripts themselves cross your network unencrypted, where
+  anyone on it could read them: connect machines only on a network you
+  trust. (https would mean self-signed certificates that Safari on the
+  iPad warns about, so the board does not use it.) And treat the connect
+  key like a password: someone who has it, and who also records your
+  network while a machine connects or sends, can work out that machine's
+  key. If it may have been seen, make a new connect key, disconnect each
+  machine and connect it again.
 - **Alerts.** Once each time a session starts waiting on you, the board sends
   an alert on every channel you set up, in `alerts` or on the Settings page:
   - Messages (Mac only): set `phone` to your number. The Mac sends an iMessage

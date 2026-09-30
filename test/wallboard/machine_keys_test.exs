@@ -19,8 +19,10 @@ defmodule Wallboard.MachineKeysTest do
     old = Settings.get()
     on_exit(fn -> :persistent_term.put({Wallboard.Settings, :settings}, old) end)
     start_supervised!({Store, path: ":memory:"})
-    Settings.put(%{archive: %{enabled: true, path: Path.join(dir, "wallboard.db")}})
-    TestHub.serve()
+    url = TestHub.serve()
+    # The address the scripts it serves name, as a real hub's settings give it.
+    Settings.put(%{archive: %{enabled: true, path: Path.join(dir, "wallboard.db"), hub_url: url}})
+    url
   end
 
   # A .tar.gz that unpacks to about `mb` megabytes of zeros, made small: one
@@ -191,12 +193,71 @@ defmodule Wallboard.MachineKeysTest do
       refute File.exists?(Path.join(ctx.claude, "settings.json"))
     end
 
-    test "the connect command needs the key it is given", ctx do
+    test "with no key given and no terminal to ask at, nothing changes", ctx do
       assert {out, 1} = sh(ctx, [ctx.install], [])
-      assert out =~ "Copy the whole connect command"
+      assert out =~ "No connect key"
+      assert MachineKeys.list() == []
     end
 
-    test "with no Digest::SHA for perl, openssl signs instead", ctx do
+    test "a key pasted with spaces around it still connects", ctx do
+      assert {_, 0} = connect(ctx, "  #{MachineKeys.connect_key()} \n")
+      assert [_] = MachineKeys.list()
+    end
+
+    test "the command from the settings page runs the script only when it is the hub's", ctx do
+      sha = :crypto.hash(:sha256, Ingest.install_script(ctx.url)) |> Base.encode16(case: :lower)
+      key = [{"WALLBOARD_KEY", MachineKeys.connect_key()}]
+
+      assert {out, _} =
+               sh(
+                 ctx,
+                 ["-c", SettingsLive.install_command(ctx.url, String.duplicate("0", 64))],
+                 key
+               )
+
+      assert out =~ "That is not the hub's connect script."
+      assert MachineKeys.list() == []
+
+      assert {out, 0} = sh(ctx, ["-c", SettingsLive.install_command(ctx.url, sha)], key)
+      assert out =~ "Connected as"
+      assert [_] = MachineKeys.list()
+    end
+
+    test "each script comes signed with the connect key, for the Mac app to check", ctx do
+      for name <- ~w(upload.sh codex-upload.sh install.sh) do
+        {out, 0} = System.cmd("curl", ["-s", "-D", "-", "#{ctx.url}/ingest/#{name}"])
+        [head, body] = String.split(out, "\r\n\r\n", parts: 2)
+        [_, sig] = Regex.run(~r/x-vitalaize-script-signature: ([0-9a-f]{64})/i, head)
+        assert sig == MachineKeys.hmac(MachineKeys.connect_key(), "vitalaize script\n" <> body)
+      end
+    end
+
+    test "without python3 or osascript it stops before the hub lists the machine", ctx do
+      for tool <- ~w(dirname od tr cut mktemp cat head date printf rm mv chmod mkdir cp) do
+        if path = System.find_executable(tool), do: File.ln_s!(path, Path.join(ctx.bin, tool))
+      end
+
+      for tool <- ~w(curl perl) do
+        File.ln_s!(System.find_executable(tool), Path.join(ctx.bin, tool))
+      end
+
+      {out, 1} =
+        System.cmd("sh", [ctx.install],
+          env: [
+            {"HOME", ctx.dir},
+            {"CLAUDE_CONFIG_DIR", ctx.claude},
+            {"CODEX_HOME", ctx.codex},
+            {"WALLBOARD_KEY", MachineKeys.connect_key()},
+            {"PATH", ctx.bin}
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert out =~ "Needs python3"
+      assert MachineKeys.list() == []
+    end
+
+    test "with no Digest::SHA for perl, python3 signs instead", ctx do
       # A perl that fails, as one without Digest::SHA would.
       File.write!(Path.join(ctx.bin, "perl"), "#!/bin/sh\nexit 2\n")
       File.chmod!(Path.join(ctx.bin, "perl"), 0o755)
@@ -230,12 +291,128 @@ defmodule Wallboard.MachineKeysTest do
     end
   end
 
+  describe "signed requests" do
+    # A request as the hub sees it, signed at `time` with `key`.
+    defp signed_conn(target, body, key_id, key, time) do
+      [path, query] = String.split(target, "?")
+      nonce = "0123456789abcdef"
+      sig = MachineKeys.hmac(key, MachineKeys.message("POST", path, query, time, nonce, body))
+
+      Plug.Test.conn(:post, target, body)
+      |> Plug.Conn.put_req_header("x-vitalaize-key", key_id)
+      |> Plug.Conn.put_req_header("x-vitalaize-time", time)
+      |> Plug.Conn.put_req_header("x-vitalaize-nonce", nonce)
+      |> Plug.Conn.put_req_header("x-vitalaize-signature", sig)
+    end
+
+    test "a request whose body comes after its time ran out is refused, so it cannot be sent twice" do
+      dir = tmp_dir()
+      hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      t = System.os_time(:second)
+      conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
+
+      # Sent in time: taken once, then refused as sent before.
+      assert {:ok, parts} = MachineKeys.precheck(conn, t)
+      assert MachineKeys.verify(conn, parts, "{}", t) == {:ok, "laptop"}
+
+      assert {:error, 401, "this request was already sent once"} =
+               MachineKeys.verify(conn, parts, "{}", t)
+
+      # Its headers again just inside the window, its body just after: by
+      # then the first one's nonce is forgotten, so the time is what stops it.
+      assert {:ok, parts} = MachineKeys.precheck(conn, t + 295)
+
+      assert {:error, 401, "request time is more than 5 minutes" <> _} =
+               MachineKeys.verify(conn, parts, "{}", t + 305)
+    end
+
+    test "a machine disconnected while its upload is on the way is refused" do
+      dir = tmp_dir()
+      hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      t = System.os_time(:second)
+      conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
+
+      assert {:ok, parts} = MachineKeys.precheck(conn, t)
+      MachineKeys.revoke(id)
+
+      assert MachineKeys.verify(conn, parts, "{}", t) ==
+               {:error, 401, "this machine's key was taken away"}
+    end
+
+    test "a connect request with a form body is refused, so the form cannot change what was signed" do
+      dir = tmp_dir()
+      url = hub(dir)
+      {victim, _} = Fixtures.connect_machine(Path.join(dir, "v"), "victim")
+      target = "/ingest/connect?machine=alpha&key=#{String.duplicate("b", 32)}"
+      t = to_string(System.os_time(:second))
+      nonce = "0123456789abcdef"
+
+      sig =
+        MachineKeys.hmac(
+          MachineKeys.connect_key(),
+          MachineKeys.message(
+            "POST",
+            "/ingest/connect",
+            String.split(target, "?") |> List.last(),
+            t,
+            nonce,
+            ""
+          )
+        )
+
+      {out, 0} =
+        System.cmd("curl", [
+          "-s",
+          "-w",
+          "\\n%{http_code}",
+          "-H",
+          "Content-Type: application/x-www-form-urlencoded",
+          "-H",
+          "X-Vitalaize-Key: connect",
+          "-H",
+          "X-Vitalaize-Time: #{t}",
+          "-H",
+          "X-Vitalaize-Nonce: #{nonce}",
+          "-H",
+          "X-Vitalaize-Signature: #{sig}",
+          "--data-binary",
+          "machine=victim&replaces=#{victim}",
+          url <> target
+        ])
+
+      assert out == "send the body as data, not as a form\n\n400"
+      assert [%{key_id: ^victim, machine: "victim"}] = MachineKeys.list()
+    end
+
+    test "only two uploads are read at once; the next is turned away to come again" do
+      dir = tmp_dir()
+      url = hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      slots = Ingest.upload_slots()
+      :atomics.put(slots, 1, 2)
+      on_exit(fn -> :atomics.put(slots, 1, 0) end)
+
+      assert {"503", "the hub is busy with other uploads" <> _} =
+               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "x", id, key)
+
+      :atomics.put(slots, 1, 0)
+
+      assert {"422", "not a .tar.gz"} =
+               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "x", id, key)
+
+      assert :atomics.get(slots, 1) == 0
+    end
+  end
+
   describe "the settings page" do
-    defp page do
+    defp page(local? \\ true) do
       socket = %Phoenix.LiveView.Socket{
         assigns: %{
           __changed__: %{},
           allowed?: true,
+          local?: local?,
           connected?: true,
           errors: %{},
           notice: nil,
@@ -278,17 +455,40 @@ defmodule Wallboard.MachineKeysTest do
       assert socket.assigns.notice =~ "laptop is disconnected"
     end
 
-    test "the connect command passes the key to the script, and machines on the old key are listed" do
+    test "the connect command holds no key, and machines on the old key are listed" do
       dir = tmp_dir()
       hub(dir)
+      Store.put_session(%{machine: "old-mac", session_id: @sid})
       MachineKeys.note_old_try("old-mac")
+      # A name the board has never had sessions from is not listed.
+      MachineKeys.note_old_try("made-up")
       page = html(page())
 
       assert page =~ "Machines to connect again"
       assert page =~ "old-mac"
+      refute page =~ "made-up"
+      refute page =~ MachineKeys.connect_key()
+      refute SettingsLive.install_command("http://hub:4747", "abc") =~ MachineKeys.connect_key()
+    end
 
-      assert SettingsLive.install_command("http://hub:4747", "k") ==
-               ~s(curl -fsS http://hub:4747/ingest/install.sh | WALLBOARD_KEY="k" sh)
+    test "another device, even with the board's password, cannot see the key or disconnect" do
+      dir = tmp_dir()
+      hub(dir)
+      {laptop, _} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      socket = page(false)
+
+      for event <- ~w(toggle_key new_key) do
+        assert {:noreply, ^socket} = SettingsLive.handle_event(event, %{}, socket)
+      end
+
+      {:noreply, socket} = SettingsLive.handle_event("disconnect", %{"key" => laptop}, socket)
+      {:noreply, socket} = SettingsLive.handle_event("disconnect", %{"key" => laptop}, socket)
+      assert [_] = MachineKeys.list()
+
+      page = html(socket)
+      assert page =~ "Open this page on the Mac that runs the board"
+      refute page =~ ~s(phx-click="disconnect")
+      refute page =~ MachineKeys.connect_key()
     end
   end
 end

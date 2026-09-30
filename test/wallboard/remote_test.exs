@@ -689,7 +689,11 @@ defmodule Wallboard.RemoteTest do
     test "a machine still on the old shared key is turned away and listed to connect again",
          ctx do
       ctx.settings.("the-hub")
-      Store.put_meta("old_shared_key", "the-old-shared-key")
+      # As a board from 0.2.0 kept its shared key, with a session saved
+      # from the machine that used it. No connect key is made first, so
+      # the old key is spotted from the very first request.
+      Store.put_meta("ingest_token", "the-old-shared-key")
+      Store.put_session(%{machine: "old-mac", session_id: @sid})
 
       bearer = fn key ->
         Fixtures.signed_post(ctx.hub, "/ingest/status?machine=old-mac", "{}", nil, nil,

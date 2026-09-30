@@ -43,6 +43,23 @@ defmodule Wallboard.Archive.Ingest do
   def max_unpacked, do: Application.get_env(:wallboard, :max_unpacked, @max_unpacked)
 
   @doc """
+  A counter of the uploads being read right now, made on first use. Two
+  first uses at once may each make one; the one that loses is dropped,
+  which at worst lets one extra upload in, once.
+  """
+  def upload_slots do
+    case :persistent_term.get({__MODULE__, :slots}, nil) do
+      nil ->
+        ref = :atomics.new(1, signed: true)
+        :persistent_term.put({__MODULE__, :slots}, ref)
+        ref
+
+      ref ->
+        ref
+    end
+  end
+
+  @doc """
   True for a machine or account name safe to use in a folder name. A name
   of only dots is not one: "." and ".." would reach outside the inbox.
   Nothing may follow the name, not even a newline.
@@ -344,12 +361,12 @@ defmodule Wallboard.Archive.Ingest do
     # of this script's own time. A failed send is tried again next time.
     HUB="#{hub_url}"
     #{signing()}
-    # This machine's key id, the machine name it was made for, and the key,
-    # from connecting. Without them there is nothing to send with.
-    KEYFILE="$(dirname "$0")/wallboard-key"
-    [ -r "$KEYFILE" ] || exit 0
-    { read -r KEY_ID; read -r machine; read -r KEY; } < "$KEYFILE"
-    [ -n "$KEY" ] || exit 0
+    # Without this machine's key there is nothing to send with. The hook's
+    # JSON is still read, so Claude never writes to a closed pipe.
+    if ! load_key; then
+      [ "$1" = --watch ] || cat >/dev/null
+      exit 0
+    fi
 
     # Milliseconds, so the hub can put "waiting" and "done waiting" back in
     # order when they arrive the other way round.
@@ -620,12 +637,9 @@ defmodule Wallboard.Archive.Ingest do
     # Codex reads a Stop hook's output as JSON.
     echo '{}'
 
-    # This machine's key id, the machine name it was made for, and the key,
-    # from connecting. Without them there is nothing to send with.
-    KEYFILE="$(dirname "$0")/wallboard-key"
-    [ -r "$KEYFILE" ] || exit 0
-    { read -r KEY_ID; read -r machine; read -r KEY; } < "$KEYFILE"
-    [ -n "$KEY" ] || exit 0
+    # Without this machine's key there is nothing to send with. The hook's
+    # JSON is still read, so Codex never writes to a closed pipe.
+    load_key || { cat >/dev/null; exit 0; }
 
     input=$(cat)
     path=$(printf '%s' "$input" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
@@ -708,12 +722,14 @@ defmodule Wallboard.Archive.Ingest do
 
   @doc """
   The shell functions that sign a request to the hub, shared by the
-  scripts: `signed_post <path?query> <type> <body file> [curl options]`
-  posts the file signed with $KEY_ID and $KEY, as MachineKeys.verify/4
-  checks it. perl's Digest::SHA does the hashing, with openssl where perl
-  lacks it. perl is handed the key in its environment, which other users
-  of the machine cannot see; openssl only takes it as an argument, which
-  they can, for as long as it runs.
+  scripts: `load_key` reads this machine's key from the wallboard-key file
+  beside the script, and `signed_post <path?query> <type> <body file>
+  [curl options]` posts the file signed with $KEY_ID and $KEY, as
+  MachineKeys.verify/4 checks it. perl's Digest::SHA makes the signature,
+  or python3 where perl lacks it (a Mac always has the first; Linux
+  collectors need python3 anyway). Either is handed the key in its
+  environment, which other users of the machine cannot see, never as an
+  argument, which they can.
   """
   def signing do
     ~S"""
@@ -722,7 +738,8 @@ defmodule Wallboard.Archive.Ingest do
       _h=$(printf '%s' "$2" | WALLBOARD_HMAC_KEY="$1" perl -MDigest::SHA=hmac_sha256_hex \
         -e 'local $/; print hmac_sha256_hex(scalar(<STDIN>), $ENV{WALLBOARD_HMAC_KEY})' 2>/dev/null) || _h=""
       case "$_h" in ''|*[!0-9a-f]*)
-        _h=$(printf '%s' "$2" | openssl dgst -sha256 -hmac "$1" 2>/dev/null | sed 's/^.*= *//') ;;
+        _h=$(printf '%s' "$2" | WALLBOARD_HMAC_KEY="$1" python3 -c 'import hashlib, hmac, os, sys
+    sys.stdout.write(hmac.new(os.environ["WALLBOARD_HMAC_KEY"].encode(), sys.stdin.buffer.read(), hashlib.sha256).hexdigest())' 2>/dev/null) || _h="" ;;
       esac
       printf '%s' "$_h"
     }
@@ -730,9 +747,17 @@ defmodule Wallboard.Archive.Ingest do
     sha256_of() {
       _h=$(perl -MDigest::SHA -e 'print Digest::SHA->new(256)->addfile($ARGV[0])->hexdigest' "$1" 2>/dev/null) || _h=""
       case "$_h" in ''|*[!0-9a-f]*)
-        _h=$(openssl dgst -sha256 -r "$1" 2>/dev/null | cut -d' ' -f1) ;;
+        _h=$( (sha256sum || openssl dgst -sha256 -r) < "$1" 2>/dev/null | cut -c1-64) || _h="" ;;
       esac
       printf '%s' "$_h"
+    }
+    # This machine's key id, the machine name it was made for, and the key,
+    # from the wallboard-key file connecting left beside this script.
+    load_key() {
+      _keys="$(dirname "$0")/wallboard-key"
+      [ -r "$_keys" ] || return 1
+      { read -r KEY_ID; read -r machine; read -r KEY; } < "$_keys"
+      [ -n "$KEY" ]
     }
     # Posts the file $3, of type $2, to $1 on the hub, signed. The key itself
     # is never sent: the hub checks the signature with its own copy.
@@ -763,8 +788,10 @@ defmodule Wallboard.Archive.Ingest do
   Codex skips a new hook until the person trusts it with /hooks in Codex,
   so the script says to do that. It never marks the hooks trusted itself.
 
-  The script holds no key. The connect command hands it the connect key in
-  WALLBOARD_KEY, and it connects before it changes anything: it makes a
+  The script holds no key. It asks for the connect key at a prompt that
+  does not show it (or takes it from WALLBOARD_KEY, for scripts and
+  tests), so the key is not left in shell history. It connects before it
+  changes anything: it makes a
   random key id, sends the hub a request naming this machine and that id,
   signed with the connect key, and on the hub's yes works out this
   machine's own key from the two (MachineKeys.derive/2) and saves it in
@@ -782,14 +809,29 @@ defmodule Wallboard.Archive.Ingest do
     HUB="#{hub_url}"
     #{signing()}
     CONNECT_KEY="${WALLBOARD_KEY:-}"
+    if [ -z "$CONNECT_KEY" ] && (: < /dev/tty) 2>/dev/null; then
+      printf "Paste the connect key from the hub's Settings page (it stays hidden): " > /dev/tty
+      stty -echo < /dev/tty 2>/dev/null || true
+      read -r CONNECT_KEY < /dev/tty || CONNECT_KEY=""
+      stty echo < /dev/tty 2>/dev/null || true
+      printf '\\n' > /dev/tty
+    fi
+    # Spaces or a line end pasted with the key are not part of it.
+    CONNECT_KEY=$(printf '%s' "$CONNECT_KEY" | tr -d ' \\t\\r\\n')
     if [ -z "$CONNECT_KEY" ]; then
-      echo "Copy the whole connect command from the hub's Settings page: it gives this script the hub's key." >&2
+      echo "No connect key. It is on the hub's Settings page, under Connect another machine." >&2
       exit 1
     fi
     command -v curl >/dev/null 2>&1 || { echo "Needs curl." >&2; exit 1; }
+    # Checked before connecting, so the hub never lists a machine that
+    # could not be hooked up (see add_hooks below).
+    if ! command -v osascript >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+      echo "Needs python3, to add the hooks to Claude's settings." >&2
+      exit 1
+    fi
     # A known answer, to check this machine can sign at all.
     if [ "$(hmac k msg)" != bf1a0c1242929b6464a6c0a9ac6298a67e09bd1cd4ef1f182ce0141691fc17a0 ]; then
-      echo "Needs perl (with Digest::SHA) or openssl, to sign what it sends to the hub." >&2
+      echo "Needs perl (with Digest::SHA) or python3, to sign what it sends to the hub." >&2
       exit 1
     fi
 

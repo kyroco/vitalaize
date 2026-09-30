@@ -40,19 +40,15 @@ defmodule Wallboard.Archive.MachineKeys do
   def window, do: @window
 
   @doc """
-  The connect key, made on first use and then kept. A board that ran an
-  earlier version sent its shared key over the network with every upload,
-  so that key is kept aside (only to spot machines still using it) and a
-  new one is made.
+  The connect key, made on first use and then kept. It is never the shared
+  key a board from 0.2.0 or earlier made (kept as "ingest_token"), since
+  that one crossed the network with every upload; that one is only used to
+  spot machines still sending with it.
   """
   def connect_key do
     case Store.get_meta("connect_key") do
-      k when is_binary(k) ->
-        k
-
-      _ ->
-        if old = Store.get_meta("ingest_token"), do: Store.put_meta("old_shared_key", old)
-        new_connect_key()
+      k when is_binary(k) -> k
+      _ -> new_connect_key()
     end
   end
 
@@ -65,7 +61,7 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc "True when `given` is the shared key collectors used before 0.3.0."
   def old_shared_key?(given) when is_binary(given) do
-    case Store.get_meta("old_shared_key") do
+    case Store.get_meta("ingest_token") do
       old when is_binary(old) -> Plug.Crypto.secure_compare(given, old)
       _ -> false
     end
@@ -75,6 +71,9 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc "A machine's key, worked out from the connect key and its key id."
   def derive(connect_key, key_id), do: hmac(connect_key, "vitalaize machine key\n" <> key_id)
+
+  @doc "The HMAC of a script the hub serves, made with the connect key."
+  def script_signature(body), do: hmac(connect_key(), "vitalaize script\n" <> body)
 
   @doc "What a request's signature is made over."
   def message(method, path, query, time, nonce, body) do
@@ -98,9 +97,11 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc """
   The signed parts of a request, before its body is read: {:ok, parts} when
-  the headers are there, well formed and recent, and the key is known.
-  Checking this first means a stranger cannot make the board read a large
-  body.
+  the headers are there, well formed and recent, and the key is known;
+  {:error, :unsigned} when there are none; otherwise {:error, status,
+  reason}. Key ids are not secret, so this alone does not stop a stranger
+  from sending a large body: the upload endpoint also caps its size and
+  how many are read at once.
   """
   def precheck(conn, now \\ System.os_time(:second)) do
     with {:ok, parts} <- headers(conn),
@@ -125,6 +126,17 @@ defmodule Wallboard.Archive.MachineKeys do
     cond do
       not Plug.Crypto.secure_compare(expected, parts.signature) ->
         {:error, 401, "wrong signature"}
+
+      # Checked again now the body is in, with the same clock the nonces
+      # are kept by: a request whose body came slowly is otherwise older
+      # than the nonces kept, and could be sent a second time.
+      (stale = fresh(parts.time, now)) != :ok ->
+        stale
+
+      # Disconnected, or given a new connect key, while its body was on
+      # the way.
+      secret(parts.key_id) != {:ok, parts.secret, parts.machine} ->
+        {:error, 401, "this machine's key was taken away"}
 
       Store.claim_nonce(parts.key_id, parts.nonce, String.to_integer(parts.time), now - @window) ==
           :seen ->
@@ -154,7 +166,7 @@ defmodule Wallboard.Archive.MachineKeys do
 
     cond do
       Enum.all?(Map.values(parts), &is_nil/1) ->
-        {:error, 401, "unsigned request"}
+        {:error, :unsigned}
 
       not (is_binary(parts.key_id) and (parts.key_id == "connect" or parts.key_id =~ @key_id)) or
         not (is_binary(parts.time) and parts.time =~ ~r/\A[0-9]{1,12}\z/) or
@@ -233,13 +245,21 @@ defmodule Wallboard.Archive.MachineKeys do
   @doc "Removes one machine key. That machine stops sending until connected again."
   def revoke(key_id), do: Store.write("DELETE FROM machine_keys WHERE key_id = ?1", [key_id])
 
-  @doc "Notes that `machine` sent with the old shared key and was turned away."
-  def note_old_try(machine, now \\ System.os_time(:second)),
-    do:
-      Store.write("INSERT OR REPLACE INTO old_key_tries (machine, at) VALUES (?1, ?2)", [
-        machine,
-        now
-      ])
+  @doc """
+  Notes that `machine` sent with the old shared key and was turned away.
+  The old key crossed the network for months, so anyone may hold it: only
+  a machine this board already has sessions from is noted.
+  """
+  def note_old_try(machine, now \\ System.os_time(:second)) do
+    if Store.query("SELECT 1 AS x FROM sessions WHERE machine = ?1 LIMIT 1", [machine]) != [],
+      do:
+        Store.write("INSERT OR REPLACE INTO old_key_tries (machine, at) VALUES (?1, ?2)", [
+          machine,
+          now
+        ])
+
+    :ok
+  end
 
   @doc "Machines still sending with the old shared key, most recent first."
   def old_tries, do: Store.query("SELECT machine, at FROM old_key_tries ORDER BY at DESC", [])

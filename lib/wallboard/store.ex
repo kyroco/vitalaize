@@ -181,7 +181,9 @@ defmodule Wallboard.Store do
     """,
     # Machines that still send with the shared key from before, so Settings
     # can say which ones to connect again.
-    "CREATE TABLE old_key_tries (machine TEXT PRIMARY KEY, at INTEGER NOT NULL)"
+    "CREATE TABLE old_key_tries (machine TEXT PRIMARY KEY, at INTEGER NOT NULL)",
+    # Every signed request forgets the old nonces first.
+    "CREATE INDEX seen_requests_at ON seen_requests (at)"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.

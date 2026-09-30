@@ -310,8 +310,11 @@ enum Setup {
         }
 
         if c.role == .collector {
+            // Spaces or a line end pasted with the key are not part of it.
+            var c = c
+            c.hubKey = c.hubKey.trimmingCharacters(in: .whitespacesAndNewlines)
             say("Checking the hub")
-            let script = try fetchUploadScript(hub: c.hubURL)
+            let script = try fetchUploadScript(hub: c.hubURL, connectKey: c.hubKey)
             say("Connecting this Mac to the hub with the connect key")
             let key = try connectToHub(hub: c.hubURL, connectKey: c.hubKey,
                                        replaces: (c.claudeFolders + [home.appendingPathComponent(".codex").path])
@@ -328,7 +331,7 @@ enum Setup {
                 // Codex is extra: a problem here is reported, and the Claude
                 // folders stay connected.
                 do {
-                    let script = try fetchUploadScript(hub: c.hubURL, name: "codex-upload.sh")
+                    let script = try fetchUploadScript(hub: c.hubURL, connectKey: c.hubKey, name: "codex-upload.sh")
                     try saveKey(key, in: folder)
                     try hookUp(folder: folder, script: script, file: "hooks.json", wanted: codexHooks)
                     hookedCodex = folder
@@ -402,17 +405,38 @@ enum Setup {
 
     // MARK: Collector
 
-    /// The hub's upload script. It holds no key. A wrong address fails here,
-    /// before anything on this Mac changes.
-    static func fetchUploadScript(hub: String, name: String = "upload.sh") throws -> String {
+    /// The hub's upload script. It holds no key. It comes over plain http,
+    /// so it is used only when the hub's HMAC of it, made with the connect
+    /// key, matches: nobody on the network can change what then runs on
+    /// every turn. A wrong address or key fails here, before anything on
+    /// this Mac changes.
+    static func fetchUploadScript(hub: String, connectKey: String, name: String = "upload.sh") throws -> String {
         let base = hub.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
-        let r = Shell.run("/usr/bin/curl", ["-sS", "-w", "\n%{http_code}", "--max-time", "15",
-                                           "\(base)/ingest/\(name)"], timeout: 20)
-        let lines = r.output.components(separatedBy: "\n")
-        let code = lines.last ?? ""
-        let body = lines.dropLast().joined(separator: "\n")
+        let tmp = fm.temporaryDirectory.appendingPathComponent("wallboard-\(UUID().uuidString)")
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+        let bodyFile = tmp.appendingPathComponent("body").path
+        let headerFile = tmp.appendingPathComponent("headers").path
+        let r = Shell.run("/usr/bin/curl", ["-sS", "-o", bodyFile, "-D", headerFile, "-w", "%{http_code}",
+                                           "--max-time", "15", "\(base)/ingest/\(name)"], timeout: 20)
+        let code = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
         switch code {
-        case "200": return body + "\n"
+        case "200":
+            guard let data = fm.contents(atPath: bodyFile), let body = String(data: data, encoding: .utf8) else {
+                throw Failure.step("The hub sent an empty script.")
+            }
+            let headers = (try? String(contentsOfFile: headerFile, encoding: .utf8)) ?? ""
+            let sent = headers.components(separatedBy: "\n").lazy
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { $0.lowercased().hasPrefix("x-vitalaize-script-signature:") }
+                .map { String($0.dropFirst("x-vitalaize-script-signature:".count)).trimmingCharacters(in: .whitespaces) }
+            guard let sent = sent else {
+                throw Failure.step("The hub is too old for this version of VitalAIze. Update it, then run this setup again.")
+            }
+            guard sent == hmac(key: connectKey, message: "vitalaize script\n" + body) else {
+                throw Failure.step("The hub's script did not match the connect key. Copy the key again from the hub's Settings page. If it still fails, something on the network changed the script.")
+            }
+            return body
         // Only the Codex script is fetched after the Claude one worked, so
         // there a 404 means a hub from before Codex uploads.
         case "404" where name != "upload.sh": throw Failure.step("The hub is too old to take Codex sessions. Update it, then run this setup again.")
@@ -491,9 +515,14 @@ enum Setup {
     /// name, with anything but letters, digits, dots, dashes and underscores
     /// made a dash, at most 64 characters.
     static func machineName() -> String {
-        var name = Shell.run("/usr/sbin/scutil", ["--get", "LocalHostName"]).output
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if name.isEmpty { name = ProcessInfo.processInfo.hostName.components(separatedBy: ".")[0] }
+        // As the scripts do: `scutil --get LocalHostName || hostname -s`.
+        // Shell.run keeps scutil's error text in its output, so a failed run
+        // must not be taken for a name.
+        let r = Shell.run("/usr/sbin/scutil", ["--get", "LocalHostName"])
+        var name = r.ok ? r.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        if name.isEmpty {
+            name = Shell.run("/bin/hostname", ["-s"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         let ok = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-".utf8)
         let bytes = name.utf8.map { ok.contains($0) ? $0 : UInt8(ascii: "-") }
         return String(decoding: bytes.prefix(64), as: UTF8.self)
@@ -507,12 +536,20 @@ enum Setup {
         return id
     }
 
-    /// Saves this Mac's key beside the upload script, readable only by you.
+    /// Saves this Mac's key beside the upload script, readable only by you
+    /// from the moment it exists: a new file made with those permissions,
+    /// then moved into place, as the connect script does.
     static func saveKey(_ k: MachineKey, in folder: String) throws {
         let path = folder + "/wallboard-key"
-        try? fm.removeItem(atPath: path)
-        let text = "\(k.id)\n\(k.machine)\n\(k.key)\n"
-        guard fm.createFile(atPath: path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]) else {
+        let tmp = path + ".new.\(getpid())"
+        let bytes = Array("\(k.id)\n\(k.machine)\n\(k.key)\n".utf8)
+        unlink(tmp)
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw Failure.step("Could not save this Mac's key in \(folder).") }
+        let wrote = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        close(fd)
+        guard wrote == bytes.count, rename(tmp, path) == 0 else {
+            unlink(tmp)
             throw Failure.step("Could not save this Mac's key in \(folder).")
         }
     }
