@@ -79,7 +79,7 @@ defmodule Wallboard.Poller do
         source.poll(settings, facts, memory, now)
       end)
 
-    Process.send_after(self(), {:timeout, task.ref}, state.timeout)
+    Process.send_after(self(), {:timeout, task.ref}, timeout_ms(state.timeout, settings))
     {:noreply, %{state | task: task}}
   end
 
@@ -147,6 +147,10 @@ defmodule Wallboard.Poller do
     do: Map.update(status, :state, nil, &Map.take(&1, [:name, :error, :fetched_at]))
 
   defp schedule(state), do: Process.send_after(self(), :poll, state.interval)
+
+  # A fixed time, or one worked out from the settings of each poll.
+  defp timeout_ms(fun, settings) when is_function(fun, 1), do: fun.(settings)
+  defp timeout_ms(ms, _settings), do: ms
 
   defp meta(state),
     do: %{fetched_at: state.fetched_at, error: state.error, interval: state.interval}

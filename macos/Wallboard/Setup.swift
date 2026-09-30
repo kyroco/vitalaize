@@ -35,6 +35,12 @@ struct Choices: Codable {
     var boardName: String = "Kyroco"
     var port: Int = 4747
     var repo: String = ""
+    /// The other repositories the board follows, after `repo`. Optional so
+    /// choices saved before several repositories still load.
+    var otherRepos: [String]? = nil
+    /// The repositories an earlier settings file listed. While the list stays
+    /// the same, that file's own entries (and any settings of their own) stay.
+    var importedRepos: [String]? = nil
     var branch: String = "main"
     var gateWorkflow: String = ""
     var devWorkflow: String = ""
@@ -63,6 +69,8 @@ struct Choices: Codable {
 struct Installed: Codable {
     var choices: Choices
     var hookedFolders: [String]
+    // Optional so records saved before Codex uploads still load.
+    var hookedCodex: String? = nil
     var installedAt: Date
 }
 
@@ -133,8 +141,12 @@ enum Setup {
             if let v = old["korium"] as? Bool { c.korium = v }
             if let v = old["codex"] as? Bool { c.codex = v }
             if let dirs = old["dirs"] as? [String], !dirs.isEmpty { c.claudeFolders = dirs }
-            if let repo = str("repo") {
+            // A file lists several repositories in `repos`, or names one in `repo`.
+            let listed = (old["repos"] as? [String] ?? []).filter { !$0.isEmpty }
+            if let repo = listed.first ?? str("repo") {
                 c.repo = repo
+                c.otherRepos = Array(listed.dropFirst())
+                c.importedRepos = listed.isEmpty ? [repo] : listed
                 c.branch = str("branch") ?? c.branch
                 c.gateWorkflow = str("gate") ?? ""
                 c.devWorkflow = str("dev") ?? ""
@@ -144,8 +156,13 @@ enum Setup {
             }
         }
 
-        if let repo = Detect.githubRepo(folders: c.claudeFolders) {
+        // The repositories the sessions work in: the busiest first, and its
+        // workflows fill in the questions; the rest follow it. Six at most,
+        // since each costs about 600 GitHub calls an hour of the 5,000 allowed.
+        let found = Detect.githubRepos(folders: c.claudeFolders)
+        if let repo = found.first {
             c.repo = repo
+            c.otherRepos = Array(found.dropFirst().prefix(5))
             c.branch = Detect.defaultBranch(repo: repo) ?? "main"
             let guess = Detect.guessWorkflows(Detect.workflows(repo: repo))
             c.gateWorkflow = guess.gate
@@ -193,6 +210,14 @@ enum Setup {
             github.append("deploy_workflows: [\(deploys)]")
             github.append("lanes: [\(lanes)]")
         }
+        // Every repository goes in `repos`, even one: the board keeps the
+        // settings an imported file gave a repository only while its name is
+        // still in the list. An imported file's own list is kept while it
+        // stays the same.
+        let repos = [c.repo] + (c.otherRepos ?? []).filter { !$0.isEmpty && $0 != c.repo }
+        if !(c.importedSettings != nil && c.importedRepos == repos) {
+            github.append("repos: [\(repos.map(ex).joined(separator: ", "))]")
+        }
 
         let answers = """
         %{
@@ -215,7 +240,7 @@ enum Setup {
 
         let header = """
         # Written by the VitalAIze app. Change the board from its settings page
-        # (Settings, top right of the Claude sessions panel), or run the app
+        # (Settings, at the top beside the clock), or run the app
         # again and pick Reconfigure. Edits here are kept until the next
         # Reconfigure.
 
@@ -224,9 +249,10 @@ enum Setup {
         if c.importedSettings != nil {
             return header + """
             # Your earlier settings file is the base; the answers below win.
+            # A repository the base gives settings of its own keeps them.
             {base, _} = Code.eval_file(Path.join(__DIR__, "settings.imported.exs"))
 
-            Wallboard.Settings.merge(
+            Wallboard.Settings.apply_overrides(
               base,
               \(answers)
             )
@@ -245,9 +271,13 @@ enum Setup {
 
     /// Installs everything the choices ask for. `say` reports each step.
     static func install(_ c: Choices, say: (String) -> Void) throws {
+        // Kept from an earlier setup, so Uninstall still finds Codex's hooks
+        // when this run could not reach them. The earlier record stays
+        // where Uninstall looks until this run has written its own: the
+        // remembered data folder moves only at the end.
+        var hookedCodex: String? = installed()?.hookedCodex
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
-        dataFolder = c.dataFolder
         var hooked: [String] = []
 
         if c.role.runsBoard {
@@ -285,15 +315,30 @@ enum Setup {
                 try hookUp(folder: folder, script: script)
                 hooked.append(folder)
             }
+            if Detect.usesCodex() {
+                let folder = home.appendingPathComponent(".codex").path
+                say("Connecting \(folder) to the hub")
+                // Codex is extra: a problem here is reported, and the Claude
+                // folders stay connected.
+                do {
+                    let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh")
+                    try hookUp(folder: folder, script: script, file: "hooks.json", wanted: codexHooks)
+                    hookedCodex = folder
+                    say("Codex skips a new hook until you trust it: type /hooks in Codex and trust the two wallboard-upload.sh hooks")
+                } catch {
+                    say("Codex was not connected. \(error.localizedDescription)")
+                }
+            }
         }
 
-        let record = Installed(choices: c, hookedFolders: hooked, installedAt: Date())
+        let record = Installed(choices: c, hookedFolders: hooked, hookedCodex: hookedCodex, installedAt: Date())
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = .prettyPrinted
         var saved = record
         saved.choices.hubKey = ""   // the key lives in the upload script, not here
         try enc.encode(saved).write(to: data.appendingPathComponent("install.json"))
+        dataFolder = c.dataFolder
         say("Done")
     }
 
@@ -351,16 +396,19 @@ enum Setup {
 
     /// The hub's upload script. A wrong address or key fails here, before
     /// anything on this Mac changes.
-    static func fetchUploadScript(hub: String, key: String) throws -> String {
+    static func fetchUploadScript(hub: String, key: String, name: String = "upload.sh") throws -> String {
         let base = hub.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         let r = Shell.run("/usr/bin/curl", ["-sS", "-w", "\n%{http_code}", "--max-time", "15",
-                                           "-H", "Authorization: Bearer \(key)", "\(base)/ingest/upload.sh"], timeout: 20)
+                                           "-H", "Authorization: Bearer \(key)", "\(base)/ingest/\(name)"], timeout: 20)
         let lines = r.output.components(separatedBy: "\n")
         let code = lines.last ?? ""
         let body = lines.dropLast().joined(separator: "\n")
         switch code {
         case "200": return body + "\n"
         case "401": throw Failure.step("The hub turned down that key. Copy it again from the hub's settings page.")
+        // Only the Codex script is fetched after the Claude one worked, so
+        // there a 404 means a hub from before Codex uploads.
+        case "404" where name != "upload.sh": throw Failure.step("The hub is too old to take Codex sessions. Update it, then run this setup again.")
         case "404": throw Failure.step("That board has its archive turned off, so it cannot take sessions.")
         default: throw Failure.step("Could not reach a hub at \(base). Is the board running there?")
         }
@@ -379,28 +427,33 @@ enum Setup {
         ("UserPromptSubmit", nil),
     ]
 
+    /// Codex's upload script sends transcripts only, so it keeps two hooks.
+    static let codexHooks: [(event: String, matcher: String?)] = [("Stop", nil), ("SessionEnd", nil)]
+
     /// Saves the upload script in a Claude folder and adds its hooks to
-    /// that folder's settings.json, after backing it up.
-    static func hookUp(folder: String, script: String) throws {
+    /// that folder's settings.json, after backing it up. For ~/.codex the
+    /// file is hooks.json, which has the same shape, with codexHooks.
+    static func hookUp(folder: String, script: String, file: String = "settings.json",
+                       wanted: [(event: String, matcher: String?)] = uploadHooks) throws {
         let dir = URL(fileURLWithPath: folder)
         let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
 
-        let settingsURL = dir.appendingPathComponent("settings.json")
+        let settingsURL = dir.appendingPathComponent(file)
         var settings: [String: Any] = [:]
         if let data = try? Data(contentsOf: settingsURL), !data.isEmpty {
             guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw Failure.step("\(settingsURL.path) is not a settings object, so it was left alone.")
             }
             settings = obj
-            let backup = dir.appendingPathComponent("settings.json.before-wallboard")
+            let backup = dir.appendingPathComponent("\(file).before-wallboard")
             if !fm.fileExists(atPath: backup.path) { try data.write(to: backup) }
         }
 
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         let hook: [String: Any] = ["type": "command", "command": scriptURL.path, "async": true, "timeout": 120]
-        for (event, matcher) in uploadHooks {
+        for (event, matcher) in wanted {
             var list = hooks[event] as? [[String: Any]] ?? []
             let has = list.contains { m in ((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path } }
             if !has {
@@ -415,15 +468,16 @@ enum Setup {
         try out.write(to: settingsURL, options: .atomic)
     }
 
-    /// Takes the hooks back out; everything else in settings.json stays.
-    static func unhook(folder: String) {
+    /// Takes the hooks back out; everything else in the file stays.
+    static func unhook(folder: String, file: String = "settings.json",
+                       wanted: [(event: String, matcher: String?)] = uploadHooks) {
         let dir = URL(fileURLWithPath: folder)
         let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
-        let settingsURL = dir.appendingPathComponent("settings.json")
+        let settingsURL = dir.appendingPathComponent(file)
         if let data = try? Data(contentsOf: settingsURL),
            var settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            var hooks = settings["hooks"] as? [String: Any] {
-            for (event, _) in uploadHooks {
+            for (event, _) in wanted {
                 let list = (hooks[event] as? [[String: Any]] ?? []).filter { m in
                     !((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path }
                 }
@@ -447,6 +501,10 @@ enum Setup {
         for folder in record?.hookedFolders ?? [] {
             say("Disconnecting \(folder)")
             unhook(folder: folder)
+        }
+        if let folder = record?.hookedCodex {
+            say("Disconnecting \(folder)")
+            unhook(folder: folder, file: "hooks.json", wanted: codexHooks)
         }
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")

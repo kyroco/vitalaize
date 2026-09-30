@@ -67,12 +67,24 @@ defmodule Wallboard.Archive.CodexTranscript do
     with {:ok, io} <- File.open(path, [:read, :binary]),
          first = IO.binread(io, :line),
          :ok <- File.close(io),
-         true <- is_binary(first),
-         {:ok, %{"type" => "session_meta", "payload" => p}} <- Jason.decode(first) do
-      spawn = spawn_of(p)
-      {p["id"], spawn["parent_thread_id"], spawn["agent_nickname"] || spawn["agent_path"]}
+         true <- is_binary(first) do
+      head_of(first)
     else
       _ -> nil
+    end
+  end
+
+  @doc "The same as `head/1`, for a session file already in memory."
+  def head_of(text) when is_binary(text) do
+    [first | _] = :binary.split(text, "\n")
+
+    case Jason.decode(first) do
+      {:ok, %{"type" => "session_meta", "payload" => %{} = p}} ->
+        spawn = spawn_of(p)
+        {p["id"], spawn["parent_thread_id"], spawn["agent_nickname"] || spawn["agent_path"]}
+
+      _ ->
+        nil
     end
   end
 

@@ -214,9 +214,12 @@ struct FoldersPage: View {
 
 struct GitHubPage: View {
     @EnvironmentObject var state: AppState
+    @State private var newRepo = ""
+
+    private var others: [String] { state.choices.otherRepos ?? [] }
 
     var body: some View {
-        Text("Found from the git remotes of your recent Claude sessions. Change it if the board should watch another repository.")
+        Text("Found from the git remotes of your recent Claude sessions. Change them if the board should watch other repositories.")
             .foregroundStyle(.secondary)
         Form {
             HStack {
@@ -227,6 +230,32 @@ struct GitHubPage: View {
             workflowPicker("Gate workflow (checks each change)", $state.choices.gateWorkflow)
             workflowPicker("Dev deploy workflow", $state.choices.devWorkflow)
             workflowPicker("Prod deploy workflow", $state.choices.prodWorkflow)
+            Section {
+                ForEach(others, id: \.self) { repo in
+                    HStack {
+                        Text(repo)
+                        Spacer()
+                        Button("Remove") { state.choices.otherRepos = others.filter { $0 != repo } }
+                    }
+                }
+                HStack {
+                    TextField("Add another (owner/name)", text: $newRepo)
+                    Button("Add") {
+                        let repo = newRepo.trimmingCharacters(in: .whitespaces)
+                        // owner/name, the only form the board accepts.
+                        let ok = repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+                        if ok && repo != state.choices.repo && !others.contains(repo) {
+                            state.choices.otherRepos = others + [repo]
+                        }
+                        newRepo = ""
+                    }
+                }
+            } header: {
+                Text("Other repositories")
+            } footer: {
+                Text("Each gets its own column on the board's Git tab, using the workflows above. Dev and Prod follow the first repository.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         if state.workflows.isEmpty {
@@ -360,13 +389,14 @@ struct ReviewPage: View {
                     if c.importedSettings != nil { row("Carried over", "your earlier settings file") }
                 } else {
                     row("Hub", c.hubURL)
+                    row("Codex", Detect.usesCodex() ? "sent too, from ~/.codex" : "not on this Mac")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(6)
         }
         Text(c.role.runsBoard
              ? "The board starts now and again whenever you log in. You can change any of this later from the board's settings page, or here with Reconfigure."
-             : "Each Claude session on this Mac is sent to the hub when a turn ends and when it closes, in the background. The hooks are added to each folder's settings.json, which is backed up first.")
+             : "Each Claude and Codex session on this Mac is sent to the hub when a turn ends and when it closes, in the background. The hooks are added to each Claude folder's settings.json and to Codex's hooks.json, each backed up first. Codex runs a new hook only once you trust it with /hooks in Codex.")
             .foregroundStyle(.secondary)
     }
 

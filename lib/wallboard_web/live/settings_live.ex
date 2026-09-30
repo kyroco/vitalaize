@@ -93,7 +93,7 @@ defmodule WallboardWeb.SettingsLive do
   """
   def values(settings) do
     for {_, fs} <- Settings.editable(), {path, _, type, _, _} <- fs, into: %{} do
-      value = get_in(settings, path)
+      value = Settings.current(settings, path, type)
       text = if type == :secret and value != nil, do: @kept, else: to_text(type, value)
       {Enum.join(path, "."), text}
     end
@@ -118,7 +118,7 @@ defmodule WallboardWeb.SettingsLive do
   end
 
   defp to_text(_, nil), do: ""
-  defp to_text(:lines, list), do: Enum.join(List.wrap(list), "\n")
+  defp to_text(type, list) when type in [:lines, :repos], do: Enum.join(List.wrap(list), "\n")
   defp to_text(_, v), do: to_string(v)
 
   defp machines(%{archive: %{enabled: true}}) do
@@ -272,6 +272,11 @@ defmodule WallboardWeb.SettingsLive do
           that Mac's Claude settings (backing them up first). After that, each session is sent here
           when a turn ends and when it closes, in the background, so Claude never waits on it.
         </p>
+        <p class="detail-note">
+          When that Mac has Codex, its Codex sessions come too, through two hooks in Codex's
+          hooks.json. Codex runs a new hook only once you trust it, so type /hooks in Codex there
+          afterwards and trust the two wallboard-upload.sh hooks.
+        </p>
         <pre class="settings-code">{install_command(@hub_url, if(@show_key?, do: @key, else: "••••••••"))}</pre>
         <div class="row">
           <button class="link-button" phx-click="toggle_key">
@@ -338,9 +343,9 @@ defmodule WallboardWeb.SettingsLive do
     """
   end
 
-  defp field(%{type: :lines} = assigns) do
+  defp field(%{type: type} = assigns) when type in [:lines, :repos] do
     ~H"""
-    <textarea name={@name} class="settings-input" rows="3">{@value}</textarea>
+    <textarea name={@name} class="settings-input" rows={if @type == :repos, do: 6, else: 3}>{@value}</textarea>
     """
   end
 

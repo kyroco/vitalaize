@@ -1,5 +1,5 @@
-// Wallboard in the browser: the live connection, the clock and ages, page
-// rotation, swipes, and fitting the 1366 x 1024 design to the screen.
+// Wallboard in the browser: the live connection, the clock and ages, tab
+// rotation, taps and swipes, and fitting the 1366 x 1024 design to the screen.
 (() => {
   const board = () => document.getElementById("board");
   const tz = () => (board() && board().dataset.tz) || "America/New_York";
@@ -59,14 +59,16 @@
   };
 
   // Lists that can run out of room ([data-clip]) show only the rows that fit
-  // whole, never a row cut in half.
+  // whole, never a row cut in half, and the box closes up under the last one.
+  // Every row comes back first, so a list grows again when room frees up.
   const clipRows = () => {
     document.querySelectorAll("[data-clip]").forEach((box) => {
+      const rows = Array.from(box.children);
+      rows.forEach((row) => { row.style.display = ""; });
       const limit = box.clientHeight;
-      Array.from(box.children).forEach((row) => {
-        row.style.visibility = "";
-        if (row.offsetTop + row.offsetHeight > limit + 1) row.style.visibility = "hidden";
-      });
+      rows
+        .filter((row) => row.offsetTop + row.offsetHeight > limit + 1)
+        .forEach((row) => { row.style.display = "none"; });
     });
   };
 
@@ -92,24 +94,45 @@
     el.style.setProperty("--canvas-h", h / s + "px");
   };
 
-  // ---- Pages ---------------------------------------------------------------
+  // ---- Tabs ----------------------------------------------------------------
+  // The board's pages are the tabs under the status line. The track holds
+  // them side by side and moves one tab's width at a time; the tab and the
+  // dot for the one showing are marked here, since the browser owns which
+  // one that is.
   let page = 0, timer = null;
 
-  const pageCount = () => parseInt((board() && board().dataset.pages) || "2", 10);
+  const pageCount = () => parseInt((board() && board().dataset.pages) || "1", 10);
+
+  const markTabs = () => {
+    document.querySelectorAll("[data-goto]").forEach((b) => {
+      const on = parseInt(b.dataset.goto, 10) === page;
+      b.classList.toggle("on", on);
+      if (b.hasAttribute("aria-selected")) b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+  };
 
   const show = (n, instant) => {
     const count = pageCount();
     page = (n + count) % count;
     const track = document.getElementById("track");
-    // Each page's header already marks its own dot, so only the track moves.
     if (track) {
       track.style.transition = instant ? "none" : "";
-      track.style.transform = `translateX(${page * -50}%)`;
+      track.style.transform = `translateX(${page * -100}%)`;
     }
+    markTabs();
     restartTimer();
   };
 
-  // Pinned: the pages stop rotating until the pin is tapped again. Swiping
+  // An address ending in a tab's name (#git, #new_relic) opens on it.
+  // #page2, from when New Relic was page 2, still opens New Relic.
+  const startPage = () => {
+    let want = location.hash.slice(1);
+    if (want === "page2") want = "new_relic";
+    const tab = Array.from(document.querySelectorAll("[data-tab]")).find((t) => t.dataset.tab === want);
+    return tab ? parseInt(tab.dataset.goto, 10) : page;
+  };
+
+  // Pinned: the tabs stop rotating until the pin is tapped again. Swiping
   // still flips by hand. Each device remembers its own choice.
   // ---- Light or dark ------------------------------------------------------
   // Each device keeps its own choice, like Pin. With none it follows the
@@ -194,7 +217,7 @@
   const wireInput = () => {
     let x0 = null, y0 = null;
     document.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; }, { passive: true });
-    // A tap on the pin or a dot is handled right on the touch, and the
+    // A tap on the pin, a tab or a dot is handled right on the touch, and the
     // browser's own click that follows is cancelled, so it acts once.
     const tapControl = (target) => {
       if (target.closest("[data-pin]")) { setPinned(!pinned); return true; }
@@ -239,10 +262,9 @@
   // ---- Live connection -----------------------------------------------------
   const Hooks = {
     Board: {
-      // An address ending in #page2 opens on page 2.
-      mounted() { makeFormats(); fit(); drawPin(); drawTheme(); show(location.hash === "#page2" ? 1 : page, true); tick(); },
+      mounted() { makeFormats(); fit(); drawPin(); drawTheme(); show(startPage(), true); tick(); },
       updated() {
-        tick(); drawTheme();
+        tick(); drawTheme(); markTabs();
         // LiveView may have swapped the bar out; follow it or hide the value.
         if (tipOn && !document.contains(tipOn)) tipFor(null);
         else if (tipOn) tipFor(tipOn);

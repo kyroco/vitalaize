@@ -18,6 +18,7 @@ defmodule WallboardWeb.Router do
     post "/status", IngestController, :status
     get "/install.sh", IngestController, :install
     get "/upload.sh", IngestController, :upload
+    get "/codex-upload.sh", IngestController, :codex_upload
   end
 
   scope "/", WallboardWeb do

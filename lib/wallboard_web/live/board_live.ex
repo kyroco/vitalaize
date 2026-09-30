@@ -1,8 +1,8 @@
 defmodule WallboardWeb.BoardLive do
   @moduledoc """
-  The board: page 1 (build heartbeat) and page 2 (New Relic), side by side.
-  The browser rotates between them and handles swipes; the server only sends
-  what changed.
+  The board: a header and status line that stay put, and under them tabs
+  (Agents, Git, New Relic) laid side by side. The browser rotates between
+  the tabs and handles taps and swipes; the server only sends what changed.
 
   Times go to the browser as timestamps, and the browser writes them in the
   time zone from settings ("1:27 PM", "4m ago"), so the clock and the ages
@@ -18,9 +18,25 @@ defmodule WallboardWeb.BoardLive do
   # 6-hour timeline and the "last 24 hours" counts.
   @tick_ms 30_000
 
-  # The product's name, beside the brand at the top of page 1. It is fixed, not
-  # a setting, so an old settings file can never show an old name.
+  # The product's name, beside the brand at the top. It is fixed, not a
+  # setting, so an old settings file can never show an old name.
   @product "VitalAIze"
+
+  # The tabs under the status line, in the order the board rotates through
+  # them. A new tab is one entry here and its section in render/1.
+  @tabs [
+    {:agents, "Agents"},
+    {:git, "Git"},
+    {:new_relic, "New Relic"}
+  ]
+
+  @doc "The tabs this board shows: New Relic only when it is turned on."
+  def tabs(settings) do
+    Enum.filter(@tabs, fn
+      {:new_relic, _} -> settings.new_relic.enabled
+      _ -> true
+    end)
+  end
 
   @impl true
   def mount(_params, _session, socket) do
@@ -53,7 +69,7 @@ defmodule WallboardWeb.BoardLive do
 
     socket =
       socket
-      |> assign(settings: settings, now: now(), product: @product)
+      |> assign(settings: settings, now: now(), product: @product, tabs: tabs(settings))
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(remote: Wallboard.Remote.sessions())
@@ -70,6 +86,8 @@ defmodule WallboardWeb.BoardLive do
         archive_counts: nil,
         archive_progress: nil,
         selected: nil,
+        open_repo: nil,
+        repo_of: %{},
         back_ref: nil,
         trends: nil,
         trend_days: 14
@@ -139,7 +157,8 @@ defmodule WallboardWeb.BoardLive do
   # Nobody touched the Archive tab for a while: back to the live sessions,
   # so a wall screen never hides a session that needs you.
   def handle_info({:back_to_live, ref}, %{assigns: %{back_ref: ref}} = socket),
-    do: {:noreply, assign(socket, session_tab: :live, selected: nil, back_ref: nil)}
+    do:
+      {:noreply, assign(socket, session_tab: :live, selected: nil, open_repo: nil, back_ref: nil)}
 
   def handle_info(_, socket), do: {:noreply, socket}
 
@@ -182,6 +201,17 @@ defmodule WallboardWeb.BoardLive do
   def handle_event("close_session", _params, socket),
     do: {:noreply, socket |> assign(selected: nil) |> touched()}
 
+  # A repository's details, over the board like a session's. They follow
+  # the live numbers while open.
+  def handle_event("open_repo", %{"repo" => repo}, socket) do
+    if Enum.any?(socket.assigns.git, &(&1.repo == repo)),
+      do: {:noreply, socket |> assign(open_repo: repo) |> touched()},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("close_repo", _params, socket),
+    do: {:noreply, socket |> assign(open_repo: nil) |> touched()}
+
   def handle_event("refresh_archive", _params, %{assigns: %{archive_on?: true}} = socket) do
     Collector.refresh()
 
@@ -209,7 +239,7 @@ defmodule WallboardWeb.BoardLive do
   end
 
   # Any tap keeps the Archive tab and the details open a while longer.
-  defp touched(%{assigns: %{session_tab: :live, selected: nil}} = socket),
+  defp touched(%{assigns: %{session_tab: :live, selected: nil, open_repo: nil}} = socket),
     do: assign(socket, back_ref: nil)
 
   defp touched(socket) do
@@ -235,6 +265,15 @@ defmodule WallboardWeb.BoardLive do
     long = settings.claude.long_running_minutes
 
     sessions = Enum.map(sessions, &Map.put(&1, :long?, Claude.long_running?(&1, now, long)))
+
+    # Each card names its repository, looked up once per folder.
+    {sessions, repo_of} =
+      Enum.map_reduce(sessions, socket.assigns.repo_of, fn s, known ->
+        cwd = s[:cwd]
+        known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
+        {Map.put(s, :repo, known[cwd]), known}
+      end)
+
     needs = sessions |> Enum.filter(&(&1.status == :needs)) |> Enum.sort_by(&unix(&1.since))
     working = sessions |> Enum.filter(&(&1.status == :working)) |> Enum.sort_by(&unix(&1.since))
     idle = sessions |> Enum.filter(&(&1.status == :idle)) |> Enum.sort_by(& &1.name)
@@ -243,18 +282,35 @@ defmodule WallboardWeb.BoardLive do
       needs: needs,
       working: working,
       idle: idle,
-      session_count: length(sessions)
+      session_count: length(sessions),
+      repo_of: repo_of
     )
   end
 
-  defp derive_github(socket) do
-    case socket.assigns.github do
-      nil ->
-        assign(socket, gh: nil)
-
-      facts ->
-        assign(socket, gh: GitHub.summary(facts, socket.assigns.settings, socket.assigns.now))
+  # "api" for a folder in acme/api, or nil outside a GitHub checkout.
+  defp repo_of(cwd) do
+    case Wallboard.GitRemote.github_repo(cwd) do
+      nil -> nil
+      repo -> repo |> String.split("/") |> List.last()
     end
+  end
+
+  # Every repository, the ones with a column on the Git tab and the quiet
+  # rest, and the first one's summary, which the Dev and Prod tiles read.
+  # The repository list comes from the settings as they are now, like the
+  # poller's, so one added or removed on the settings page shows without a
+  # reload.
+  defp derive_github(socket) do
+    %{github: facts, now: now} = socket.assigns
+    repos = GitHub.repos(facts, Settings.get(), now)
+    {columns, quiet} = GitHub.arrange(repos)
+
+    assign(socket,
+      git: repos,
+      git_columns: columns,
+      git_quiet: quiet,
+      gh: repos |> List.first() |> then(&(&1 && &1.s))
+    )
   end
 
   defp unix(nil), do: 0
@@ -272,32 +328,43 @@ defmodule WallboardWeb.BoardLive do
       data-keep="style"
       data-rotate={@settings.rotate_seconds}
       data-tz={@settings.timezone}
-      data-pages={pages(@settings)}
+      data-pages={length(@tabs)}
     >
-      <div id="track" class={["track", pages(@settings) == 1 && "one-page"]} data-keep="style">
-        <section class="page" aria-label={"Page 1, " <> @product}>
-          <.header
-            brand={@settings.brand}
-            title={@product}
-            page={0}
-            pages={pages(@settings)}
-            metas={[@claude_meta, @github_meta]}
-          />
-          <.needs_banner needs={@needs} />
-          <.tiles
-            gh={@gh}
-            meta={@github_meta}
-            dev={if @dev_on?, do: dev_power_tile(@dev, @dev_meta)}
-            builds={@builds && Builds.compare(@builds)}
-          />
-          <%!-- GitHub on the left, Claude sessions (the part that matters most)
-               across the wide right side with the token trend under them. --%>
-          <div class="middle">
-            <div class="left">
-              <.actions gh={@gh} meta={@github_meta} />
-              <.timeline gh={@gh} now={@now} meta={@github_meta} />
-            </div>
-            <div class="right">
+      <div class="frame">
+        <.header
+          brand={@settings.brand}
+          title={@product}
+          tabs={@tabs}
+          metas={[@claude_meta, @github_meta]}
+          release={@release}
+        />
+        <.needs_banner needs={@needs} />
+        <.tiles
+          repos={@git}
+          meta={@github_meta}
+          dev={if @dev_on?, do: dev_power_tile(@dev, @dev_meta)}
+          gh={@gh}
+          builds={@builds && Builds.compare(@builds)}
+        />
+        <%!-- The browser marks the tab it shows; taps and the rotation move
+             the track under it. --%>
+        <nav class="board-tabs" role="tablist" aria-label="Tabs">
+          <button
+            :for={{{key, label}, i} <- Enum.with_index(@tabs)}
+            class="board-tab"
+            role="tab"
+            data-goto={i}
+            data-tab={key}
+            data-keep="class aria-selected"
+            aria-selected="false"
+          >
+            {label}
+          </button>
+        </nav>
+        <div class="viewport">
+          <%!-- One section per tab, in the order of @tabs. --%>
+          <div id="track" class="track" data-keep="style">
+            <section :if={tab?(@tabs, :agents)} class="page page-agents" aria-label="Agents">
               <.sessions
                 needs={@needs}
                 working={@working}
@@ -316,45 +383,51 @@ defmodule WallboardWeb.BoardLive do
                 trend_days={@trend_days}
                 usage={@usage}
                 usage_meta={@usage_meta}
-                release={@release}
               />
-            </div>
+            </section>
+            <section :if={tab?(@tabs, :git)} class="page page-git" aria-label="Git">
+              <.git_tab columns={@git_columns} quiet={@git_quiet} now={@now} meta={@github_meta} />
+            </section>
+            <section
+              :if={tab?(@tabs, :new_relic)}
+              class="page page-new_relic"
+              aria-label={@settings.brand.page2_title}
+            >
+              <.new_relic nr={@nr} meta={@nr_meta} now={@now} slots={@settings.new_relic.slots} />
+            </section>
           </div>
-        </section>
-
-        <section
-          :if={pages(@settings) > 1}
-          class="page"
-          aria-label={"Page 2, " <> @settings.brand.page2_title}
-        >
-          <.header
-            brand={@settings.brand}
-            title={@settings.brand.page2_title}
-            page={1}
-            pages={2}
-            metas={[@nr_meta]}
-          />
-          <.needs_banner needs={@needs} />
-          <.new_relic nr={@nr} meta={@nr_meta} now={@now} slots={@settings.new_relic.slots} />
-        </section>
+        </div>
       </div>
       <.session_detail :if={@selected} s={@selected} settings={@settings} />
+      <.repo_detail
+        :if={@open_repo && Enum.find(@git, &(&1.repo == @open_repo))}
+        r={Enum.find(@git, &(&1.repo == @open_repo))}
+        facts={repo_facts(@github, @open_repo)}
+        meta={@github_meta}
+      />
     </div>
     """
   end
 
-  # Page 2 is there only when New Relic is turned on in settings.
-  defp pages(settings), do: if(settings.new_relic.enabled, do: 2, else: 1)
+  defp repo_facts(%{repos: entries}, repo),
+    do: Enum.find_value(entries, &(&1.repo == repo && &1.facts))
+
+  defp repo_facts(_, _), do: nil
+
+  defp tab?(tabs, key), do: List.keymember?(tabs, key, 0)
 
   # ---------------------------------------------------------------------------
   # Pieces
 
   attr :brand, :map, required: true
   attr :title, :string, required: true
-  attr :page, :integer, required: true
+  attr :tabs, :list, required: true
   attr :metas, :list, required: true
-  attr :pages, :integer, required: true
+  # A newer release than this board runs, or nil (see Wallboard.Sources.Release).
+  attr :release, :map, default: nil
 
+  # The name, then the switches and the clock. The browser owns which page
+  # dot is on and whether Pin is on, so those attributes survive updates.
   defp header(assigns) do
     ~H"""
     <header class="header">
@@ -363,21 +436,50 @@ defmodule WallboardWeb.BoardLive do
       <div class="divider"></div>
       <div class="page-title">{@title}</div>
       <div class="grow"></div>
-      <div class="clockbox" data-fullscreen>
-        <div class="clock" data-clock></div>
-        <div class="dateline">
-          <span data-today></span> · updated <.ago at={oldest(@metas)} stale={stale_after(@metas)} />
-        </div>
-      </div>
-      <%!-- The browser owns the pinned state, so these attributes survive updates.
-           With one page there is nothing to rotate, so no pin and no dots. --%>
       <button
-        :if={@pages > 1}
+        class="link-button header-link theme-toggle"
+        data-theme-toggle
+        aria-label="Switch light or dark"
+      >
+        <svg
+          class="icon-moon"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        ><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
+        <svg
+          class="icon-sun"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          aria-hidden="true"
+        ><circle cx="12" cy="12" r="4.5" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+        <span class="theme-word"></span>
+      </button>
+      <a
+        :if={@release}
+        class="link-button header-link update-note"
+        href={@release.url}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Version {@release.version} is available
+      </a>
+      <a class="link-button header-link" href="/settings">Settings</a>
+      <%!-- With one tab there is nothing to rotate, so no pin and no dots. --%>
+      <button
+        :if={length(@tabs) > 1}
         class="pin"
         data-pin
         data-keep="class aria-pressed"
         aria-pressed="false"
-        aria-label="Pin this page"
+        aria-label="Pin this tab"
       >
         <svg
           width="20"
@@ -395,10 +497,21 @@ defmodule WallboardWeb.BoardLive do
         </svg>
         <span class="pin-label pin-off">Pin</span><span class="pin-label pin-on">Pinned</span>
       </button>
-      <nav :if={@pages > 1} class="dots" aria-label="Pages">
-        <button data-goto="0" class={["dot", @page == 0 && "on"]} aria-label="Page 1"></button>
-        <button data-goto="1" class={["dot", @page == 1 && "on"]} aria-label="Page 2"></button>
+      <nav :if={length(@tabs) > 1} class="dots" aria-label="Tabs">
+        <button
+          :for={{{_key, label}, i} <- Enum.with_index(@tabs)}
+          data-goto={i}
+          class="dot"
+          data-keep="class"
+          aria-label={label}
+        ></button>
       </nav>
+      <div class="clockbox" data-fullscreen>
+        <div class="clock" data-clock></div>
+        <div class="dateline">
+          <span data-today></span> · updated <.ago at={oldest(@metas)} stale={stale_after(@metas)} />
+        </div>
+      </div>
     </header>
     """
   end
@@ -497,7 +610,10 @@ defmodule WallboardWeb.BoardLive do
   # ---------------------------------------------------------------------------
   # Status tiles
 
-  attr :gh, :map, required: true
+  # Every repository (see GitHub.repos/3); the tiles add them up.
+  attr :repos, :list, required: true
+  # The first repository's summary, which Dev and Prod read.
+  attr :gh, :map, default: nil
   attr :meta, :map, required: true
   # The Dev tile from AWS (awake or asleep), or nil to show the last deploy.
   attr :dev, :map, default: nil
@@ -506,24 +622,26 @@ defmodule WallboardWeb.BoardLive do
   attr :builds, :atom, default: nil
 
   defp tiles(assigns) do
+    assigns = assign(assigns, t: GitHub.totals(assigns.repos))
+
     ~H"""
     <section class="tiles" aria-label="Status">
-      <%= if @gh do %>
-        <.tile label="Main" {main_tile(@gh.main)} />
-        <.tile label="Merge queue" {queue_tile(@gh)} />
-        <.tile label="Running" {running_tile(@gh.running)} />
-        <.tile label="Failed · 24h" {failed_tile(@gh.failures)} />
-        <.tile label="Dev" {@dev || dev_tile(@gh.dev)} />
-        <.tile label="Prod" {prod_tile(@gh.prod, @builds)} />
+      <%= if Enum.any?(@repos, & &1.s) do %>
+        <.tile label="Main" {main_tile(@repos, @t)} />
+        <.tile label="Merge queue" {queue_tile(@repos, @t)} />
+        <.tile label="Running" {running_tile(@repos, @t)} />
+        <.tile label="Failed · 24h" {failed_tile(@repos, @t)} />
+        <.tile :if={@gh} label="Dev" {@dev || dev_tile(@gh.dev)} />
+        <.tile :if={@gh} label="Prod" {prod_tile(@gh.prod, @builds)} />
+        <.tile :if={!@gh} label="Dev" {@dev || %{value: "Unknown", sub: "loading"}} />
+        <.tile :if={!@gh} label="Prod" value="Unknown" sub="loading" />
       <% else %>
-        <div
+        <.tile
           :for={label <- ["Main", "Merge queue", "Running", "Failed · 24h", "Dev", "Prod"]}
-          class="tile"
-        >
-          <span class="kicker">{label}</span>
-          <span class="dot8 muted"></span>
-          <span class="tile-sub">{@meta.error || "loading"}</span>
-        </div>
+          label={label}
+          value="Loading"
+          sub={@meta.error || "reading GitHub"}
+        />
       <% end %>
     </section>
     """
@@ -538,16 +656,47 @@ defmodule WallboardWeb.BoardLive do
   attr :at, :any, default: nil
   attr :tail, :string, default: nil
 
-  # One slim cell: label, dot, value and a short note, all on one line.
+  # One cell: the label, then a dot and the value, then a short note.
   defp tile(assigns) do
     ~H"""
     <div class="tile">
       <span class="kicker">{@label}</span>
-      <span class={["dot8", @tone, @ring && "ring"]}></span>
-      <span class={["tile-value", @loud && "loud"]}>{@value}</span>
+      <span class="tile-main">
+        <span class={["dot8", @tone, @ring && "ring"]}></span>
+        <span class={["tile-value", @loud && "loud"]}>{@value}</span>
+      </span>
       <span class="tile-sub">{@sub}<.ago :if={@at} at={@at} fmt="clock" />{@tail}</span>
     </div>
     """
+  end
+
+  # With one repository the tiles read as they always did. With more, each
+  # adds up every repository and names the ones that matter.
+  defp main_tile([one], _t), do: main_tile(one.s && one.s.main)
+
+  defp main_tile(_repos, t) do
+    value = "#{length(t.green)} of #{t.count} green"
+
+    case {t.red, t.unknown} do
+      {[one], _} ->
+        %{
+          value: value,
+          tone: :bad,
+          ring: true,
+          sub: "#{one.name} failed ",
+          at: one.s.main.updated_at
+        }
+
+      {[_ | _] = red, _} ->
+        %{value: value, tone: :bad, ring: true, sub: "#{names(red)} failed"}
+
+      {[], []} ->
+        latest = t.green |> Enum.map(& &1.s.main.updated_at) |> Enum.max(DateTime)
+        %{value: value, tone: :ok, sub: "last ", at: latest}
+
+      {[], unknown} ->
+        %{value: value, sub: "#{names(unknown)}: no gate run today"}
+    end
   end
 
   defp main_tile(nil), do: %{value: "Unknown", sub: "no gate run today"}
@@ -565,33 +714,51 @@ defmodule WallboardWeb.BoardLive do
       }
   end
 
-  defp queue_tile(%{queue: [first | _] = queue}) do
-    %{value: "#{length(queue)} queued", tone: :info, sub: "next ##{first.pr}"}
+  defp queue_tile(_repos, %{queued: []}), do: %{value: "Empty"}
+
+  defp queue_tile([_], %{queued: [%{s: %{queue: [first | _] = queue}}]}),
+    do: %{value: "#{length(queue)} waiting", tone: :info, sub: "next ##{first.pr}"}
+
+  defp queue_tile(_repos, %{queued: queued}) do
+    total = queued |> Enum.map(&length(&1.s.queue)) |> Enum.sum()
+    next = Enum.map_join(queued, ", ", &"#{&1.name} ##{hd(&1.s.queue).pr}")
+    %{value: "#{total} waiting", tone: :info, sub: next}
   end
 
-  defp queue_tile(_), do: %{value: "Empty"}
+  defp running_tile(_repos, %{running: []}), do: %{value: "0"}
 
-  defp running_tile([]), do: %{value: "0"}
-
-  defp running_tile(running) do
+  defp running_tile([_], %{running: [%{s: %{running: running}}]}) do
     names = running |> Enum.map(&running_name/1) |> Enum.uniq() |> Enum.join(", ")
     %{value: "#{length(running)}", tone: :warn, ring: true, sub: names}
+  end
+
+  defp running_tile(_repos, %{running: repos}) do
+    total = repos |> Enum.map(&length(&1.s.running)) |> Enum.sum()
+    %{value: "#{total}", tone: :warn, ring: true, sub: "in #{names(repos)}"}
   end
 
   defp running_name(%{pr: pr, name: name}) when is_integer(pr), do: "#{name} on ##{pr}"
   defp running_name(%{name: name}), do: name
 
-  defp failed_tile([]), do: %{value: "0", tone: :ok}
+  defp failed_tile(_repos, %{failures: []}), do: %{value: "0", tone: :ok}
 
-  defp failed_tile([latest | _] = failures) do
+  defp failed_tile(repos, %{failures: [latest | _] = failures}) do
     %{
       value: "#{length(failures)}",
       tone: :bad,
       ring: true,
       loud: true,
-      sub: "last ",
+      sub: if(length(repos) > 1, do: "last #{latest.repo_name}, ", else: "last "),
       at: latest.updated_at
     }
+  end
+
+  # "web", "web and api", "web, api and docs".
+  defp names(repos) do
+    case Enum.map(repos, & &1.name) do
+      [one] -> one
+      many -> Enum.join(Enum.drop(many, -1), ", ") <> " and " <> List.last(many)
+    end
   end
 
   # Dev's power state from AWS. While a read fails, the last good state stays
@@ -715,7 +882,6 @@ defmodule WallboardWeb.BoardLive do
   attr :trend_days, :integer, default: 14
   attr :usage, :map, default: nil
   attr :usage_meta, :map, default: nil
-  attr :release, :map, default: nil
 
   defp sessions(assigns) do
     ~H"""
@@ -773,38 +939,6 @@ defmodule WallboardWeb.BoardLive do
             {d} days
           </button>
         </div>
-        <button class="link-button theme-toggle" data-theme-toggle aria-label="Switch light or dark">
-          <svg
-            class="icon-moon"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            aria-hidden="true"
-          ><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
-          <svg
-            class="icon-sun"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            aria-hidden="true"
-          ><circle cx="12" cy="12" r="4.5" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
-          <span class="theme-word"></span>
-        </button>
-        <a
-          :if={@release}
-          class="link-button update-note"
-          href={@release.url}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Version {@release.version} is available
-        </a>
-        <a class="link-button" href="/settings">Settings</a>
       </div>
       <div :for={p <- @problems} class="stale-note small">Could not read {p}</div>
 
@@ -1167,8 +1301,9 @@ defmodule WallboardWeb.BoardLive do
       <div class="sc-meta">
         <span class="sc-id">{@s.short_id}</span>
         <span :if={@s.account} class="acct">{@s.account}</span>
-        <span :if={@s.folder} class="sc-folder">{@s.folder}</span>
         <span :if={@s[:started_by]} class="acct">from {@s.started_by}</span>
+        <span :if={@s[:repo]} class="sc-repo" title={@s.folder}>{@s.repo}</span>
+        <span :if={!@s[:repo] && @s.folder} class="sc-folder">{@s.folder}</span>
       </div>
       <div class="sc-task">{if @s.status == :needs, do: @s.why, else: @s.task}</div>
 
@@ -1713,81 +1848,297 @@ defmodule WallboardWeb.BoardLive do
   defp badge(:idle), do: "Idle"
 
   # ---------------------------------------------------------------------------
-  # GitHub Actions
+  # Git tab: one column per busy repository, the quiet rest in lines below
 
-  attr :gh, :map, required: true
+  attr :columns, :list, required: true
+  attr :quiet, :list, required: true
+  attr :now, :any, required: true
   attr :meta, :map, required: true
 
-  defp actions(assigns) do
+  defp git_tab(assigns) do
+    assigns = assign(assigns, skipped: Settings.skipped_repos(Settings.get()))
+
     ~H"""
-    <section class="actions" aria-label="GitHub Actions">
-      <div class="heading-row">
-        <h2 class="kicker">GitHub Actions · running now</h2>
-        <.freshness meta={@meta} />
+    <div class="git-tab">
+      <div :if={@meta.error} class="stale-note small">GitHub: {@meta.error}</div>
+      <div :if={@skipped != []} class="stale-note small">
+        Left out of settings, not owner/name: {Enum.join(@skipped, ", ")}
       </div>
-      <%= if @gh do %>
-        <div :if={@gh.running == []} class="empty-box">Nothing running.</div>
-        <div :for={r <- Enum.take(@gh.running, 2)} class="run-card">
-          <div class="row baseline">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              aria-hidden="true"
-              class="spin"
-            >
-              <circle cx="8" cy="8" r="6" stroke-dasharray="26 12"></circle>
-            </svg>
-            <span class="rc-name">{r.name}</span>
-            <span class="rc-what">{r.what}</span>
-            <span class="rc-elapsed"><.ago at={r.started_at} fmt="for" /></span>
-          </div>
-          <div class="bar">
-            <div class="bar-fill" style={"width: #{r.progress}%"}></div>
-          </div>
-          <div class="rc-step">{r.step}</div>
+      <div
+        class="git-cols"
+        style={"grid-template-columns: repeat(#{max(length(@columns), 1)}, minmax(0, 1fr))"}
+      >
+        <.git_column :for={r <- @columns} r={r} now={@now} />
+      </div>
+      <%= if @quiet != [] do %>
+        <div class="heading-row quiet-head">
+          <h2 class="kicker">Quiet repos · {length(@quiet)}</h2>
+          <span class="counts muted-ink">
+            {if Enum.any?(@quiet, & &1.hot?),
+              do: "more are busy than fit; the ones that ran last have the columns",
+              else:
+                "nothing running or failed in 6 hours; one moves up the moment it runs or goes red"}
+          </span>
         </div>
+        <div class="quiet-list">
+          <.quiet_line :for={r <- @quiet} r={r} />
+        </div>
+      <% end %>
+    </div>
+    """
+  end
 
-        <div :if={@gh.prs != []} class="heading-row gap-top">
-          <h2 class="kicker">Pull requests · {length(@gh.prs)} open</h2>
-        </div>
-        <div :if={@gh.prs != []} class="list">
-          <div :for={p <- Enum.take(@gh.prs, 2)} class="pr-row">
-            <span class={["gate-icon", "gate-#{p.gate}"]}>{gate_icon(p.gate)}</span>
-            <span class="pr-title">#{p.number} {p.title}</span>
-            <span class="pr-gate">{gate_words(p.gate, p.draft)}</span>
-            <span class="pr-time"><.ago at={p.updated_at} /></span>
-          </div>
-        </div>
+  attr :r, :map, required: true
+  attr :now, :any, required: true
 
-        <h2 class="kicker gap-top">Recent</h2>
-        <div class="list recent" data-clip>
-          <div :for={x <- @gh.recent} class="recent-row">
-            <span class={["icon", result_class(x.conclusion)]}>{result_icon(x.conclusion)}</span>
-            <span class="rr-text">
-              <span class="rr-name">{x.label}</span>
-              <span class="rr-what">{x.what}</span>
-            </span>
-            <span class="rr-when">
-              <span class="rr-time"><.ago at={x.updated_at} fmt="clock" /></span>
-              <span class="rr-took">{took(x.took)}</span>
-            </span>
-          </div>
-        </div>
+  # One repository: its name and main, what runs now, what finished, and
+  # the last 6 hours. Tapping the name opens its details.
+  defp git_column(assigns) do
+    ~H"""
+    <section class="git-col" aria-label={@r.repo}>
+      <button
+        class={["repo-head", main_red?(@r) && "red"]}
+        phx-click="open_repo"
+        phx-value-repo={@r.repo}
+      >
+        <span class="repo-name">
+          <span class={["dot10", main_tone(@r)]}></span>{@r.name}
+        </span>
+        <span :if={@r.s} class="repo-stats">
+          <span>Main <b>{main_word(@r)}</b>
+          <.ago :if={@r.s.main} at={@r.s.main.updated_at} fmt="clock" /></span>
+          <span>Queue <b>{queue_word(@r.s.queue)}</b></span>
+          <span>Failed <b>{length(@r.s.failures)}</b></span>
+        </span>
+        <span :if={@r.error} class="stale-note small">stale: {@r.error}</span>
+      </button>
+      <%= if @r.s do %>
+        <h3 class="kicker">Running now</h3>
+        <div :if={@r.s.running == []} class="empty-box small">Nothing running</div>
+        <.run_card :for={x <- Enum.take(@r.s.running, 2)} r={x} />
+        <h3 class="kicker">Recent</h3>
+        <.recent_list runs={@r.s.recent} />
+        <h3 class="kicker">Runs · last 6 hours</h3>
+        <.timeline lanes={@r.s.lanes} now={@now} />
       <% else %>
-        <div class="empty-note">{@meta.error || "Loading from GitHub…"}</div>
+        <div class="empty-box small">
+          {if @r.error, do: "Could not read it yet", else: "Loading from GitHub…"}
+        </div>
       <% end %>
     </section>
     """
   end
 
-  defp gate_icon(:passed), do: "✓"
-  defp gate_icon(:failed), do: "✗"
-  defp gate_icon(:running), do: "●"
-  defp gate_icon(_), do: "–"
+  attr :r, :map, required: true
+
+  # A repository with nothing going on: one line, which opens its details.
+  defp quiet_line(assigns) do
+    last = assigns.r.s && List.first(assigns.r.s.recent)
+    assigns = assign(assigns, last: last)
+
+    ~H"""
+    <button class="quiet-line" phx-click="open_repo" phx-value-repo={@r.repo}>
+      <b class="ql-name">{@r.name}</b>
+      <span class="ql-main">
+        <span class={["dot8", main_tone(@r)]}></span> Main {String.downcase(main_word(@r))}
+        <.ago :if={@r.s && @r.s.main} at={@r.s.main.updated_at} fmt="clock" />
+      </span>
+      <span>{if @r.s && @r.s.running != [],
+        do: "#{length(@r.s.running)} running",
+        else: "Nothing running"}</span>
+      <span class="ql-last">
+        <%!-- A repository that cannot be read says so before anything old. --%>
+        <%= cond do %>
+          <% @r.error -> %>
+            <span class="stale-note">stale: {@r.error}</span>
+          <% @last -> %>
+            Last: {@last.label} · {@last.what}
+            <span class={result_class(@last.conclusion)}>{result_icon(@last.conclusion)}</span>
+          <% true -> %>
+            No runs in the last day
+        <% end %>
+      </span>
+      <span class="ql-when"><.ago :if={@last && !@r.error} at={@last.updated_at} fmt="when" /></span>
+    </button>
+    """
+  end
+
+  defp main_red?(%{s: %{main: %{conclusion: "failure"}}}), do: true
+  defp main_red?(_), do: false
+
+  defp main_tone(%{s: %{main: %{conclusion: "success"}}}), do: "ok"
+  defp main_tone(%{s: %{main: %{conclusion: "failure"}}}), do: "bad"
+  defp main_tone(_), do: "muted"
+
+  defp main_word(%{s: %{main: %{conclusion: "success"}}}), do: "Green"
+  defp main_word(%{s: %{main: %{conclusion: "failure"}}}), do: "Red"
+  defp main_word(_), do: "Unknown"
+
+  defp queue_word([]), do: "0"
+  defp queue_word(queue), do: "#{length(queue)} waiting"
+
+  attr :r, :map, required: true
+
+  defp run_card(assigns) do
+    ~H"""
+    <div class="run-card">
+      <div class="row baseline">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+          class="spin"
+        >
+          <circle cx="8" cy="8" r="6" stroke-dasharray="26 12"></circle>
+        </svg>
+        <span class="rc-name">{@r.name}</span>
+        <span class="rc-what">{@r.what}</span>
+        <span class="rc-elapsed"><.ago at={@r.started_at} fmt="for" /></span>
+      </div>
+      <div class="bar">
+        <div class="bar-fill" style={"width: #{@r.progress}%"}></div>
+      </div>
+      <div class="rc-step">{@r.step}</div>
+    </div>
+    """
+  end
+
+  attr :runs, :list, required: true
+
+  # Finished runs, newest first; rows that do not fit whole are hidden.
+  defp recent_list(assigns) do
+    ~H"""
+    <div :if={@runs == []} class="empty-box small">No finished runs in the last day</div>
+    <div :if={@runs != []} class="list recent" data-clip>
+      <%!-- data-keep: a row app.js hid stays hidden through an update. --%>
+      <div :for={x <- @runs} class="recent-row" data-keep="style">
+        <span class={["icon", result_class(x.conclusion)]}>{result_icon(x.conclusion)}</span>
+        <span class="rr-text">
+          <span class="rr-name">{x.label}</span>
+          <span class="rr-what">{x.what}</span>
+        </span>
+        <span class="rr-when">
+          <span class="rr-time"><.ago at={x.updated_at} fmt="clock" /></span>
+          <span class="rr-took">{took(x.took)}</span>
+        </span>
+      </div>
+    </div>
+    """
+  end
+
+  # ---------------------------------------------------------------------------
+  # One repository, over the whole board
+
+  attr :r, :map, required: true
+  attr :facts, :map, default: nil
+  attr :meta, :map, required: true
+
+  defp repo_detail(assigns) do
+    assigns =
+      assign(assigns,
+        workflows: if(assigns.facts, do: GitHub.by_workflow(assigns.facts), else: [])
+      )
+
+    ~H"""
+    <div class="detail-scrim" phx-click="close_repo">
+      <div class="detail" phx-click="noop">
+        <div class="row">
+          <span class={["dot12", main_tone(@r)]}></span>
+          <h2 class="detail-title">{@r.repo}</h2>
+          <span class="grow"></span>
+          <button class="close" phx-click="close_repo" aria-label="Close">×</button>
+        </div>
+        <div class="detail-meta">
+          <span>Main {String.downcase(main_word(@r))}</span>
+          <span :if={@r.s && @r.s.main}>
+            gate <.ago at={@r.s.main.updated_at} fmt="when" />
+          </span>
+          <span :if={@r.s && @r.s.last_merge}>
+            last merge #{@r.s.last_merge.pr} <.ago at={@r.s.last_merge.updated_at} fmt="when" />
+          </span>
+          <span>updated <.ago at={@meta.fetched_at} /></span>
+          <span :if={@r.error} class="stale-note">stale: {@r.error}</span>
+        </div>
+
+        <div :if={!@r.s} class="empty-note">
+          {if @r.error, do: @r.error, else: "Loading from GitHub…"}
+        </div>
+        <div :if={@r.s} class="detail-body">
+          <div class="stat-grid">
+            <.stat label="Main" value={main_word(@r)} />
+            <.stat label="Merge queue" value={queue_word(@r.s.queue)} />
+            <.stat label="Running" value={length(@r.s.running)} />
+            <.stat label="Failed · 24h" value={length(@r.s.failures)} />
+            <.stat label="Open pull requests" value={length(@r.s.prs)} />
+            <.stat label="Workflows" value={length(@workflows)} note="that ran lately" />
+          </div>
+
+          <div class="detail-cols">
+            <div class="detail-col">
+              <h3 class="kicker">Running now</h3>
+              <div :if={@r.s.running == []} class="empty-box small">Nothing running</div>
+              <.run_card :for={x <- @r.s.running} r={x} />
+
+              <h3 class="kicker gap-top">Merge queue</h3>
+              <div :if={@r.s.queue == []} class="empty-box small">Empty</div>
+              <table :if={@r.s.queue != []} class="dtable">
+                <tr :for={q <- @r.s.queue}>
+                  <td>#{q.pr} {q.title}</td>
+                  <td>{q.state && String.downcase(q.state)}</td>
+                  <td><.ago at={q.enqueued_at} /></td>
+                </tr>
+              </table>
+
+              <h3 class="kicker gap-top">Failures · 24h</h3>
+              <div :if={@r.s.failures == []} class="empty-box small">None</div>
+              <table :if={@r.s.failures != []} class="dtable">
+                <tr :for={f <- @r.s.failures}>
+                  <td>{f.name} · {GitHub.what(f)}</td>
+                  <td><.ago at={f.updated_at} fmt="when" /></td>
+                </tr>
+              </table>
+
+              <h3 class="kicker gap-top">Pull requests</h3>
+              <div :if={@r.s.prs == []} class="empty-box small">None open</div>
+              <table :if={@r.s.prs != []} class="dtable">
+                <tr :for={p <- @r.s.prs}>
+                  <td>#{p.number} {p.title}</td>
+                  <td class={"gate-#{p.gate}"}>{gate_words(p.gate, p.draft)}</td>
+                  <td><.ago at={p.updated_at} /></td>
+                </tr>
+              </table>
+            </div>
+
+            <div class="detail-col detail-wide">
+              <h3 class="kicker">Every workflow</h3>
+              <div class="workflow-grid">
+                <div :for={{name, runs} <- @workflows} class="workflow">
+                  <span class="wf-name">{name}</span>
+                  <table class="dtable">
+                    <tr :for={x <- Enum.take(runs, 5)}>
+                      <td>
+                        <span class={result_class(x.conclusion)}>{run_icon(x)}</span> {x.what}
+                      </td>
+                      <td><.ago at={x.updated_at || x.started_at} fmt="when" /></td>
+                      <td>{took(x.took)}</td>
+                    </tr>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp run_icon(%{status: :completed, conclusion: c}), do: result_icon(c)
+  defp run_icon(_), do: "●"
 
   defp gate_words(gate, draft) do
     words =
@@ -1817,25 +2168,19 @@ defmodule WallboardWeb.BoardLive do
   # ---------------------------------------------------------------------------
   # 6-hour timeline
 
-  attr :gh, :map, required: true
+  attr :lanes, :list, required: true
   attr :now, :any, required: true
-  attr :meta, :map, required: true
 
   @window 6 * 3600
 
+  # Bars: teal passed, red failed, an outline still running. Every other
+  # hour is marked, which fits a column a quarter of the board wide.
   defp timeline(assigns) do
-    assigns = assign(assigns, hours: hour_marks(assigns.now))
+    assigns = assign(assigns, hours: assigns.now |> hour_marks() |> every_other())
 
     ~H"""
-    <section class="timeline" aria-label="Runs, last 6 hours">
-      <div class="heading-row">
-        <h2 class="kicker">Runs · last 6 hours</h2>
-        <span class="grow"></span>
-        <span class="legend"><span class="sw pass"></span>passed</span>
-        <span class="legend"><span class="sw fail"></span>failed</span>
-        <span class="legend"><span class="sw run"></span>running</span>
-      </div>
-      <div :for={lane <- (@gh && @gh.lanes) || []} class="lane">
+    <div class="timeline" aria-label="Runs, last 6 hours">
+      <div :for={lane <- @lanes} class="lane">
         <span class="lane-name">{lane.label}</span>
         <div class="lane-track">
           <span
@@ -1852,9 +2197,13 @@ defmodule WallboardWeb.BoardLive do
           <span class="tick now">now</span>
         </div>
       </div>
-    </section>
+    </div>
     """
   end
+
+  # Counted back from the last mark, so the one nearest now always shows.
+  defp every_other(marks),
+    do: marks |> Enum.reverse() |> Enum.take_every(2) |> Enum.reverse()
 
   defp pct(seconds), do: Float.round(seconds * 100 / @window, 3)
 

@@ -665,10 +665,12 @@ defmodule Wallboard.RemoteTest do
       file = Path.join(Path.dirname(settings_file), "connect.#{kind}")
       File.write!(file, code)
 
+      wanted = Jason.encode!(Ingest.hooks())
+
       args =
         if kind == :python,
-          do: [file, settings_file, script],
-          else: ["-l", "JavaScript", file, settings_file, script]
+          do: [file, settings_file, script, wanted],
+          else: ["-l", "JavaScript", file, settings_file, script, wanted]
 
       {out, 0} = System.cmd(cmd, args, stderr_to_stdout: true)
       assert out == ""
@@ -705,6 +707,39 @@ defmodule Wallboard.RemoteTest do
           end
         end
       end
+    end
+
+    test "the whole connect script gives Claude every hook and Codex only its two" do
+      dir = tmp_dir()
+      claude = Path.join(dir, ".claude")
+      codex = Path.join(dir, ".codex")
+      File.mkdir_p!(codex)
+      install = Path.join(dir, "install.sh")
+      File.write!(install, Ingest.install_script("http://192.168.1.20:4747", "abc"))
+
+      assert {_, 0} =
+               System.cmd("sh", [install],
+                 env: [
+                   {"HOME", dir},
+                   {"CLAUDE_CONFIG_DIR", claude},
+                   {"CODEX_HOME", codex}
+                 ],
+                 stderr_to_stdout: true
+               )
+
+      events = fn file ->
+        file
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("hooks")
+        |> Map.keys()
+        |> Enum.sort()
+      end
+
+      assert events.(Path.join(claude, "settings.json")) ==
+               Ingest.hooks() |> Enum.map(& &1["event"]) |> Enum.sort()
+
+      assert events.(Path.join(codex, "hooks.json")) == ~w(SessionEnd Stop)
     end
   end
 end

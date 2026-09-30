@@ -119,7 +119,7 @@ defmodule Wallboard.Sources.GitHubTest do
 
   describe "summary/3 on the real day" do
     setup do
-      %{s: GitHub.summary(facts(), settings(), @now)}
+      %{s: GitHub.summary(facts(), settings().github, @now)}
     end
 
     test "main is green from the last merge queue gate", %{s: s} do
@@ -189,7 +189,7 @@ defmodule Wallboard.Sources.GitHubTest do
     s =
       GitHub.summary(
         %{facts() | runs: [run, done], deploys: [], jobs: jobs},
-        settings(),
+        settings().github,
         @now
       )
 
