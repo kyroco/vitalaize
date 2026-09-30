@@ -190,12 +190,15 @@ defmodule Wallboard.CodexTest do
       for {command, name} <- [
             {~s[curl -H "Authorization: Bearer sk-live-1" https://x], "curl"},
             {"TOKEN=abc ./bin/deploy.sh prod", "deploy.sh"},
+            {~s[PGPASSWORD="hunter2 horse" psql], "psql"},
+            {["bash", "-lc", ~s[API_KEY="a b" deploy]], "deploy"},
+            {["/bin/zsh", "-lc", "rm -r x"], "rm"},
             {~s[bash -c "psql postgres://u:pw@h"], "psql"},
             {"grep -c x file", "grep"}
           ] do
         why = Codex.waiting(Map.put(mark, "tool_input", %{"command" => command}), t)
         assert why == "Asks to run " <> name
-        refute why =~ "sk-live" or why =~ "pw@"
+        refute why =~ "sk-live" or why =~ "pw@" or why =~ "horse" or why =~ " b"
       end
 
       assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => "  "}), t) ==
@@ -280,6 +283,14 @@ defmodule Wallboard.CodexTest do
       helper = Map.put(mark, "agent_id", "a1")
       card = Codex.card(t, [], "Fix it", at(45), %{@id => [helper]})
       assert {card.status, card.why} == {:needs, "Asks to run git"}
+
+      # The session's own activity says nothing about the helper: a later
+      # line, a finished turn or a new turn in the session leave it waiting.
+      busy = %{t | last_at: DateTime.from_unix!(at(40))}
+      assert Codex.waiting(helper, busy) == "Asks to run git"
+      assert Codex.waiting(helper, %{t | running: false}) == "Asks to run git"
+      assert Codex.waiting(helper, %{t | turn_started_at: DateTime.from_unix!(at(35))})
+
       card = Codex.card(t, [kid], "Fix it", at(45), %{"kid" => [mark]})
       assert {card.status, card.why} == {:needs, "Asks to run git"}
 
@@ -347,8 +358,8 @@ defmodule Wallboard.CodexTest do
 
       settings = %{codex: %{enabled: true, dirs: [dir], idle_minutes: 120}, alerts: %{phone: nil}}
 
-      # An approval request from yesterday is still out: Codex writes
-      # nothing while it waits.
+      # An approval request from six hours ago is still out: Codex writes
+      # nothing while it waits. One from 13 hours ago is let go.
       asking = Path.join(marks, "asking.json")
 
       File.write!(
@@ -356,7 +367,16 @@ defmodule Wallboard.CodexTest do
         Jason.encode!(%{session_id: "asking", hook_event_name: "PermissionRequest"})
       )
 
-      File.touch!(asking, now_s - 24 * 3600)
+      File.touch!(asking, now_s - 6 * 3600)
+
+      too_old = Path.join(marks, "too-old.json")
+
+      File.write!(
+        too_old,
+        Jason.encode!(%{session_id: "too-old", hook_event_name: "PermissionRequest"})
+      )
+
+      File.touch!(too_old, now_s - 13 * 3600)
 
       # A helper's calls sit beside the session's own.
       File.write!(

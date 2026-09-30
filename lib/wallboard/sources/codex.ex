@@ -16,15 +16,17 @@ defmodule Wallboard.Sources.Codex do
   you comes from VitalAIze's Codex hook instead (priv/codex-hook.sh). The
   board keeps a copy at <codex dir>/vitalaize/hook.sh; once the person adds
   it to ~/.codex/hooks.json and approves it in Codex, Codex runs it on
-  PermissionRequest, PostToolUse, UserPromptSubmit and Stop, and it keeps
-  the latest call for each session as vitalaize/<session id>.json. A session
-  needs you when that latest call is
+  PermissionRequest, PostToolUse, UserPromptSubmit, Stop and SessionEnd, and
+  it keeps the latest call for each session as vitalaize/<session id>.json,
+  and for each helper agent in it as vitalaize/<session id>.<agent id>.json.
+  A session needs you when one of those is
 
     * PermissionRequest: Codex is asking to run something, or
     * Stop, with a last message whose last paragraph ends in a question mark
 
-  Anything later (the tool ran, the person typed, the turn ended without a
-  question) replaces it, so the card goes back to working or idle.
+  and nothing has moved on since (see `waiting/2`). A session with an
+  approval request out stays on the board for up to 12 hours, past the idle
+  window, since Codex writes nothing while it waits.
 
   The first poll reads each recent file in full; after that only the new
   lines at the end are read.
@@ -36,8 +38,10 @@ defmodule Wallboard.Sources.Codex do
   @hook_folder "vitalaize"
   # A session's last hook call is kept this long, then removed.
   @mark_keep_seconds 7 * 24 * 3600
-  # An approval request keeps its session on the board this long.
-  @asking_seconds 2 * 24 * 3600
+  # An approval request keeps its session on the board this long, past the
+  # idle window: long enough to find it after a night away, short enough
+  # that one left by a Codex that crashed does not stay for days.
+  @asking_seconds 12 * 3600
 
   # ---------------------------------------------------------------------------
   # Poller hooks (see Wallboard.Poller)
@@ -262,26 +266,35 @@ defmodule Wallboard.Sources.Codex do
   end
 
   @doc """
-  Why a session is waiting on you, from its latest hook call, or nil when it
+  Why a session is waiting on you, from one of its hook calls, or nil when it
   is not. A call is out of date when a turn started after it. An approval
   request is also over once the session writes anything later (the command
   ran, or was turned down) or its turn ends (it was interrupted). A turn that
   ended on a question counts only in a session a person started in Codex:
   one run by a script or by Claude has nobody at the keyboard.
+
+  A helper agent's approval request (it carries `agent_id` and comes under
+  the session's id) is judged on its own: the session's file says nothing
+  about the helper, so only the helper's next hook call clears it.
   """
   def waiting(nil, _t), do: nil
 
   def waiting(%{"at" => at} = mark, t) do
     started = t.turn_started_at && DateTime.to_unix(t.turn_started_at)
     last = t.last_at && DateTime.to_unix(t.last_at)
+    helper? = mark["agent_id"] not in [nil, ""]
 
     case mark["hook_event_name"] do
+      "PermissionRequest" when helper? ->
+        approval(mark)
+
       _ when started != nil and at < started ->
         nil
 
       "PermissionRequest" ->
         # Codex's own lines are stamped to the second and may land in the
-        # same second as the request, so only a later second counts.
+        # same second as the request, so a line counts only from two seconds
+        # after it.
         if t.running and not (last && last > at + 1), do: approval(mark)
 
       # Another Stop hook can send the turn on, so it counts once the turn
@@ -301,10 +314,12 @@ defmodule Wallboard.Sources.Codex do
   # token, and this text goes on the board and into a text message.
   defp approval(%{"tool_input" => %{"command" => command}} = mark)
        when is_binary(command) or is_list(command) do
+    # A list is the program and its arguments already; a string is split the
+    # way a shell would, so a quoted value with a space stays one word.
     words =
       if is_list(command),
-        do: command |> Enum.filter(&is_binary/1) |> Enum.flat_map(&String.split/1),
-        else: String.split(command)
+        do: Enum.filter(command, &is_binary/1),
+        else: OptionParser.split(command)
 
     case program(words) do
       nil -> approval(Map.delete(mark, "tool_input"))
@@ -322,17 +337,16 @@ defmodule Wallboard.Sources.Codex do
   @shells ["sh", "bash", "zsh", "dash", "fish"]
 
   defp program([word | rest]) do
-    word = String.replace(word, ~r/^["']+|["']+$/, "")
-
     cond do
-      word == "" ->
+      String.trim(word) == "" ->
         program(rest)
 
       word =~ ~r/^[A-Za-z_][A-Za-z0-9_]*=/ ->
         program(rest)
 
       Path.basename(word) in @shells and match?([<<"-", _::binary>>, _ | _], rest) ->
-        program(tl(rest))
+        [_flag, script | _] = rest
+        program(OptionParser.split(script))
 
       true ->
         Path.basename(word)

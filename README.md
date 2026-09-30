@@ -167,7 +167,8 @@ Run the tests with `mix test`.
       "PermissionRequest": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
       "PostToolUse": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
       "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
-      "Stop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}]
+      "Stop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "SessionEnd": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}]
     }
   }
   ```
@@ -180,8 +181,10 @@ Run the tests with `mix test`.
   only the program Codex wants to run, never the whole command, since that
   can hold a password. Codex tells nothing when a command you approved
   starts, so the card keeps saying Needs you until that command finishes.
-  The hook keeps only the latest thing Codex sent it for each session, in
-  `~/.codex/vitalaize`, and the board removes those after a week.
+  A card waiting on your approval stays up to 12 hours, even past the idle
+  time. The hook keeps only the latest thing Codex sent it for each session
+  and each helper agent, in `~/.codex/vitalaize`, and the board removes those
+  after a week.
 - **Production page.** Set `new_relic: %{enabled: false}` if you do not use
   New Relic. Otherwise set `api_key_ref` to where your New Relic User API key
   lives in 1Password (`"op://Vault/Item/field"`), `account_id`, and the
