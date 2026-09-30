@@ -18,9 +18,9 @@ defmodule Wallboard.Sources.Codex do
   it to ~/.codex/hooks.json and approves it in Codex, Codex runs it on
   PermissionRequest, PostToolUse, UserPromptSubmit, Stop, SubagentStop,
   Interrupt and SessionEnd, and it keeps the latest call for each session as
-  vitalaize/<session id>.json, for each helper agent in it as
-  vitalaize/<session id>.<agent id>.json, and the latest approval request of
-  each beside it as <name>.ask.json. A session needs you when one of those is
+  vitalaize/<session id>.json, and for each helper agent in it as
+  vitalaize/<session id>.<agent id>.json. A session needs you when one of
+  those is
 
     * PermissionRequest: Codex is asking to run something, or
     * Stop, with a last message whose last paragraph ends in a question mark
@@ -212,7 +212,7 @@ defmodule Wallboard.Sources.Codex do
 
     found =
       for {path, name} <- hook_files(settings),
-          name =~ ~r/^[0-9A-Za-z_-]+(\.[0-9A-Za-z_-]+)?(\.ask)?\.json$/,
+          name =~ ~r/^[0-9A-Za-z_-]+(\.[0-9A-Za-z_-]+)?\.json$/,
           {:ok, %{mtime: mtime, size: size}} <- [File.stat(path, time: :posix)],
           mtime >= cutoff or forget(path, mtime, now_s),
           mark = cached(read[path], {mtime, size}) || decode(path, mtime),
@@ -220,7 +220,10 @@ defmodule Wallboard.Sources.Codex do
 
     marks =
       for {_path, {_, %{"session_id" => _, "at" => at} = mark}} <- found,
-          at >= idle_cutoff or mark["hook_event_name"] == "PermissionRequest" do
+          # An interrupt or quit settles a helper's request, so it is kept
+          # as long as the request is.
+          at >= idle_cutoff or
+            mark["hook_event_name"] in ["PermissionRequest", "Interrupt", "SessionEnd"] do
         mark
       end
       |> Enum.group_by(& &1["session_id"])
@@ -266,9 +269,6 @@ defmodule Wallboard.Sources.Codex do
     false
   end
 
-  # Hook calls after which nothing from the turn is still waiting.
-  @turn_over ["Stop", "SubagentStop", "UserPromptSubmit", "Interrupt", "SessionEnd"]
-
   @doc """
   Why a session is waiting on you, from one of its hook calls, or nil when it
   is not. `others` are the session's other latest hook calls (see
@@ -276,17 +276,16 @@ defmodule Wallboard.Sources.Codex do
   that ended on a question counts only in a session a person started in
   Codex: one run by a script or by Claude has nobody at the keyboard.
 
-  The hook keeps an approval request in a file of its own, so another tool
-  call finishing does not replace it. It is over when:
+  The hook keeps only the latest call from each agent, so an approval
+  request is over as soon as that agent's next hook call comes in (the
+  command ran, the turn ended, the person typed), or, for the session's own
+  request, its file shows the turn has ended. A helper agent's request (it
+  carries `agent_id`) is also over when the person interrupts or quits the
+  session; the session's file says nothing else about the helper.
 
-    * a PostToolUse comes in for the same turn and the same command (it was
-      approved and ran), or
-    * its agent's turn ends, or the person interrupts or quits (it was
-      turned down, or left), or
-    * for the session's own request, its file shows the turn has ended.
-
-  A helper agent's request (it carries `agent_id`) is judged only on hook
-  calls: the session's file says nothing about the helper.
+  Known limit: if the agent runs other tool calls alongside the one waiting
+  on approval, the first of those to finish replaces the request, and the
+  card stops saying Needs you while Codex still waits.
   """
   def waiting(mark, t, others \\ [])
 
@@ -298,13 +297,13 @@ defmodule Wallboard.Sources.Codex do
 
     case mark["hook_event_name"] do
       "PermissionRequest" when helper? ->
-        if not answered?(mark, others), do: approval(mark)
+        if not session_over?(mark, others), do: approval(mark)
 
       _ when started != nil and at < started ->
         nil
 
       "PermissionRequest" ->
-        if t.running and not answered?(mark, others), do: approval(mark)
+        if t.running, do: approval(mark)
 
       # Another Stop hook can send the turn on, so it counts once the turn
       # has really ended.
@@ -321,32 +320,13 @@ defmodule Wallboard.Sources.Codex do
 
   defp agent(mark), do: if(mark["agent_id"] in [nil, ""], do: nil, else: mark["agent_id"])
 
-  # A later hook call that settles an approval request. Hook times are to the
-  # second, so the matching PostToolUse may share its second; an end of turn
-  # must come after it.
-  defp answered?(%{"at" => at} = ask, others) do
+  # The person interrupted or quit the session after a helper asked.
+  defp session_over?(%{"at" => at}, others) do
     Enum.any?(others, fn other ->
-      same_agent? = agent(other) == agent(ask)
-      event = other["hook_event_name"]
-      other_at = other["at"]
-
-      cond do
-        not is_integer(other_at) -> false
-        same_agent? and event == "PostToolUse" -> other_at >= at and same_call?(ask, other)
-        same_agent? and event in @turn_over -> other_at > at
-        # The person interrupting or quitting ends the helpers' work too.
-        agent(other) == nil and event in ["Interrupt", "SessionEnd"] -> other_at > at
-        true -> false
-      end
+      agent(other) == nil and other["hook_event_name"] in ["Interrupt", "SessionEnd"] and
+        is_integer(other["at"]) and other["at"] > at
     end)
   end
-
-  defp same_call?(ask, done) do
-    ask["turn_id"] == done["turn_id"] and call_input(ask) == call_input(done)
-  end
-
-  defp call_input(%{"tool_input" => %{"command" => command}}), do: command
-  defp call_input(mark), do: mark["tool_input"]
 
   # Only the program's name: the rest of a command can hold a password or a
   # token, and this text goes on the board and into a text message.

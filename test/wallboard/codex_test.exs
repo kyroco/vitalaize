@@ -217,35 +217,26 @@ defmodule Wallboard.CodexTest do
         "at" => at(20)
       }
 
-      ran = %{ask | "hook_event_name" => "PostToolUse", "at" => at(90)}
       assert Codex.waiting(ask, t, []) == "Asks to run mix"
 
-      # The same command in the same turn finished: it was approved and ran.
-      assert Codex.waiting(ask, t, [ran]) == nil
-
-      # Another tool call finishing, even at once, leaves it waiting.
-      other = %{ran | "tool_input" => %{"command" => "ls"}, "at" => at(21)}
-      assert Codex.waiting(ask, t, [other]) == "Asks to run mix"
-      assert Codex.waiting(ask, t, [%{ran | "turn_id" => "t0"}]) == "Asks to run mix"
-
-      # Turned down or left: the turn ended, the person interrupted or quit.
-      assert Codex.waiting(ask, %{t | running: false}, []) == nil
-
-      for event <- ["Stop", "UserPromptSubmit", "Interrupt", "SessionEnd"] do
-        assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(21)}]) == nil
-        # One from before the request is older news.
-        assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(20)}])
+      # The hook keeps the agent's latest call only, so its next call (the
+      # command ran, the turn ended, the person typed) takes the request's
+      # place, and that is not waiting on you.
+      for event <- ["PostToolUse", "UserPromptSubmit", "Interrupt", "SessionEnd"] do
+        assert Codex.waiting(%{ask | "hook_event_name" => event, "at" => at(90)}, t, []) == nil
       end
+
+      # Turned down and the turn ended, per the session's own file.
+      assert Codex.waiting(ask, %{t | running: false}, []) == nil
     end
 
-    test "a helper's approval request is over when the helper stops or the person interrupts" do
+    test "a helper's approval request is over when the person interrupts or quits" do
       t = running_tally()
       ask = %{"hook_event_name" => "PermissionRequest", "agent_id" => "a1", "at" => at(20)}
       assert Codex.waiting(ask, t, []) == "Asks for your approval"
 
-      stop = %{"hook_event_name" => "SubagentStop", "agent_id" => "a1", "at" => at(25)}
-      assert Codex.waiting(ask, t, [stop]) == nil
-      assert Codex.waiting(ask, t, [%{stop | "agent_id" => "a2"}]) == "Asks for your approval"
+      # An interrupt from before the request is older news.
+      assert Codex.waiting(ask, t, [%{"hook_event_name" => "Interrupt", "at" => at(20)}])
 
       for event <- ["Interrupt", "SessionEnd"] do
         assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(25)}]) == nil

@@ -6,14 +6,22 @@
 # each session, as <session id>.json next to this script, and for each helper
 # agent working in it (whose calls carry agent_id) as
 # <session id>.<agent id>.json, so a helper never replaces the session's own.
-# An approval request goes in a file of its own, <name>.ask.json, so another
-# tool call finishing never replaces it. The board reads those files.
+# The board reads those: an approval request, or a turn that ended on a
+# question, shows the session as needing you until the next hook call.
+#
+# For now, while what Codex sends is being checked: when a file named
+# capture-on sits next to this script, every call is also added, as one line,
+# to payloads.jsonl here. Delete capture-on to stop.
 #
 # It prints nothing and always exits 0, so it can never hold Codex up.
 
 dir=$(dirname "$0")
 tmp=$(mktemp "$dir/.hook.XXXXXX") || exit 0
 cat > "$tmp"
+
+if [ -e "$dir/capture-on" ]; then
+  { tr -d '\n\r' < "$tmp"; echo; } >> "$dir/payloads.jsonl"
+fi
 
 # The first value of a key, limited to letters, digits, - and _. JSON strings
 # cannot hold a raw line break, so joining the lines is safe. Codex writes
@@ -25,14 +33,11 @@ first() {
 
 id=$(first session_id)
 agent=$(first agent_id)
-event=$(first hook_event_name)
 
-name=$id
-[ -n "$agent" ] && name="$id.$agent"
-[ "$event" = "PermissionRequest" ] && name="$name.ask"
-
-if [ -n "$id" ]; then
-  mv -f "$tmp" "$dir/$name.json"
+if [ -n "$id" ] && [ -n "$agent" ]; then
+  mv -f "$tmp" "$dir/$id.$agent.json"
+elif [ -n "$id" ]; then
+  mv -f "$tmp" "$dir/$id.json"
 else
   rm -f "$tmp"
 fi

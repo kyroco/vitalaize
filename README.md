@@ -212,6 +212,9 @@ one, delete it from the release first.
   only the program Codex wants to run, never the whole command, since that
   can hold a password. Codex tells nothing when a command you approved
   starts, so the card keeps saying Needs you until that command finishes.
+  And if Codex runs other commands at the same time as the one waiting on
+  you, the first of those to finish clears the card although Codex still
+  waits.
   A card waiting on your approval stays up to 12 hours, even past the idle
   time. The hook keeps only the latest thing Codex sent it for each session
   and each helper agent, in `~/.codex/vitalaize`, and the board removes those
