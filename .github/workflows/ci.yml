@@ -1,7 +1,8 @@
 # Runs the tests, plus the code style and compiler warning checks, on Linux
-# and macOS for every pull request and every push to main. On a version tag (v0.3.0) it also builds the two Linux downloads on
-# real Intel and ARM machines, checks each one starts, and attaches them to
-# that tag's GitHub release.
+# and macOS for every pull request and every push to main. On a version tag
+# (v0.3.0) it also builds the two Linux downloads on real Intel and ARM
+# machines, checks each one starts, and attaches them to that tag's GitHub
+# release.
 #
 # The Mac installer is not built here: signing and notarizing it needs the
 # Developer ID, so it stays a local build (macos/build.sh).
@@ -60,15 +61,18 @@ jobs:
             _build
           key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
-      # --force recompiles this project (not its dependencies), so a warning
-      # in a file the cache already built still shows up and fails the run.
-      - name: No compiler warnings
-        run: mix compile --warnings-as-errors --force
-      # After the compile, because the formatter loads the Phoenix plugin
-      # named in .formatter.exs.
       - name: Code is formatted
         run: mix format --check-formatted
-      - run: mix test
+      # --force recompiles this project (not its dependencies), so a warning
+      # in a file the cache already built still shows up and fails the run.
+      # Runs even when the style check failed, so one push reports both.
+      - name: No compiler warnings
+        if: ${{ !cancelled() }}
+        run: mix compile --warnings-as-errors --force
+      # --warnings-as-errors here covers the test files, which the compile
+      # step above does not build.
+      - if: ${{ !cancelled() }}
+        run: mix test --warnings-as-errors
 
   linux-download:
     name: Linux download (${{ matrix.arch }})
