@@ -107,12 +107,22 @@ jobs:
             _build
           key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
+      # Prints each finding in the log and fails the check on any. The
+      # pass-or-fail settings are given here, not left to .sobelow-conf, so a
+      # pull request that deletes or edits that file cannot turn the check
+      # off without changing this line too. --no-skip ignores
+      # `# sobelow_skip` comments and a .sobelow-skips file.
       - name: Sobelow
-        id: sobelow
-        run: mix sobelow --config --format sarif > sobelow.sarif
+        run: mix sobelow --config --exit medium --threshold medium --no-skip --verbose
+      # The same findings as SARIF, for the Security tab. --out, not a
+      # redirect, so compiler output never lands in the file. Sobelow exits
+      # 1 when it finds something; the step above already failed for that.
+      - name: Findings file
+        if: ${{ !cancelled() }}
+        run: mix sobelow --config --exit medium --threshold medium --no-skip --format sarif --out sobelow.sarif || [ $? -eq 1 ]
       # Puts the findings under the repo's Security tab. A pull request from
-      # a fork gets no permission to upload, so there the failing check
-      # above is the whole report.
+      # a fork gets no permission to upload, so there the log of the
+      # Sobelow step is the report.
       - name: Upload the findings to GitHub
         if: ${{ !cancelled() && hashFiles('sobelow.sarif') != '' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2

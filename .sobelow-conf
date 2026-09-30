@@ -1,9 +1,10 @@
-# Sobelow's settings. CI runs `mix sobelow --config`, which reads this file,
-# and fails on any finding at medium confidence or above.
+# Sobelow's settings, read by `mix sobelow --config`. CI fails on any finding
+# at medium confidence or above, and ignores `# sobelow_skip` comments in the
+# code: a finding is skipped only in `ignore` below, with the reason beside it.
 [
   verbose: false,
   private: true,
-  skip: true,
+  skip: false,
   router: "",
   exit: "medium",
   format: "txt",
