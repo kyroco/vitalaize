@@ -1,0 +1,126 @@
+# Runs the tests on Linux and macOS for every pull request and every push to
+# main. On a version tag (v0.3.0) it also builds the two Linux downloads on
+# real Intel and ARM machines, checks each one starts, and attaches them to
+# that tag's GitHub release.
+#
+# The Mac installer is not built here: signing and notarizing it needs the
+# Developer ID, so it stays a local build (macos/build.sh).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request replaces the run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  OTP_VERSION: "29"
+  ELIXIR_VERSION: "1.20"
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu 22.04 is the oldest Linux the downloads promise to run on.
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      - uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ env.OTP_VERSION }}-ex${{ env.ELIXIR_VERSION }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix test
+
+  linux-download:
+    name: Linux download (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    strategy:
+      matrix:
+        include:
+          # Built on Ubuntu 22.04 so the downloads keep working there: a
+          # build links against the system's C library and OpenSSL, and a
+          # newer system's would be too new for 22.04.
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      - name: Check the tag matches the version in mix.exs
+        id: version
+        run: |
+          version=$(sed -n 's/^ *version: "\(.*\)",$/\1/p' mix.exs)
+          if [ -z "$version" ] || [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in mix.exs."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: mix deps.get --only prod
+      - run: mix release --overwrite
+      - name: Package
+        run: |
+          name="vitalaize-${{ steps.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz"
+          mkdir dist
+          cp -R _build/prod/rel/wallboard dist/vitalaize
+          tar -czf "$name" -C dist vitalaize
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - name: Check the download starts
+        run: scripts/check-release.sh "$NAME"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ env.NAME }}
+          if-no-files-found: error
+
+  release:
+    name: Attach to the release
+    needs: linux-download
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: downloads
+          merge-multiple: true
+      # If the release for this tag already exists, the downloads are added
+      # to it (replacing any of the same name). If not, a draft is made, so
+      # nothing is public until someone adds the notes and the Mac installer
+      # and publishes it.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --verify-tag --title "VitalAIze ${tag#v}" --notes ""
+          fi
+          gh release upload "$tag" downloads/*.tar.gz --clobber
