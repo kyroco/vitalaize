@@ -92,6 +92,51 @@ defmodule Wallboard.CodexUploadTest do
     # A file whose name and contents disagree, and one that is not Codex's.
     assert {:error, _} = Ingest.sort_codex_files([{name(@other), session(@main)}])
     assert {:error, _} = Ingest.sort_codex_files([{name(@main), ~s({"type":"user"}\n)}])
+    # A name that only matches up to a trailing newline.
+    assert {:error, _} = Ingest.sort_codex_files([{name(@main) <> "\n", session(@main)}])
+  end
+
+  defp tar(dir, files) do
+    path = Path.join(dir, "up-#{System.unique_integer([:positive])}.tgz")
+
+    :ok =
+      :erl_tar.create(
+        String.to_charlist(path),
+        for({n, b} <- files, do: {String.to_charlist(n), b}),
+        [:compressed]
+      )
+
+    File.read!(path)
+  end
+
+  test "a machine or account of dots, or with a newline, cannot write outside the inbox" do
+    start_supervised!({Store, path: ":memory:"})
+    dir = tmp_dir()
+    db_dir = Path.join(dir, "a/b/hub")
+    settings = %{archive: %{path: Path.join(db_dir, "wallboard.db")}, usage: %{prices: %{}}}
+    up = tar(dir, [{name(@main), session(@main)}])
+
+    for {machine, account} <- [{"..", ".."}, {"..", "."}, {"...", ".codex"}, {"host\n", ".codex"}] do
+      assert {:error, _} = Ingest.receive_codex(up, machine, account, settings)
+    end
+
+    assert Path.wildcard(Path.join(dir, "**/*.jsonl"), match_dot: true) == []
+    assert Store.list_sessions() == []
+
+    assert {:ok, @main} = Ingest.receive_codex(up, "papa", ".codex", settings)
+  end
+
+  test "an upload is saved under the id that was checked, whatever later lines say" do
+    start_supervised!({Store, path: ":memory:"})
+    dir = tmp_dir()
+    settings = %{archive: %{path: Path.join(dir, "wallboard.db")}, usage: %{prices: %{}}}
+    # A second session_meta line naming another thread.
+    body = session(@main, nil, [meta("not-" <> @main, nil)])
+
+    assert {:ok, @main} =
+             Ingest.receive_codex(tar(dir, [{name(@main), body}]), "papa", ".codex", settings)
+
+    assert [%{session_id: @main}] = Store.list_sessions()
   end
 
   describe "the Codex upload script" do
@@ -117,30 +162,32 @@ defmodule Wallboard.CodexUploadTest do
       {"id":"#{@main}","thread_name":"Fix the flaky test"}
       """)
 
-      # A curl that keeps what it was asked to send instead of sending it.
+      # A curl that keeps what it was asked to send instead of sending it,
+      # after an optional pause (CURL_PAUSE) standing in for a slow hub.
       bin = Path.join(dir, "bin")
       File.mkdir_p!(bin)
       out = Path.join(dir, "out")
 
       File.write!(Path.join(bin, "curl"), """
       #!/bin/sh
+      sleep "${CURL_PAUSE:-0}"
       for a in "$@"; do
         case "$a" in
           @*) cp "${a#@}" "#{out}.tgz" ;;
           http*) printf '%s' "$a" > "#{out}.url" ;;
         esac
       done
+      echo sent >> "#{out}.log"
       """)
 
       File.chmod!(Path.join(bin, "curl"), 0o755)
       script = Path.join(dir, "upload.sh")
       File.write!(script, Ingest.codex_upload_script("http://hub.test:4747", "k3y"))
 
-      %{dir: dir, bin: bin, out: out, script: script, main: main, helper: helper}
+      %{dir: dir, home: home, bin: bin, out: out, script: script, main: main, helper: helper}
     end
 
-    defp run(ctx, path, event) do
-      File.rm(ctx.out <> ".tgz")
+    defp run(ctx, path, event, env \\ []) do
       # Pretty-printed, so the script does not depend on how Codex spaces it.
       input =
         Jason.encode!(
@@ -152,12 +199,34 @@ defmodule Wallboard.CodexUploadTest do
       File.write!(input_file, input)
 
       System.cmd("sh", ["-c", "sh \"$0\" < \"$1\"", ctx.script, input_file],
-        env: [{"PATH", ctx.bin <> ":" <> System.get_env("PATH")}, {"TMPDIR", ctx.dir}]
+        env:
+          [
+            {"PATH", ctx.bin <> ":" <> System.get_env("PATH")},
+            {"TMPDIR", ctx.dir},
+            {"WALLBOARD_WAIT_SECONDS", "2"}
+          ] ++ env
       )
+    end
+
+    # The send happens in the background, after the script has returned.
+    defp sends(ctx) do
+      case File.read(ctx.out <> ".log") do
+        {:ok, text} -> length(String.split(text, "\n", trim: true))
+        _ -> 0
+      end
+    end
+
+    defp wait_for(fun, ms \\ 8_000) do
+      cond do
+        fun.() -> true
+        ms <= 0 -> false
+        true -> Process.sleep(100) && wait_for(fun, ms - 100)
+      end
     end
 
     test "sends the session, its helpers and its title, and the hub saves them", ctx do
       assert {"{}\n", 0} = run(ctx, ctx.main, "Stop")
+      assert wait_for(fn -> sends(ctx) == 1 end)
 
       url = File.read!(ctx.out <> ".url")
       assert url =~ "http://hub.test:4747/ingest/transcript?tool=codex&machine="
@@ -189,20 +258,69 @@ defmodule Wallboard.CodexUploadTest do
       assert File.exists?(Path.join([ctx.dir, "hub/inbox/probe-mac/.codex", name(@main)]))
     end
 
-    test "sends at most once a minute while running, and always at the end", ctx do
+    test "answers Codex at once, even when the hub is slow", ctx do
+      {micros, {"{}\n", 0}} =
+        :timer.tc(fn -> run(ctx, ctx.main, "Stop", [{"CURL_PAUSE", "5"}]) end)
+
+      assert micros < 2_000_000
+      assert sends(ctx) == 0
+      assert wait_for(fn -> sends(ctx) == 1 end)
+    end
+
+    test "a turn within a minute of a send goes once the minute is up, and the end at once",
+         ctx do
       run(ctx, ctx.main, "Stop")
-      assert File.exists?(ctx.out <> ".tgz")
+      assert wait_for(fn -> sends(ctx) == 1 end)
+
+      # Two quick turns: one waiting send, not two, and not right away.
+      run(ctx, ctx.main, "Stop")
+
+      assert wait_for(fn ->
+               File.exists?(Path.join(ctx.dir, "wallboard-sent-#{@main}.waiting"))
+             end)
 
       run(ctx, ctx.main, "Stop")
-      refute File.exists?(ctx.out <> ".tgz")
+      assert sends(ctx) == 1
+      assert wait_for(fn -> sends(ctx) == 2 end)
+      Process.sleep(1_000)
+      assert sends(ctx) == 2
 
       run(ctx, ctx.main, "SessionEnd")
-      assert File.exists?(ctx.out <> ".tgz")
+      assert wait_for(fn -> sends(ctx) == 3 end, 1_500)
+    end
+
+    test "an archived session still goes with its helpers, from the right account", ctx do
+      archive = Path.join(ctx.home, "archived_sessions")
+      File.mkdir_p!(archive)
+      main = Path.join(archive, name(@main))
+      File.rename!(ctx.main, main)
+      File.rename!(ctx.helper, Path.join(archive, Path.basename(ctx.helper)))
+
+      run(ctx, main, "SessionEnd")
+      assert wait_for(fn -> sends(ctx) == 1 end)
+      assert String.ends_with?(File.read!(ctx.out <> ".url"), "&account=.codex")
+
+      {:ok, files} = :erl_tar.extract(ctx.out <> ".tgz", [:compressed, :memory])
+      assert length(files) == 3
+    end
+
+    test "a tar that says a file grew while it read it still sends", ctx do
+      # GNU tar's exit status for that case, on top of a whole archive.
+      File.write!(Path.join(ctx.bin, "tar"), """
+      #!/bin/sh
+      #{System.find_executable("tar")} "$@" || exit 2
+      exit 1
+      """)
+
+      File.chmod!(Path.join(ctx.bin, "tar"), 0o755)
+      run(ctx, ctx.main, "Stop")
+      assert wait_for(fn -> sends(ctx) == 1 end)
     end
 
     test "a helper agent's own stop sends nothing", ctx do
       assert {"{}\n", 0} = run(ctx, ctx.helper, "Stop")
-      refute File.exists?(ctx.out <> ".tgz")
+      Process.sleep(500)
+      assert sends(ctx) == 0
     end
   end
 
@@ -251,9 +369,10 @@ defmodule Wallboard.CodexUploadTest do
       claude_upload = Path.join(ctx.claude, "wallboard-upload.sh")
       assert commands(Path.join(ctx.claude, "settings.json"), "Stop") == [claude_upload]
 
-      # Connecting again adds nothing twice.
+      # Connecting again adds nothing twice, and keeps the first backup.
       assert {_, 0} = connect(ctx)
       assert commands(hooks, "Stop") == ["python3 mine.py", upload]
+      assert commands(hooks <> ".before-wallboard", "Stop") == ["python3 mine.py"]
     end
 
     test "leaves Codex alone on a machine without it", ctx do

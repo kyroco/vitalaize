@@ -29,10 +29,10 @@ defmodule Wallboard.Archive.Ingest do
   alias Wallboard.Sources.Claude
   alias Wallboard.Store
 
-  @session ~r/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/
-  @sub ~r/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/subagents\/([A-Za-z0-9._-]+\.(?:jsonl|meta\.json))$/
-  @rollout ~r/^rollout-[0-9A-Za-z-]{1,40}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/
-  @name ~r/^[A-Za-z0-9._-]{1,64}$/
+  @session ~r/\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl\z/
+  @sub ~r/\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/subagents\/([A-Za-z0-9._-]+\.(?:jsonl|meta\.json))\z/
+  @rollout ~r/\Arollout-[0-9A-Za-z-]{1,40}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl\z/
+  @name ~r/\A[A-Za-z0-9._-]{1,64}\z/
 
   @doc "The key other Macs send with each upload. Made once, then kept."
   def token do
@@ -51,8 +51,13 @@ defmodule Wallboard.Archive.Ingest do
   def valid_token?(given) when is_binary(given), do: Plug.Crypto.secure_compare(given, token())
   def valid_token?(_), do: false
 
-  @doc "True for a machine or account name safe to use in a folder name."
-  def valid_name?(name) when is_binary(name), do: name =~ @name
+  @doc """
+  True for a machine or account name safe to use in a folder name. A name
+  of only dots is not one: "." and ".." would reach outside the inbox.
+  """
+  def valid_name?(name) when is_binary(name),
+    do: name =~ @name and String.trim(name, ".") != ""
+
   def valid_name?(_), do: false
 
   @doc """
@@ -163,6 +168,8 @@ defmodule Wallboard.Archive.Ingest do
         prices: settings.usage.prices,
         machine: machine,
         account: Collector.codex_account(account),
+        # The id checked above, whatever later lines of the file say.
+        session_id: up.id,
         title: up.title,
         size: byte_size(gzip_tar),
         mtime: System.os_time(:second),
@@ -282,27 +289,37 @@ defmodule Wallboard.Archive.Ingest do
 
   @doc """
   The script another machine saves as ~/.codex/wallboard-upload.sh. Codex
-  runs it (in the background) when a turn ends and when a session ends,
-  with the hook's JSON on stdin. It sends the session's rollout file, the
-  rollout files of the helper agents it started, and the session's lines
-  from session_index.jsonl (its title). Like the Claude one, it sends at
-  most once a minute per session while the session runs, and always at the
-  end.
+  runs it when a turn ends and when a session ends, with the hook's JSON on
+  stdin. It sends the session's rollout file, the rollout files of the
+  helper agents it started, and the session's lines from
+  session_index.jsonl (its title).
 
-  Checked against codex-cli 0.155.1 (2026-09-30): a helper agent's thread
-  has its own rollout file whose first line names its parent, and the
-  parent's file names each helper as `"agent_thread_id"`. Codex reads a
-  Stop hook's output as JSON, so the script prints an empty object.
+  Checked against codex-cli 0.155.1 (2026-09-30):
+
+    * Codex runs even an `async` hook in the foreground (it logs "running
+      async ... hook synchronously"), so the script answers at once and
+      sends from the background.
+    * Codex reads a Stop hook's output as JSON, so it prints an empty
+      object.
+    * A Codex Desktop thread can stay open for days with no SessionEnd, so
+      a Stop inside the one-minute window is not dropped: one send waits
+      for the window to pass, so the last turn still arrives.
+    * A helper agent's thread has its own rollout file whose first line
+      names its parent, and the parent's file names each helper as
+      `"agent_thread_id"`. Archived threads move to archived_sessions/.
   """
   def codex_upload_script(hub_url, token) do
     """
     #!/bin/sh
     # Sends this Codex session, with the helper agents it started, to the
     # wallboard at #{hub_url}. Codex runs this from a Stop and a SessionEnd
-    # hook. It never blocks Codex: the hook runs in the background, and a
-    # failed send is simply tried again at the next turn.
+    # hook. It answers Codex at once and sends from the background, so
+    # Codex never waits on it.
     HUB="#{hub_url}"
     KEY="#{token}"
+    # How long a turn that ends within a minute of the last send waits
+    # before it is sent. Tests shorten it.
+    WAIT="${WALLBOARD_WAIT_SECONDS:-60}"
 
     # Codex reads a Stop hook's output as JSON.
     echo '{}'
@@ -315,45 +332,65 @@ defmodule Wallboard.Archive.Ingest do
 
     id=$(basename "$path" .jsonl | sed -n 's/.*\\([0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}\\)$/\\1/p')
     [ -n "$id" ] || exit 0
-
     event=$(printf '%s' "$input" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\\([A-Za-z]*\\)".*/\\1/p')
-    marker="${TMPDIR:-/tmp}/wallboard-sent-$id"
-    if [ "$event" != "SessionEnd" ]; then
-      [ -n "$(find "$marker" -mmin -1 2>/dev/null)" ] && exit 0
-    fi
-    touch "$marker"
 
-    # The file is at <codex home>/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl.
+    # The file is in <codex home>/sessions/YYYY/MM/DD/, or in
+    # <codex home>/archived_sessions/ once the thread is archived.
     day=$(dirname "$path")
-    sessions=$(dirname "$(dirname "$(dirname "$day")")")
-    home=$(dirname "$sessions")
+    case "$day" in
+      */archived_sessions) home=$(dirname "$day") ;;
+      */sessions/*/*/*) home=$(dirname "$(dirname "$(dirname "$(dirname "$day")")")") ;;
+      *) exit 0 ;;
+    esac
 
-    machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
-    machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
-    account=$(basename "$home")
-    account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+    marker="${TMPDIR:-/tmp}/wallboard-sent-$id"
+    waiting="$marker.waiting"
 
-    set -- -C "$day" "$(basename "$path")"
-    for kid in $(grep -o '"agent_thread_id":"[0-9a-f-]*"' "$path" | cut -d'"' -f4 | sort -u); do
-      for f in "$sessions"/*/*/*/rollout-*-"$kid".jsonl; do
-        [ -f "$f" ] || continue
-        head -n 1 "$f" | grep -q '"parent_thread_id":"'"$id"'"' || continue
-        set -- "$@" -C "$(dirname "$f")" "$(basename "$f")"
+    send() {
+      touch "$marker"
+      machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
+      machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+      account=$(basename "$home")
+      account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+
+      set -- -C "$day" "$(basename "$path")"
+      for kid in $(grep -o '"agent_thread_id":"[0-9a-f-]*"' "$path" | cut -d'"' -f4 | sort -u); do
+        for f in "$home"/sessions/*/*/*/rollout-*-"$kid".jsonl "$home"/archived_sessions/rollout-*-"$kid".jsonl; do
+          [ -f "$f" ] || continue
+          head -n 1 "$f" | grep -q '"parent_thread_id":"'"$id"'"' || continue
+          set -- "$@" -C "$(dirname "$f")" "$(basename "$f")"
+        done
       done
-    done
 
-    stage=$(mktemp -d "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
-    if grep '"id":"'"$id"'"' "$home/session_index.jsonl" > "$stage/session_index.jsonl" 2>/dev/null; then
-      set -- "$@" -C "$stage" session_index.jsonl
-    fi
-    # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
-    COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@" &&
-      curl -fsS --max-time 120 -X POST \\
-        -H "Authorization: Bearer $KEY" \\
-        -H "Content-Type: application/gzip" \\
-        --data-binary @"$stage/up.tgz" \\
-        "$HUB/ingest/transcript?tool=codex&machine=$machine&account=$account" >/dev/null 2>&1
-    rm -rf "$stage"
+      stage=$(mktemp -d "${TMPDIR:-/tmp}/wallboard.XXXXXX") || return
+      if grep '"id":"'"$id"'"' "$home/session_index.jsonl" > "$stage/session_index.jsonl" 2>/dev/null; then
+        set -- "$@" -C "$stage" session_index.jsonl
+      fi
+      # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
+      # GNU tar exits 1 when a file grew while it was read (a helper still
+      # at work); the archive is whole, so it is sent anyway.
+      COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@"
+      if [ $? -le 1 ]; then
+        curl -fsS --max-time 120 -X POST \\
+          -H "Authorization: Bearer $KEY" \\
+          -H "Content-Type: application/gzip" \\
+          --data-binary @"$stage/up.tgz" \\
+          "$HUB/ingest/transcript?tool=codex&machine=$machine&account=$account"
+      fi
+      rm -rf "$stage"
+    }
+
+    (
+      if [ "$event" != "SessionEnd" ] && [ -n "$(find "$marker" -mmin -1 2>/dev/null)" ]; then
+        # Sent less than a minute ago: send again once the minute is up.
+        # One waiting send per session is enough.
+        [ -e "$waiting" ] && exit 0
+        touch "$waiting"
+        sleep "$WAIT"
+        rm -f "$waiting"
+      fi
+      send
+    ) </dev/null >/dev/null 2>&1 &
     exit 0
     """
   end
@@ -374,11 +411,12 @@ defmodule Wallboard.Archive.Ingest do
 
     # Adds a Stop and a SessionEnd hook running $2 to the hooks file $1
     # (Claude's settings.json or Codex's hooks.json), after backing it up.
+    # The first backup is kept, so connecting again never replaces it.
     # On a Mac, osascript's JavaScript edits the file with no other tool.
     # Elsewhere (Linux), python3 does the same edit.
     add_hooks() {
       [ -f "$1" ] || echo '{}' > "$1"
-      cp "$1" "$1.before-wallboard"
+      [ -f "$1.before-wallboard" ] || cp "$1" "$1.before-wallboard"
       if ! command -v osascript >/dev/null 2>&1; then
         command -v python3 >/dev/null 2>&1 || { echo "Needs python3 to edit $1." >&2; exit 1; }
         python3 - "$1" "$2" <<'WALLBOARD_PY'

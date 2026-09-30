@@ -316,7 +316,8 @@ defmodule Wallboard.Archive.Collector do
   @doc """
   Reads one Codex session and its helper agents' files ({path, nickname}
   each) and saves it. `ctx` is as for `save_session/3`, plus an optional
-  `title` from Codex's own thread names.
+  `title` from Codex's own thread names and an optional `session_id` (an
+  uploaded session's checked id) that wins over the one read from the file.
   """
   def save_codex(path, subs, ctx) do
     main = CodexTranscript.read_file(path)
@@ -330,7 +331,7 @@ defmodule Wallboard.Archive.Collector do
     if main.requests == %{} and main.prompts == 0 do
       false
     else
-      id = main.thread_id || CodexTranscript.id_from_path(path)
+      id = ctx[:session_id] || main.thread_id || CodexTranscript.id_from_path(path)
       ctx = Map.merge(ctx, %{session_id: id, path: path, tool: "codex"})
       {session, requests} = Transcript.to_record(main, subs, ctx)
       Store.put_session(session, requests) == :ok

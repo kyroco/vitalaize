@@ -251,7 +251,9 @@ enum Setup {
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
         dataFolder = c.dataFolder
         var hooked: [String] = []
-        var hookedCodex: String? = nil
+        // Kept from an earlier setup, so Uninstall still finds Codex's hooks
+        // when this run could not reach them.
+        var hookedCodex: String? = installed()?.hookedCodex
 
         if c.role.runsBoard {
             if let imported = c.importedSettings {
@@ -291,12 +293,15 @@ enum Setup {
             if Detect.usesCodex() {
                 let folder = home.appendingPathComponent(".codex").path
                 say("Connecting \(folder) to the hub")
-                if let script = try? fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh") {
+                // Codex is extra: a problem here is reported, and the Claude
+                // folders stay connected.
+                do {
+                    let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh")
                     try hookUp(folder: folder, script: script, file: "hooks.json")
                     hookedCodex = folder
                     say("Codex skips a new hook until you trust it: type /hooks in Codex and trust the two wallboard-upload.sh hooks")
-                } else {
-                    say("The hub is too old to take Codex sessions. Update it, then run this setup again")
+                } catch {
+                    say("Codex was not connected. \(error.localizedDescription)")
                 }
             }
         }
@@ -375,6 +380,9 @@ enum Setup {
         switch code {
         case "200": return body + "\n"
         case "401": throw Failure.step("The hub turned down that key. Copy it again from the hub's settings page.")
+        // Only the Codex script is fetched after the Claude one worked, so
+        // there a 404 means a hub from before Codex uploads.
+        case "404" where name != "upload.sh": throw Failure.step("The hub is too old to take Codex sessions. Update it, then run this setup again.")
         case "404": throw Failure.step("That board has its archive turned off, so it cannot take sessions.")
         default: throw Failure.step("Could not reach a hub at \(base). Is the board running there?")
         }
