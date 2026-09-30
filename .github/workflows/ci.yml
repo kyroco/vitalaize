@@ -1,5 +1,5 @@
-# Runs the tests on Linux and macOS for every pull request and every push to
-# main. On a version tag (v0.3.0) it also builds the two Linux downloads on
+# Runs the tests, plus the code style and compiler warning checks, on Linux
+# and macOS for every pull request and every push to main. On a version tag (v0.3.0) it also builds the two Linux downloads on
 # real Intel and ARM machines, checks each one starts, and attaches them to
 # that tag's GitHub release.
 #
@@ -60,6 +60,14 @@ jobs:
             _build
           key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
+      # --force recompiles this project (not its dependencies), so a warning
+      # in a file the cache already built still shows up and fails the run.
+      - name: No compiler warnings
+        run: mix compile --warnings-as-errors --force
+      # After the compile, because the formatter loads the Phoenix plugin
+      # named in .formatter.exs.
+      - name: Code is formatted
+        run: mix format --check-formatted
       - run: mix test
 
   linux-download:
