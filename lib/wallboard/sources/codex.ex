@@ -36,21 +36,32 @@ defmodule Wallboard.Sources.Codex do
   @hook_folder "vitalaize"
   # A session's last hook call is kept this long, then removed.
   @mark_keep_seconds 7 * 24 * 3600
+  # An approval request keeps its session on the board this long.
+  @asking_seconds 2 * 24 * 3600
 
   # ---------------------------------------------------------------------------
   # Poller hooks (see Wallboard.Poller)
 
   def poll(settings, _prev, memory, now) do
-    memory = memory || %{files: %{}, titles: {nil, %{}}, needs: nil, hook: false}
+    memory = memory || %{files: %{}, titles: {nil, %{}}, needs: nil, marks: %{}}
 
     if settings.codex.enabled do
-      hook = memory[:hook] || install_hook(settings)
-      files = scan(settings, memory.files, now)
+      install_hook(settings)
+      {marks, read} = marks(settings, now, memory[:marks] || %{})
+      files = scan(settings, memory.files, now, asking(marks))
       titles = titles(settings, memory.titles)
-      sessions = sessions(files, elem(titles, 1), now, marks(settings, now))
+      idle_cutoff = DateTime.add(now, -settings.codex.idle_minutes * 60)
+
+      sessions =
+        files
+        |> sessions(elem(titles, 1), now, marks)
+        |> Enum.filter(
+          &(&1.status == :needs or DateTime.compare(&1.updated_at, idle_cutoff) != :lt)
+        )
+
       {newly, needs} = newly_needing(sessions, memory[:needs])
       Wallboard.Alerts.needs_you(newly, settings)
-      {:ok, %{sessions: sessions}, %{files: files, titles: titles, needs: needs, hook: hook}}
+      {:ok, %{sessions: sessions}, %{files: files, titles: titles, needs: needs, marks: read}}
     else
       {:ok, %{sessions: []}, memory}
     end
@@ -63,14 +74,16 @@ defmodule Wallboard.Sources.Codex do
   # ---------------------------------------------------------------------------
   # Reading
 
-  defp scan(settings, known, now) do
+  # `asking` holds the sessions with an approval request out: Codex writes
+  # nothing while it waits, so those stay past the idle window.
+  defp scan(settings, known, now, asking) do
     window = settings.codex.idle_minutes * 60
     cutoff = DateTime.to_unix(now) - window
 
     for dir <- settings.codex.dirs,
         path <- recent_files(dir, now),
         {:ok, %{size: size, mtime: mtime}} <- [File.stat(path, time: :posix)],
-        mtime >= cutoff,
+        mtime >= cutoff or CodexTranscript.id_from_path(path) in asking,
         into: %{} do
       state = Map.get(known, path) || %{offset: 0, mtime: 0, tally: CodexTranscript.empty()}
       {path, read_new(state, path, size, mtime)}
@@ -148,7 +161,8 @@ defmodule Wallboard.Sources.Codex do
 
   # Keeps <codex dir>/vitalaize/hook.sh the same as the one shipped, in each
   # Codex folder that exists, so the path in hooks.json survives an upgrade.
-  # Never makes a Codex folder. True once done, so it runs once per start.
+  # Never makes a Codex folder. Runs every poll, so a Codex folder made later
+  # or a deleted copy is put right without a restart; it is one small read.
   defp install_hook(settings) do
     script = hook_script()
 
@@ -162,28 +176,83 @@ defmodule Wallboard.Sources.Codex do
       end
     end
 
-    true
+    :ok
   rescue
-    _ -> false
+    _ -> :error
   end
 
   @doc """
-  The latest hook call for each session, by session id: the JSON Codex handed
-  the hook, plus `at`, when it came in. Leaves out calls older than the idle
-  window, and removes those older than a week.
-  """
-  def marks(settings, now) do
-    now_s = DateTime.to_unix(now)
-    cutoff = now_s - settings.codex.idle_minutes * 60
+  The latest hook calls for each session, as a list by session id: the JSON
+  Codex handed the hook, plus `at`, when it came in. The hook keeps one file
+  for the session and one for each helper agent working in it (its calls
+  carry `agent_id`), so a helper's call never replaces the session's own.
 
-    for dir <- settings.codex.dirs,
-        path <- Path.wildcard(Path.join([dir, @hook_folder, "*.json"])),
+  Leaves out approval requests older than two days and other calls older
+  than the idle window; removes files older than a week, and any
+  half-written file the hook left behind when it was stopped.
+
+  Returns {marks, read}. `read` remembers each file by its time and size, so
+  the next poll decodes only the files that changed; pass it back in.
+  """
+  def marks(settings, now, read \\ %{}) do
+    now_s = DateTime.to_unix(now)
+    idle_cutoff = now_s - settings.codex.idle_minutes * 60
+    cutoff = min(idle_cutoff, now_s - @asking_seconds)
+
+    for {path, name} <- hook_files(settings),
+        String.starts_with?(name, ".hook."),
         {:ok, %{mtime: mtime}} <- [File.stat(path, time: :posix)],
-        mtime >= cutoff or forget(path, mtime, now_s),
-        {:ok, body} <- [File.read(path)],
-        {:ok, %{"session_id" => id} = mark} when is_binary(id) <- [Jason.decode(body)],
-        into: %{} do
-      {id, Map.put(mark, "at", mtime)}
+        now_s - mtime > 3600,
+        do: File.rm(path)
+
+    found =
+      for {path, name} <- hook_files(settings),
+          name =~ ~r/^[0-9A-Za-z_-]+(\.[0-9A-Za-z_-]+)?\.json$/,
+          {:ok, %{mtime: mtime, size: size}} <- [File.stat(path, time: :posix)],
+          mtime >= cutoff or forget(path, mtime, now_s),
+          mark = cached(read[path], {mtime, size}) || decode(path, mtime),
+          do: {path, {{mtime, size}, mark}}
+
+    marks =
+      for {_path, {_, %{"session_id" => _, "at" => at} = mark}} <- found,
+          at >= idle_cutoff or mark["hook_event_name"] == "PermissionRequest" do
+        mark
+      end
+      |> Enum.group_by(& &1["session_id"])
+
+    {marks, Map.new(found)}
+  end
+
+  @doc "The sessions with an approval request out, from `marks/3`."
+  def asking(marks) do
+    for {id, list} <- marks,
+        Enum.any?(list, &(&1["hook_event_name"] == "PermissionRequest")),
+        into: MapSet.new(),
+        do: id
+  end
+
+  # The files in each <codex dir>/vitalaize, as {path, name}. Lists the
+  # folder rather than matching a pattern, so a folder name in settings is
+  # never read as one.
+  defp hook_files(settings) do
+    for dir <- settings.codex.dirs,
+        folder = Path.join(dir, @hook_folder),
+        {:ok, names} <- [File.ls(folder)],
+        name <- names,
+        do: {Path.join(folder, name), name}
+  end
+
+  defp cached({stamp, mark}, stamp), do: mark
+  defp cached(_, _), do: nil
+
+  # A file that does not decode is remembered as an empty map, so it is not
+  # read again until it changes.
+  defp decode(path, mtime) do
+    with {:ok, body} <- File.read(path),
+         {:ok, %{"session_id" => id} = mark} when is_binary(id) <- Jason.decode(body) do
+      Map.put(mark, "at", mtime)
+    else
+      _ -> %{}
     end
   end
 
@@ -194,31 +263,83 @@ defmodule Wallboard.Sources.Codex do
 
   @doc """
   Why a session is waiting on you, from its latest hook call, or nil when it
-  is not. A call from before its current turn started is out of date.
+  is not. A call is out of date when a turn started after it. An approval
+  request is also over once the session writes anything later (the command
+  ran, or was turned down) or its turn ends (it was interrupted). A turn that
+  ended on a question counts only in a session a person started in Codex:
+  one run by a script or by Claude has nobody at the keyboard.
   """
   def waiting(nil, _t), do: nil
 
   def waiting(%{"at" => at} = mark, t) do
     started = t.turn_started_at && DateTime.to_unix(t.turn_started_at)
+    last = t.last_at && DateTime.to_unix(t.last_at)
 
-    cond do
-      started && at < started -> nil
-      mark["hook_event_name"] == "PermissionRequest" -> approval(mark)
-      mark["hook_event_name"] == "Stop" -> question(mark["last_assistant_message"])
-      true -> nil
+    case mark["hook_event_name"] do
+      _ when started != nil and at < started ->
+        nil
+
+      "PermissionRequest" ->
+        # Codex's own lines are stamped to the second and may land in the
+        # same second as the request, so only a later second counts.
+        if t.running and not (last && last > at + 1), do: approval(mark)
+
+      # Another Stop hook can send the turn on, so it counts once the turn
+      # has really ended.
+      "Stop" ->
+        if not t.running and started_by(t.originator) == nil,
+          do: question(mark["last_assistant_message"])
+
+      _ ->
+        nil
     end
   end
 
-  defp approval(%{"tool_input" => %{"command" => command}})
+  def waiting(_, _t), do: nil
+
+  # Only the program's name: the rest of a command can hold a password or a
+  # token, and this text goes on the board and into a text message.
+  defp approval(%{"tool_input" => %{"command" => command}} = mark)
        when is_binary(command) or is_list(command) do
-    command = if is_list(command), do: Enum.join(command, " "), else: command
-    "Asks to run: " <> clip(one_line(command), 200)
+    words =
+      if is_list(command),
+        do: command |> Enum.filter(&is_binary/1) |> Enum.flat_map(&String.split/1),
+        else: String.split(command)
+
+    case program(words) do
+      nil -> approval(Map.delete(mark, "tool_input"))
+      name -> "Asks to run " <> clip(name, 60)
+    end
   end
 
   defp approval(%{"tool_name" => tool}) when is_binary(tool) and tool != "",
     do: "Asks for your approval to use " <> tool
 
   defp approval(_), do: "Asks for your approval"
+
+  # The program a command runs, looking past a shell wrapper such as
+  # `/bin/zsh -lc "git push"` and leading VAR=value settings.
+  @shells ["sh", "bash", "zsh", "dash", "fish"]
+
+  defp program([word | rest]) do
+    word = String.replace(word, ~r/^["']+|["']+$/, "")
+
+    cond do
+      word == "" ->
+        program(rest)
+
+      word =~ ~r/^[A-Za-z_][A-Za-z0-9_]*=/ ->
+        program(rest)
+
+      Path.basename(word) in @shells and match?([<<"-", _::binary>>, _ | _], rest) ->
+        program(tl(rest))
+
+      true ->
+        Path.basename(word)
+    end
+  end
+
+  defp program([]), do: nil
 
   @doc """
   The question a message ends on, or nil. A message ends on a question when
@@ -268,16 +389,40 @@ defmodule Wallboard.Sources.Codex do
     |> Enum.filter(& &1.thread_id)
     |> Enum.map(fn t ->
       kids = Map.get(subs_by_parent, t.thread_id, [])
-      card(t, kids, titles[t.thread_id], now_s, marks[t.thread_id])
+      card(t, kids, titles[t.thread_id], now_s, marks)
     end)
     |> Enum.sort_by(&DateTime.to_unix(&1.started_at || now))
   end
 
-  @doc "One Codex session as the card the board shows, beside the Claude ones."
-  def card(t, kids, title, now_s, mark \\ nil) do
+  # The session, or one of its helper agents, waiting on you: {why, since}.
+  # A helper's calls come under the session's id with its `agent_id`, or,
+  # should Codex give them the helper's own thread id, under that. Only a
+  # helper's approval requests reach the person; its questions go to the
+  # session that started it.
+  defp waiting_on(t, kids, marks) do
+    own =
+      for mark <- Map.get(marks, t.thread_id, []),
+          mark["agent_id"] in [nil, ""] or approval?(mark),
+          do: {t, mark}
+
+    helpers =
+      for k <- kids, mark <- Map.get(marks, k.thread_id, []), approval?(mark), do: {k, mark}
+
+    Enum.find_value(own ++ helpers, {nil, nil}, fn {who, mark} ->
+      if why = waiting(mark, who), do: {why, DateTime.from_unix!(mark["at"])}
+    end)
+  end
+
+  defp approval?(mark), do: mark["hook_event_name"] == "PermissionRequest"
+
+  @doc """
+  One Codex session as the card the board shows, beside the Claude ones.
+  `marks` holds the latest hook calls for each thread, by thread id, as
+  `marks/3` returns them.
+  """
+  def card(t, kids, title, now_s, marks \\ %{}) do
     working? = t.running and now_s - t.mtime < @stale_turn_seconds
-    why = waiting(mark, t)
-    waiting_since = why && DateTime.from_unix!(mark["at"])
+    {why, waiting_since} = waiting_on(t, kids, marks)
     updated = DateTime.from_unix!(t.mtime)
 
     status =

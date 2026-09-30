@@ -176,8 +176,11 @@ Run the tests with `mix test`.
   changed hook until you do. A Codex card then shows **Needs you** (and
   sends a text, if alerts are on) when Codex asks to run something, or when
   a turn ends on a question, meaning the last paragraph of its reply ends in
-  a question mark. It clears when Codex moves on or you reply. The hook keeps
-  only the latest thing Codex sent it for each session, in
+  a question mark. It clears when Codex moves on or you reply. The card names
+  only the program Codex wants to run, never the whole command, since that
+  can hold a password. Codex tells nothing when a command you approved
+  starts, so the card keeps saying Needs you until that command finishes.
+  The hook keeps only the latest thing Codex sent it for each session, in
   `~/.codex/vitalaize`, and the board removes those after a week.
 - **Production page.** Set `new_relic: %{enabled: false}` if you do not use
   New Relic. Otherwise set `api_key_ref` to where your New Relic User API key

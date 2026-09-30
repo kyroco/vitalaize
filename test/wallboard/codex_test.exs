@@ -148,6 +148,9 @@ defmodule Wallboard.CodexTest do
 
     defp at(time), do: DateTime.to_unix(~U[2026-09-29 13:00:00Z]) + time
 
+    # The fixture was started by Claude; these were started by a person.
+    defp by_person(t), do: %{t | originator: "Codex Desktop"}
+
     test "a message that ends on a question is one" do
       assert Codex.question("Done.\n\nWhich color do you like?") == "Which color do you like?"
       assert Codex.question("Should I open the PR?**\n") == "Should I open the PR?**"
@@ -167,21 +170,52 @@ defmodule Wallboard.CodexTest do
       mark = %{"hook_event_name" => "PermissionRequest", "at" => at(30)}
 
       assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => "git push"}), t) ==
-               "Asks to run: git push"
+               "Asks to run git"
 
       assert Codex.waiting(
                Map.put(mark, "tool_input", %{"command" => ["/bin/zsh", "-lc", "rm -r x"]}),
                t
-             ) == "Asks to run: /bin/zsh -lc rm -r x"
+             ) == "Asks to run rm"
 
       assert Codex.waiting(Map.put(mark, "tool_name", "mcp__linear__save_issue"), t) ==
                "Asks for your approval to use mcp__linear__save_issue"
 
       assert Codex.waiting(mark, t) == "Asks for your approval"
+
+      # Odd arguments are left out rather than failing the whole poll.
+      assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => ["ls", %{"x" => 1}]}), t) ==
+               "Asks to run ls"
+
+      # Only the program shows: the rest of a command can hold a secret.
+      for {command, name} <- [
+            {~s[curl -H "Authorization: Bearer sk-live-1" https://x], "curl"},
+            {"TOKEN=abc ./bin/deploy.sh prod", "deploy.sh"},
+            {~s[bash -c "psql postgres://u:pw@h"], "psql"},
+            {"grep -c x file", "grep"}
+          ] do
+        why = Codex.waiting(Map.put(mark, "tool_input", %{"command" => command}), t)
+        assert why == "Asks to run " <> name
+        refute why =~ "sk-live" or why =~ "pw@"
+      end
+
+      assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => "  "}), t) ==
+               "Asks for your approval"
+    end
+
+    test "an approval request is over once the session moves on or its turn ends" do
+      t = running_tally()
+      mark = %{"hook_event_name" => "PermissionRequest", "at" => at(5)}
+
+      # The last line (13:00:09) is more than a second after the request.
+      assert Codex.waiting(mark, t) == nil
+      assert Codex.waiting(%{mark | "at" => at(8)}, t) == "Asks for your approval"
+
+      # Interrupted or turned down: the turn ended.
+      assert Codex.waiting(%{mark | "at" => at(30)}, %{t | running: false}) == nil
     end
 
     test "a turn that ended on a question needs you; any later hook call clears it" do
-      t = CodexTranscript.read_lines(lines())
+      t = by_person(CodexTranscript.read_lines(lines()))
       stop = %{"hook_event_name" => "Stop", "at" => at(30)}
 
       assert Codex.waiting(Map.put(stop, "last_assistant_message", "Which one?"), t) ==
@@ -194,6 +228,15 @@ defmodule Wallboard.CodexTest do
       end
 
       assert Codex.waiting(nil, t) == nil
+    end
+
+    test "a question from a session run by a script or by Claude does not count" do
+      stop = %{"hook_event_name" => "Stop", "at" => at(30), "last_assistant_message" => "Ok?"}
+      t = CodexTranscript.read_lines(lines())
+
+      assert Codex.waiting(stop, t) == nil
+      assert Codex.waiting(stop, %{t | originator: "codex_exec"}) == nil
+      assert Codex.waiting(stop, by_person(t)) == "Ok?"
     end
 
     test "a hook call from before the current turn started is out of date" do
@@ -217,13 +260,46 @@ defmodule Wallboard.CodexTest do
         "at" => at(30)
       }
 
-      card = Codex.card(t, [], "Fix it", at(45), mark)
-      assert {card.status, card.why} == {:needs, "Asks to run: git push"}
+      card = Codex.card(t, [], "Fix it", at(45), %{@id => [mark]})
+      assert {card.status, card.why} == {:needs, "Asks to run git"}
       assert card.since == DateTime.from_unix!(at(30))
       assert card.waiting_since == card.since
 
       plain = Codex.card(t, [], "Fix it", at(45))
       assert {plain.status, plain.why, plain.waiting_since} == {:working, nil, nil}
+
+      # A helper's call, under the session's id, does not replace the
+      # session's own approval request.
+      done = %{"hook_event_name" => "PostToolUse", "agent_id" => "a1", "at" => at(31)}
+      card = Codex.card(t, [], "Fix it", at(45), %{@id => [mark, done]})
+      assert card.status == :needs
+
+      # A helper asking for approval shows on the session that started it,
+      # whether its calls come under the session's id or its own.
+      kid = Map.merge(running_tally(), %{thread_id: "kid", parent_id: @id, mtime: at(40)})
+      helper = Map.put(mark, "agent_id", "a1")
+      card = Codex.card(t, [], "Fix it", at(45), %{@id => [helper]})
+      assert {card.status, card.why} == {:needs, "Asks to run git"}
+      card = Codex.card(t, [kid], "Fix it", at(45), %{"kid" => [mark]})
+      assert {card.status, card.why} == {:needs, "Asks to run git"}
+
+      # Its questions go to that session, not to you.
+      question = %{"hook_event_name" => "Stop", "last_assistant_message" => "?", "at" => at(30)}
+      done_kid = %{by_person(kid) | running: false}
+      card = Codex.card(t, [done_kid], "Fix it", at(45), %{"kid" => [question]})
+      assert card.status == :working
+
+      card =
+        Codex.card(by_person(t), [], "Fix it", at(45), %{
+          @id => [Map.put(question, "agent_id", "a1")]
+        })
+
+      assert card.status == :working
+    end
+
+    test "a turn that another hook sent on does not count until it ends" do
+      stop = %{"hook_event_name" => "Stop", "at" => at(30), "last_assistant_message" => "Ok?"}
+      assert Codex.waiting(stop, by_person(running_tally())) == nil
     end
 
     test "only a session that newly needs you is texted, and none on the first poll" do
@@ -264,19 +340,60 @@ defmodule Wallboard.CodexTest do
 
       File.write!(Path.join(marks, "bad.json"), "not json")
 
+      # A copy the hook never finished, because Codex stopped it.
+      half = Path.join(marks, ".hook.AbC123")
+      File.write!(half, "{")
+      File.touch!(half, now_s - 2 * 3600)
+
       settings = %{codex: %{enabled: true, dirs: [dir], idle_minutes: 120}, alerts: %{phone: nil}}
 
-      found = Codex.marks(settings, now)
-      assert Map.keys(found) == [@id]
-      assert found[@id]["last_assistant_message"] == "Ok?"
-      assert is_integer(found[@id]["at"])
+      # An approval request from yesterday is still out: Codex writes
+      # nothing while it waits.
+      asking = Path.join(marks, "asking.json")
+
+      File.write!(
+        asking,
+        Jason.encode!(%{session_id: "asking", hook_event_name: "PermissionRequest"})
+      )
+
+      File.touch!(asking, now_s - 24 * 3600)
+
+      # A helper's calls sit beside the session's own.
+      File.write!(
+        Path.join(marks, "#{@id}.a1.json"),
+        Jason.encode!(%{session_id: @id, agent_id: "a1", hook_event_name: "PostToolUse"})
+      )
+
+      {found, read} = Codex.marks(settings, now)
+      assert Enum.sort(Map.keys(found)) == Enum.sort([@id, "asking"])
+      assert Codex.asking(found) == MapSet.new(["asking"])
+      [own] = Enum.reject(found[@id], & &1["agent_id"])
+      assert own["last_assistant_message"] == "Ok?"
+      assert is_integer(own["at"])
+      assert length(found[@id]) == 2
       assert File.exists?(stale)
       refute File.exists?(gone)
+      refute File.exists?(half)
 
-      # A poll puts the shipped hook next to the calls, once.
+      # A file already read is not read again until it changes.
+      path = Path.join(marks, "#{@id}.json")
+      {stamp, _} = read[path]
+
+      {again, _} =
+        Codex.marks(settings, now, %{
+          read
+          | path => {stamp, %{"session_id" => "kept", "at" => now_s}}
+        })
+
+      assert Map.has_key?(again, "kept")
+
+      # A poll puts the shipped hook next to the calls, and puts it back.
       {:ok, %{sessions: []}, memory} = Codex.poll(settings, nil, nil, now)
-      assert File.read!(Path.join(marks, "hook.sh")) == Codex.hook_script()
-      assert memory.hook
+      hook = Path.join(marks, "hook.sh")
+      assert File.read!(hook) == Codex.hook_script()
+      File.rm!(hook)
+      Codex.poll(settings, nil, memory, now)
+      assert File.read!(hook) == Codex.hook_script()
 
       # A folder that is not there is not made.
       missing = Path.join(dir, "no-codex-here")
