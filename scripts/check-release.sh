@@ -82,4 +82,11 @@ done
 
 grep -q 'phx-' "$WORK/page.html" || failed "Port $PORT answered, but not with the board's page."
 kill -0 "$BOARD" 2>/dev/null || failed "Port $PORT answered, but the board this check started is not running."
+grep -q "Running WallboardWeb.Endpoint .* at [^ ]*:$PORT " "$WORK/board.log" ||
+  failed "Port $PORT answered, but the board this check started is not the one listening there."
+
+# A download must keep Erlang remote connections off unless asked. The check
+# turns them off itself, so it reads the download's own default here.
+grep -q 'RELEASE_DISTRIBUTION:-none' "$ROOT"/releases/*/env.sh ||
+  failed "The download's releases/*/env.sh does not turn Erlang remote connections off."
 echo "The board started from $(basename "$1") and answered on port $PORT."

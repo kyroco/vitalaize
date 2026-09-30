@@ -19,10 +19,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request replaces the run still going. Every
-# push to main and every tag gets a run of its own.
+# A newer push to the same pull request or tag replaces the run still going,
+# so an older build of a tag can never land on its release after a newer
+# one. Every push to main gets a run of its own.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ci-${{ github.ref_type == 'branch' && github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -146,6 +147,14 @@ jobs:
           fi
           if [ "$draft" = true ]; then
             gh release upload "$tag" downloads/*.tar.gz --clobber
-          else
-            gh release upload "$tag" downloads/*.tar.gz
+            exit 0
           fi
+          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          for file in downloads/*.tar.gz; do
+            name=$(basename "$file")
+            if printf '%s\n' "$have" | grep -qxF "$name"; then
+              echo "::notice::$tag is published and already has $name, so it is left as it is."
+            else
+              gh release upload "$tag" "$file"
+            fi
+          done
