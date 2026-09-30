@@ -71,7 +71,8 @@ defmodule WallboardWeb.IngestController do
   end
 
   defp decode(body) do
-    case Jason.decode(body) do
+    # Copied strings, so what is kept does not hold the whole body in memory.
+    case Jason.decode(body, strings: :copy) do
       {:ok, %{} = hook} -> {:ok, hook}
       _ -> {:error, 422, "expected the hook's JSON"}
     end
@@ -79,8 +80,10 @@ defmodule WallboardWeb.IngestController do
 
   defp report(hook, machine, account, at) do
     at =
-      case Integer.parse(to_string(at)) do
-        {n, ""} -> n
+      with true <- is_binary(at),
+           {n, ""} <- Integer.parse(at) do
+        n
+      else
         _ -> System.os_time(:millisecond)
       end
 

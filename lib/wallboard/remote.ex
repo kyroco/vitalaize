@@ -15,23 +15,38 @@ defmodule Wallboard.Remote do
   subagent that needs input. Claude's "idle for a minute" reminder is not,
   since a finished turn is idle on the local board too.
 
+  The card shows as soon as the status arrives. The alert waits as long as
+  the board's own session check does (claude.poll_seconds), and is not sent
+  if the session moves on first, so a prompt answered at once never buzzes
+  a phone, as on the local board.
+
   Each status carries the collector's clock time (`at`, milliseconds), and
   an older status never overrides a newer one: the hooks run in the
   background, so "waiting" and "done waiting" can reach the hub out of
-  order. A session that says nothing for a day is dropped, so a
+  order. When both carry the same time, "done waiting" wins. A session
+  that says nothing for a day is dropped, so a
   collector that went to sleep mid-wait does not leave a card up forever.
   Nothing is written to disk: after the hub restarts, a session shows again
   the next time it starts waiting.
+
+  Anyone with the ingest key can post here, so what is kept has limits: at
+  most 1,000 sessions (the least recently heard from go first), short
+  texts, and at most 20 alerts in 10 minutes from other machines, with a
+  log line for each alert left out.
   """
 
   use GenServer
+  require Logger
 
   @max_age_ms 24 * 3600 * 1000
   @sweep_ms 60_000
   @why_max 240
+  @text_bytes 1_000
+  @max_entries 1000
+  @alert_window_ms 10 * 60 * 1000
+  @max_alerts 20
 
   @waiting_notices ~w(permission_prompt elicitation_dialog elicitation_url_dialog agent_needs_input)
-  @done_notices ~w(elicitation_complete elicitation_response)
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -69,8 +84,7 @@ defmodule Wallboard.Remote do
   still shows the right times.
   """
   def event(%{} = hook, machine, account, at) when is_integer(at) do
-    with sid when is_binary(sid) <- hook["session_id"] || {:error, "no session_id"},
-         true <- sid =~ ~r/^[A-Za-z0-9-]{1,64}$/ || {:error, "bad session_id"} do
+    with {:ok, sid} <- session_id(hook["session_id"]) do
       {waiting?, why} = waiting(hook)
 
       {:ok,
@@ -82,7 +96,7 @@ defmodule Wallboard.Remote do
          at: at,
          received: at,
          waiting?: waiting?,
-         why: why && String.slice(why, 0, @why_max),
+         why: why && clip(why, @why_max),
          folder: folder(hook["cwd"])
        }}
     end
@@ -90,12 +104,17 @@ defmodule Wallboard.Remote do
 
   def event(_, _, _, _), do: {:error, "expected a JSON object and a time"}
 
+  defp session_id(sid) when is_binary(sid) do
+    if sid =~ ~r/\A[A-Za-z0-9-]{1,64}\z/, do: {:ok, sid}, else: {:error, "bad session_id"}
+  end
+
+  defp session_id(nil), do: {:error, "no session_id"}
+  defp session_id(_), do: {:error, "bad session_id"}
+
   defp waiting(%{"hook_event_name" => "Notification"} = hook) do
-    case hook["notification_type"] do
-      type when type in @waiting_notices -> {true, text(hook["message"]) || "Waiting on you"}
-      type when type in @done_notices -> {false, nil}
-      _ -> {nil, nil}
-    end
+    if hook["notification_type"] in @waiting_notices,
+      do: {true, text(hook["message"]) || "Waiting on you"},
+      else: {nil, nil}
   end
 
   defp waiting(%{"hook_event_name" => "PreToolUse", "tool_name" => "AskUserQuestion"} = hook),
@@ -121,7 +140,27 @@ defmodule Wallboard.Remote do
 
   defp text(_), do: nil
 
-  defp folder(cwd) when is_binary(cwd) and cwd != "", do: Path.basename(cwd)
+  # Sender's text kept to one short line: no control characters (a newline
+  # would forge a log line), at most `max` characters and @text_bytes bytes.
+  defp clip(s, max) do
+    s
+    |> String.replace(~r/[\x00-\x1F\x7F]+/u, " ")
+    |> String.slice(0, max)
+    |> String.graphemes()
+    |> Enum.reduce_while({[], 0}, fn g, {acc, n} ->
+      n = n + byte_size(g)
+      if n > @text_bytes, do: {:halt, {acc, n}}, else: {:cont, {[g | acc], n}}
+    end)
+    |> then(fn {acc, _} -> acc |> Enum.reverse() |> IO.iodata_to_binary() end)
+  end
+
+  defp folder(cwd) when is_binary(cwd) and cwd != "" do
+    case cwd |> Path.basename() |> clip(64) |> String.trim() do
+      "" -> nil
+      name -> name
+    end
+  end
+
   defp folder(_), do: nil
 
   # ---------------------------------------------------------------------------
@@ -143,11 +182,14 @@ defmodule Wallboard.Remote do
       event.waiting? == nil ->
         {state, :same}
 
-      prev && prev.at > event.at ->
+      prev && (prev.at > event.at or (prev.at == event.at and event.waiting?)) ->
         {state, :same}
 
+      # Still waiting, perhaps on a new question: show its words, keep the
+      # time the waiting began, and send no second alert.
       (event.waiting? and prev) && prev.waiting? ->
-        {Map.put(state, event.key, %{prev | at: event.at, received: event.received}), :same}
+        entry = %{prev | at: event.at, received: event.received, why: event.why}
+        {Map.put(state, event.key, entry), if(event.why == prev.why, do: :same, else: :changed)}
 
       event.waiting? ->
         {Map.put(state, event.key, Map.put(event, :since, event.received)), :started}
@@ -170,6 +212,22 @@ defmodule Wallboard.Remote do
   def sweep(state, now_ms) do
     kept = Map.reject(state, fn {_, e} -> now_ms - e.received > @max_age_ms end)
     {kept, Enum.any?(Map.keys(state) -- Map.keys(kept), &state[&1].waiting?)}
+  end
+
+  @doc "Keeps at most `max` entries, dropping the least recently heard from."
+  def cap(state, max \\ @max_entries) do
+    if map_size(state) <= max,
+      do: state,
+      else: state |> Enum.sort_by(fn {_, e} -> -e.received end) |> Enum.take(max) |> Map.new()
+  end
+
+  @doc """
+  Whether another alert may go out at `now` given the times of the ones
+  sent (newest first). Returns {ok?, times to keep}.
+  """
+  def alert_allowed?(sent, now, max \\ @max_alerts) do
+    recent = Enum.take_while(sent, &(now - &1 < @alert_window_ms))
+    if length(recent) < max, do: {true, [now | recent]}, else: {false, recent}
   end
 
   @doc "The waiting entries as board sessions, needs-you first by how long."
@@ -208,35 +266,51 @@ defmodule Wallboard.Remote do
   @impl true
   def init(_opts) do
     Process.send_after(self(), :sweep, @sweep_ms)
-    {:ok, %{}}
+    {:ok, %{entries: %{}, sent: []}}
   end
 
   @impl true
-  def handle_call({:report, event}, _from, state) do
-    {state, what} = apply_event(state, event, local?(event))
+  def handle_call({:report, event}, _from, %{entries: entries} = state) do
+    {entries, what} = apply_event(entries, event, event.waiting? != nil and local?(event))
+    entries = cap(entries)
 
-    if what == :started do
-      [session] = board_sessions(%{event.key => state[event.key]})
-      settings = Wallboard.Settings.get()
-
-      Wallboard.Alerts.needs_you(
-        [%{session | name: "#{session.name} on #{event.machine}"}],
-        settings
-      )
+    if what == :started and Map.has_key?(entries, event.key) do
+      delay = Wallboard.Settings.get().claude.poll_seconds * 1000
+      Process.send_after(self(), {:alert, event.key, entries[event.key].since}, delay)
     end
 
-    if what in [:started, :changed], do: broadcast(state)
-    {:reply, :ok, state}
+    if what in [:started, :changed], do: broadcast(entries)
+    {:reply, :ok, %{state | entries: entries}}
   end
 
-  def handle_call(:sessions, _from, state), do: {:reply, board_sessions(state), state}
+  def handle_call(:sessions, _from, state), do: {:reply, board_sessions(state.entries), state}
 
+  # The alert for a wait that began at `since`, sent only if that same wait
+  # is still on.
   @impl true
+  def handle_info({:alert, key, since}, state) do
+    case state.entries[key] do
+      %{waiting?: true, since: ^since} = entry ->
+        {ok?, sent} = alert_allowed?(state.sent, System.os_time(:millisecond))
+        [session] = board_sessions(%{key => entry})
+        name = "#{session.name} on #{entry.machine}"
+
+        if ok?,
+          do: Wallboard.Alerts.needs_you([%{session | name: name}], Wallboard.Settings.get()),
+          else: Logger.warning("Too many alerts from other machines; not sent: #{name} needs you")
+
+        {:noreply, %{state | sent: sent}}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info(:sweep, state) do
-    {state, changed?} = sweep(state, System.os_time(:millisecond))
-    if changed?, do: broadcast(state)
+    {entries, changed?} = sweep(state.entries, System.os_time(:millisecond))
+    if changed?, do: broadcast(entries)
     Process.send_after(self(), :sweep, @sweep_ms)
-    {:noreply, state}
+    {:noreply, %{state | entries: entries}}
   end
 
   def handle_info(_, state), do: {:noreply, state}

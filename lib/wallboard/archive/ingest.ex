@@ -25,7 +25,7 @@ defmodule Wallboard.Archive.Ingest do
 
   @session ~r/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/
   @sub ~r/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/subagents\/([A-Za-z0-9._-]+\.(?:jsonl|meta\.json))$/
-  @name ~r/^[A-Za-z0-9._-]{1,64}$/
+  @name ~r/\A[A-Za-z0-9._-]{1,64}\z/
 
   @doc "The key other Macs send with each upload. Made once, then kept."
   def token do
@@ -44,8 +44,11 @@ defmodule Wallboard.Archive.Ingest do
   def valid_token?(given) when is_binary(given), do: Plug.Crypto.secure_compare(given, token())
   def valid_token?(_), do: false
 
-  @doc "True for a machine or account name safe to use in a folder name."
-  def valid_name?(name) when is_binary(name), do: name =~ @name
+  @doc """
+  True for a machine or account name safe to use in a folder name: never
+  "." or "..", and nothing after the name, not even a newline.
+  """
+  def valid_name?(name) when is_binary(name), do: name =~ @name and name not in [".", ".."]
   def valid_name?(_), do: false
 
   @doc """
@@ -160,10 +163,11 @@ defmodule Wallboard.Archive.Ingest do
 
   When a session starts waiting on you (a permission prompt, a question, an
   MCP form), it posts that hook's JSON to /ingest/status right away and
-  leaves a marker file. When the session moves on (a tool finished, you
-  typed, the turn or session ended) and the marker is there, it posts a
-  short "done waiting". Every other tool call costs one file check and no
-  network.
+  leaves a marker file saying which wait it is: the question's tool call,
+  or a notice from the session or from one helper agent. When that wait
+  ends (its tool finished, you typed, the turn or session ended) it posts a
+  short "done waiting", and keeps the marker to try again if the hub did
+  not take it. Every other tool call costs one file check and no network.
 
   When a turn ends and when a session ends it sends the transcript: at most
   once a minute per session while the session runs, and always at the end.
@@ -179,28 +183,65 @@ defmodule Wallboard.Archive.Ingest do
     HUB="#{hub_url}"
     KEY="#{token}"
 
-    # The time first, so "waiting" and "done waiting" keep their order even
-    # when the two sends reach the hub the other way round.
-    at=$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null) || at=""
-    [ -n "$at" ] || at="$(date +%s)000"
-
     input=$(cat)
-    # The first "name":"value" in the hook's JSON. Claude writes the hook's
-    # own fields before any tool input, and quotes inside a value are
-    # escaped, so a tool's input cannot stand in for them.
+    # The first "name":"value" in the hook's JSON, looked for in the first
+    # 4 KB and then in the rest. Claude writes the hook's own fields before
+    # any tool input or output, and quotes inside a value are escaped, so a
+    # value cannot pose as a field.
     field() {
-      printf '%s' "$input" | grep -o '"'"$1"'":"[^"]*"' | head -n 1 | sed 's/^"[^"]*":"//; s/"$//'
+      v=$(printf '%s' "$input" | head -c 4096 | grep -o '"'"$1"'":"[^"]*"' | head -n 1)
+      [ -n "$v" ] || v=$(printf '%s' "$input" | grep -o '"'"$1"'":"[^"]*"' | head -n 1)
+      printf '%s' "$v" | sed 's/^"[^"]*":"//; s/"$//'
     }
+    # Milliseconds, so the hub can put "waiting" and "done waiting" back in
+    # order when they arrive the other way round.
+    now_ms() {
+      t=$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null)
+      [ -n "$t" ] || t=$(date +%s%3N 2>/dev/null)
+      case "$t" in ''|*[!0-9]*) t="$(date +%s)000" ;; esac
+      printf '%s' "$t"
+    }
+
     event=$(field hook_event_name)
     session=$(field session_id)
     case "$session" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
+    waiting="${TMPDIR:-/tmp}/wallboard-waiting-$session"
+
+    # Which wait this is. The time is taken before the marker is written,
+    # and a "done waiting" takes its time after reading the marker, so the
+    # end of a wait is always later than its start.
+    case "$event" in
+      Notification)
+        at=$(now_ms)
+        printf 'notice:%s' "$(field agent_id)" > "$waiting" ;;
+      PreToolUse)
+        [ "$(field tool_name)" = AskUserQuestion ] || exit 0
+        at=$(now_ms)
+        printf 'tool:%s' "$(field tool_use_id)" > "$waiting" ;;
+      PostToolUse)
+        # Only the end of the wait's own tool call, or a tool call by the
+        # same agent after a permission prompt: a helper agent or another
+        # tool finishing meanwhile leaves the wait on.
+        [ -f "$waiting" ] || exit 0
+        case "$(cat "$waiting" 2>/dev/null)" in
+          "notice:$(field agent_id)"|"tool:$(field tool_use_id)") ;;
+          *) exit 0 ;;
+        esac
+        at=$(now_ms) ;;
+      UserPromptSubmit)
+        [ -f "$waiting" ] || exit 0
+        at=$(now_ms) ;;
+      Stop|SessionEnd)
+        at=$(now_ms) ;;
+      *)
+        exit 0 ;;
+    esac
 
     machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
     machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
     account=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
     account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
 
-    waiting="${TMPDIR:-/tmp}/wallboard-waiting-$session"
     send_status() {
       curl -fsS --connect-timeout 3 --max-time 10 -X POST \\
         -H "Authorization: Bearer $KEY" \\
@@ -208,20 +249,23 @@ defmodule Wallboard.Archive.Ingest do
         --data-binary @- \\
         "$HUB/ingest/status?machine=$machine&account=$account&at=$at" >/dev/null 2>&1
     }
+    # Claims the marker, sends "done waiting", and puts the marker back when
+    # the hub did not take it (unless a new wait began meanwhile), so the
+    # next hook tries again.
     done_waiting() {
-      [ -f "$waiting" ] || return 0
-      rm -f "$waiting"
-      printf '{"hook_event_name":"%s","session_id":"%s"}' "$event" "$session" | send_status
+      claim="$waiting.$$"
+      mv "$waiting" "$claim" 2>/dev/null || return 0
+      if printf '{"hook_event_name":"%s","session_id":"%s"}' "$event" "$session" | send_status; then
+        rm -f "$claim"
+      elif [ -f "$waiting" ]; then
+        rm -f "$claim"
+      else
+        mv "$claim" "$waiting"
+      fi
     }
 
     case "$event" in
-      Notification)
-        touch "$waiting"
-        printf '%s' "$input" | send_status
-        exit 0 ;;
-      PreToolUse)
-        [ "$(field tool_name)" = AskUserQuestion ] || exit 0
-        touch "$waiting"
+      Notification|PreToolUse)
         printf '%s' "$input" | send_status
         exit 0 ;;
       PostToolUse|UserPromptSubmit)
@@ -229,8 +273,6 @@ defmodule Wallboard.Archive.Ingest do
         exit 0 ;;
       Stop|SessionEnd)
         done_waiting ;;
-      *)
-        exit 0 ;;
     esac
 
     path=$(field transcript_path)
@@ -284,7 +326,8 @@ defmodule Wallboard.Archive.Ingest do
 
     SETTINGS="$CONF/settings.json"
     [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-    cp "$SETTINGS" "$SETTINGS.before-wallboard"
+    # The first connect's backup is the one worth keeping.
+    [ -f "$SETTINGS.before-wallboard" ] || cp "$SETTINGS" "$SETTINGS.before-wallboard"
     # On a Mac, osascript's JavaScript edits the settings with no other tool.
     # Elsewhere (Linux), python3 does the same edit.
     if ! command -v osascript >/dev/null 2>&1; then
