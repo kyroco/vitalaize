@@ -76,6 +76,18 @@ defmodule Wallboard.ReposTest do
       assert [%{repo: "acme/mobile", gate_workflow: "build.yml"}] = Settings.github_repos(merged)
     end
 
+    test "a file entry with spaces in its name keeps its settings when the page saves the list" do
+      file =
+        Settings.merge(Settings.defaults(), %{
+          github: %{repos: ["acme/api", %{repo: "acme/mobile ", gate_workflow: "build.yml"}]}
+        })
+
+      after_ = Settings.apply_overrides(file, %{github: %{repos: ["acme/mobile", "acme/api"]}})
+
+      assert [%{repo: "acme/mobile", gate_workflow: "build.yml"}, _] =
+               Settings.github_repos(after_)
+    end
+
     test "names are trimmed, and only names the board leaves out are listed as skipped" do
       spaced = Settings.merge(Settings.defaults(), %{github: %{repos: [" a/b", "x/y "]}})
       assert Settings.repo_names(spaced) == ["a/b", "x/y"]

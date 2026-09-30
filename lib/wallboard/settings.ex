@@ -503,9 +503,9 @@ defmodule Wallboard.Settings do
 
   defp keep_repo_details(settings, file) do
     details =
-      for %{repo: name} = entry <- List.wrap(get_in(file, [:github, :repos])),
+      for %{repo: name} = entry when is_binary(name) <- List.wrap(get_in(file, [:github, :repos])),
           into: %{},
-          do: {name, entry}
+          do: {String.trim(name), entry}
 
     update_in(settings, [:github, :repos], fn repos ->
       Enum.map(List.wrap(repos), fn
