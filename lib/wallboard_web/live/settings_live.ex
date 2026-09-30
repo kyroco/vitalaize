@@ -99,14 +99,19 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
-  @doc "Turns a secret that came back as dots into the value it stands for."
+  @doc """
+  Turns a secret that came back as dots into the value it stands for. Only a
+  secret that is set was shown as dots, so dots typed into an empty field
+  are kept as typed.
+  """
   def unmask(values, settings) do
     for {_, fs} <- Settings.editable(), {path, _, :secret, _, _} <- fs, reduce: values do
       acc ->
         key = Enum.join(path, ".")
+        current = get_in(settings, path)
 
-        if Map.get(acc, key) == @kept,
-          do: Map.put(acc, key, to_text(:secret, get_in(settings, path))),
+        if Map.get(acc, key) == @kept and current != nil,
+          do: Map.put(acc, key, to_text(:secret, current)),
           else: acc
     end
   end

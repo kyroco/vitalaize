@@ -210,6 +210,17 @@ defmodule Wallboard.AlertsTest do
                "https://hooks.slack.com/new"
     end
 
+    test "dots typed into an empty secret field are kept as typed" do
+      shown = %{"token" => "••••••••"}
+      assert WallboardWeb.SettingsLive.unmask(shown, Settings.defaults())["token"] == "••••••••"
+    end
+
+    test "refuses an ntfy server with a query or a fragment" do
+      for bad <- ["https://ex.com/ntfy?x=1", "https://ex.com/a#b", "https://ex.com?x"] do
+        assert {:error, %{"alerts.ntfy_server" => _}} = page(%{"alerts.ntfy_server" => bad})
+      end
+    end
+
     test "empty fields leave the channels off" do
       assert {:ok, over} = page(%{})
       refute Map.has_key?(over, :alerts)
