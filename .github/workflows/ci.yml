@@ -1,6 +1,8 @@
 # Runs the tests, plus the code style and compiler warning checks, on Linux
-# and macOS, and a security scan of the Elixir code on Linux, for every pull
-# request and every push to main. On a version tag
+# and macOS, a security scan of the Elixir code on Linux, and a check of the
+# Elixir packages against known security holes, for every pull request and
+# every push to main. A push to main also sends the package list to GitHub's
+# dependency graph, so Dependabot alerts cover it. On a version tag
 # (v0.3.0) it also builds the two Linux downloads on real Intel and ARM
 # machines, checks each one starts, and attaches them to that tag's GitHub
 # release.
@@ -164,10 +166,80 @@ jobs:
           sarif_file: sobelow.sarif
           category: sobelow
 
+  # Fails when mix.lock holds an Elixir package with a known security hole
+  # (from the OSV list, which has GitHub's advisories for Hex packages) or
+  # one its author has retired. GitHub's dependency graph cannot read
+  # mix.lock, so without this nothing would flag one. Hex before 2.5 checks
+  # retired packages only and passes a vulnerable one, so the run first
+  # makes sure it has 2.5 or newer.
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      - name: Hex is 2.5 or newer
+        run: |
+          hex=$(mix hex.info | sed -n 's/^Hex: *//p')
+          if [ "$(printf '%s\n' 2.5.0 "$hex" | sort -V | head -1)" != 2.5.0 ]; then
+            echo "::error::Hex $hex cannot check for security holes; it needs 2.5 or newer."
+            exit 1
+          fi
+          echo "Hex $hex"
+      # The audit stops on a lock that does not match mix.exs, so fetch first.
+      # --check-locked fails when mix.lock is out of date instead of
+      # rewriting it, so the audit checks the lock that is committed.
+      - run: mix deps.get --check-locked
+      # Hex lets mix.exs (or HEX_IGNORE_* variables) name advisories and
+      # retired packages to ignore, and passes when only those are found.
+      # Any ignored finding fails this step too, so an ignore list cannot
+      # hide one; the same idea as Sobelow's --no-config above. The audit
+      # sees only Hex packages: a git or path dependency, or a `hex:` mirror
+      # setting in mix.exs, would still escape it, so review those.
+      - name: No known security holes or retired packages
+        run: |
+          if mix hex.audit > audit.log 2>&1; then status=0; else status=$?; fi
+          cat audit.log
+          if grep -q '^Ignored' audit.log; then
+            echo "::error::A security advisory or retired package is being ignored. Update the package instead."
+            exit 1
+          fi
+          exit "$status"
+
+  # Sends the Elixir packages in mix.lock to GitHub's dependency graph, so
+  # the Security tab raises a Dependabot alert when one of them gets a known
+  # security hole, even with no new push. Only on a push to main: sending
+  # needs write access, which pull request code must not get. The action
+  # reads every package, indirect ones too, from mix.lock without fetching
+  # them, so no package's own code runs while the job holds write access.
+  # It checks the build attestation of the program it downloads, and that
+  # release is immutable on GitHub, so its files cannot be swapped.
+  dependency-graph:
+    name: Dependency graph
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/mix-dependency-submission@257b2df58056895d7a0f3f7dba5b0520d71d9a46 # v1.3.4
+
   linux-download:
     name: Linux download (${{ matrix.arch }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    # A download never ships with a package that has a known security hole.
+    needs: [test, dependency-audit]
     strategy:
       matrix:
         include:
