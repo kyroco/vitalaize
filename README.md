@@ -2,12 +2,14 @@
 
 VitalAIze is a wall screen for teams that build software with AI coding
 agents. Put it on an iPad (or any browser) and at a glance you see every
-Claude Code and Codex session at work, on this machine and your others, which
-one is waiting on you, what your GitHub builds are doing across all your
-repositories, and how the work trends over days and weeks. When a session
-needs you, it can tell you by Messages, Slack, ntfy or Pushover. It runs on
-your own Mac or Linux machine, and needs Claude Code and the GitHub CLI
-(`gh`), both signed in; Codex is optional.
+Claude Code and Codex session at work on the machine that runs it, which one
+is waiting on you (on your other machines too), what your GitHub builds are
+doing across all your repositories, and how the work trends over days and
+weeks. Sessions from your other machines are saved for the archive and
+trends, and their Claude sessions show on the live board while they wait on
+you. When a session needs you, it can tell you by Messages, Slack, ntfy or
+Pushover. It runs on your own Mac or Linux machine, and needs Claude Code
+and the GitHub CLI (`gh`), both signed in; Codex is optional.
 
 ![The Agents tab: Claude and Codex sessions under the status line](docs/images/live.jpg)
 
@@ -17,8 +19,8 @@ machines, known limits, building from source and how it works.
 
 ## What's new in 0.3.0
 
-- **Several repositories**, added up in the status line, with a column each
-  on the Git tab.
+- **Several repositories**, added up in the status line. The Git tab gives
+  the four busiest a column each and lists the rest below.
 - **Alerts anywhere**: Slack, ntfy (iPhone or Android) and Pushover, besides
   Messages on a Mac.
 - **Alerts for your other machines**: a connected machine tells the hub the
@@ -52,11 +54,12 @@ its setup again, to add the new hooks.
      hub's key from the hub's Settings page (Connect another Mac). Codex
      runs a new hook only once you trust it, so afterwards type `/hooks` in
      Codex and trust the two `wallboard-upload.sh` hooks.
-4. It fills in what it can find (your Claude and Codex folders, the GitHub
-   repositories your sessions work in, up to six, busiest first, and their
-   workflows, your AWS profiles) and asks you to check it. Add or remove
-   repositories there. Click **Install**. The board starts now and again
-   every time you log in.
+4. On a hub, it fills in what it can find (your Claude and Codex folders,
+   the GitHub repositories your sessions work in, up to six, busiest first,
+   the busiest one's workflows, your AWS profiles) and asks you to check it.
+   Add or remove repositories there. Click **Install**. The board starts now
+   and again every time you log in. On a collector, click **Connect this
+   Mac** instead; steps 5 and 6 are for the hub.
 5. On your iPad, open the address VitalAIze shows in Safari, tap Share, then
    **Add to Home Screen**. Opened from the Home Screen, the board fills the
    screen. Turn the iPad sideways, and set Auto-Lock to Never in the iPad's
