@@ -6,7 +6,9 @@ defmodule Wallboard.Remote do
   to say a session is waiting. So the upload script also runs from Claude
   Code's Notification, PreToolUse (AskUserQuestion), PostToolUse and
   UserPromptSubmit hooks, and posts a small status to /ingest/status the
-  moment a session starts or stops waiting. This keeps those statuses, puts
+  moment a session starts or stops waiting. A loop the script starts on the
+  collector ("WaitEnded") covers what no hook reports: a prompt approved,
+  denied or dismissed with Esc (see Wallboard.Archive.Ingest). This keeps those statuses, puts
   the waiting ones on the board beside this machine's own sessions, and
   sends one alert on every channel when one starts waiting.
 
@@ -123,7 +125,7 @@ defmodule Wallboard.Remote do
   defp waiting(%{"hook_event_name" => "PreToolUse"}), do: {nil, nil}
 
   defp waiting(%{"hook_event_name" => event})
-       when event in ~w(PostToolUse UserPromptSubmit Stop SessionEnd),
+       when event in ~w(PostToolUse UserPromptSubmit Stop SessionEnd WaitEnded),
        do: {false, nil}
 
   defp waiting(_), do: {nil, nil}

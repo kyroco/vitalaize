@@ -225,20 +225,51 @@ defmodule Wallboard.RemoteTest do
   end
 
   # Runs the upload script as Claude would: the hook's JSON on stdin, and a
-  # throwaway Claude folder and temp folder, never the real ones.
-  defp run_hook(script, dir, hook) do
+  # throwaway Claude folder and temp folder, never the real ones. The PATH
+  # holds only the system's own tools and dir/bin, where a test may put a
+  # stand-in `claude`, so the real one is never run.
+  defp run_hook(script, dir, hook, env \\ []) do
     input = Path.join(dir, "input.json")
     File.write!(input, Jason.encode!(hook))
+    bin = Path.join(dir, "bin")
+    File.mkdir_p!(bin)
 
     System.cmd("sh", ["-c", ~s(sh "$0" < "$1"), script, input],
-      env: [
-        {"TMPDIR", dir},
-        {"HOME", dir},
-        {"CLAUDE_CONFIG_DIR", Path.join(dir, ".claude")}
-      ],
+      env:
+        [
+          {"TMPDIR", dir},
+          {"HOME", dir},
+          {"CLAUDE_CONFIG_DIR", Path.join(dir, ".claude")},
+          {"PATH", Enum.join([bin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"], ":")}
+        ] ++ env,
       stderr_to_stdout: true
     )
   end
+
+  # A stand-in `claude` whose `agents --json` reports this session as
+  # waiting or busy, whatever the test last set.
+  defp fake_claude(dir, status) do
+    bin = Path.join(dir, "bin")
+    File.mkdir_p!(bin)
+
+    File.write!(
+      Path.join(dir, "agents.json"),
+      Jason.encode!([%{"sessionId" => @sid, "status" => status}])
+    )
+
+    path = Path.join(bin, "claude")
+    File.write!(path, "#!/bin/sh\ncat \"#{Path.join(dir, "agents.json")}\"\n")
+    File.chmod!(path, 0o755)
+  end
+
+  defp loops do
+    case System.cmd("pgrep", ["-f", "upload.sh --watch #{@sid}"]) do
+      {out, 0} -> out |> String.split() |> length()
+      _ -> 0
+    end
+  end
+
+  defp stop_loops, do: System.cmd("pkill", ["-f", "upload.sh --watch #{@sid}"])
 
   defp this_machine do
     {out, 0} = System.cmd("sh", ["-c", "scutil --get LocalHostName 2>/dev/null || hostname -s"])
@@ -271,6 +302,59 @@ defmodule Wallboard.RemoteTest do
     end
 
     defp marker(ctx), do: Path.join(ctx.dir, "wallboard-waiting-#{@sid}")
+
+    test "approving a prompt ends the wait though no hook fires, and the hook never waits for the loop",
+         ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      fake_claude(ctx.dir, "waiting")
+      quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
+
+      {micros, {"", 0}} =
+        :timer.tc(fn -> run_hook(ctx.script, ctx.dir, notice("permission_prompt"), quick) end)
+
+      assert micros < 2_000_000
+      assert_receive {:remote, [_]}, 5_000
+      Process.sleep(1_500)
+      assert loops() == 1
+
+      # A second prompt in the same session starts no second loop.
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), quick)
+      Process.sleep(500)
+      assert loops() == 1
+
+      # Approved: the session is running again, and no hook said so.
+      fake_claude(ctx.dir, "busy")
+      assert_receive {:remote, []}, 5_000
+      refute File.exists?(marker(ctx))
+      Process.sleep(2_000)
+      assert loops() == 0
+      refute File.exists?(marker(ctx) <> ".watch")
+    end
+
+    test "a loop stops at its time limit even while the session still waits", ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      fake_claude(ctx.dir, "waiting")
+      env = [{"WALLBOARD_WATCH_EVERY", "1"}, {"WALLBOARD_WATCH_LIMIT", "2"}]
+
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), env)
+      assert_receive {:remote, [_]}, 5_000
+      Process.sleep(4_000)
+      assert loops() == 0
+      refute File.exists?(marker(ctx) <> ".watch")
+      # The wait itself stays up for the hooks to end.
+      assert File.exists?(marker(ctx))
+    end
+
+    test "without claude on the PATH no loop starts and the hooks still work", ctx do
+      ctx.settings.("the-hub")
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"))
+      assert_receive {:remote, [_]}, 5_000
+      Process.sleep(500)
+      assert loops() == 0
+      refute File.exists?(marker(ctx) <> ".watch")
+    end
 
     test "a prompt answered before the board's own check would see it sends no alert", ctx do
       ctx.settings.("the-hub")

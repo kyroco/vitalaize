@@ -184,7 +184,11 @@ one, delete it from the release first.
   the moment one of its sessions starts waiting (a permission prompt, a
   question, or a form from an MCP server), and the session shows as needing
   you on the hub's board, marked with that machine's name, until it moves
-  on. If the hub cannot be reached, the session carries on as usual. A
+  on. To notice a prompt approved, denied or closed with Esc, that machine
+  checks `claude agents` every few seconds while a session waits, so
+  `claude` and `perl` need to be on its PATH; without them the card clears
+  at the session's next step instead. If the hub cannot be reached, the
+  session carries on as usual. A
   machine connected by version 0.2.0 or earlier needs connecting once more (Connect
   another Mac on the hub's Settings page) to add these hooks. Codex sessions
   on other machines do not alert yet.

@@ -169,6 +169,16 @@ defmodule Wallboard.Archive.Ingest do
   short "done waiting", and keeps the marker to try again if the hub did
   not take it. Every other tool call costs one file check and no network.
 
+  No hook fires when you approve or deny a prompt or press Esc, so a
+  waiting hook also starts one detached loop per session (the script run
+  as `--watch <session>`). Every few seconds it asks `claude agents --json`
+  whether the session still waits, the same check the hub makes for its
+  own sessions, and posts "done waiting" once it has seen the session
+  waiting and then not. It stops when the marker is gone, when the session
+  never shows as waiting within about a minute, and after 12 hours at
+  most. Without `claude` on the PATH, or perl, there is no loop and the
+  hooks alone end the wait.
+
   When a turn ends and when a session ends it sends the transcript: at most
   once a minute per session while the session runs, and always at the end.
   """
@@ -183,6 +193,103 @@ defmodule Wallboard.Archive.Ingest do
     HUB="#{hub_url}"
     KEY="#{token}"
 
+    # Milliseconds, so the hub can put "waiting" and "done waiting" back in
+    # order when they arrive the other way round.
+    now_ms() {
+      t=$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null)
+      [ -n "$t" ] || t=$(date +%s%3N 2>/dev/null)
+      case "$t" in ''|*[!0-9]*) t="$(date +%s)000" ;; esac
+      printf '%s' "$t"
+    }
+    names() {
+      machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
+      machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+      account=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+      account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+    }
+    send_status() {
+      curl -fsS --connect-timeout 3 --max-time 10 -X POST \\
+        -H "Authorization: Bearer $KEY" \\
+        -H "Content-Type: application/json" \\
+        --data-binary @- \\
+        "$HUB/ingest/status?machine=$machine&account=$account&at=$at" >/dev/null 2>&1
+    }
+    # Claims the marker, sends "done waiting", and puts the marker back when
+    # the hub did not take it (unless a new wait began meanwhile), so the
+    # next try sends it again. Fails when the hub did not take it.
+    done_waiting() {
+      claim="$waiting.$$"
+      mv "$waiting" "$claim" 2>/dev/null || return 0
+      if printf '{"hook_event_name":"%s","session_id":"%s"}' "$event" "$session" | send_status; then
+        rm -f "$claim"
+      elif [ -f "$waiting" ]; then
+        rm -f "$claim"
+      else
+        mv "$claim" "$waiting"
+        return 1
+      fi
+    }
+    # This session in `claude agents --json`: waiting, moved (running or
+    # idle), gone, or unknown when the check fails. The check gets 20
+    # seconds at most.
+    agent_state() {
+      out=$(perl -e 'alarm 20; exec @ARGV' claude agents --json 2>/dev/null) || { echo unknown; return; }
+      printf '%s' "$out" | perl -MJSON::PP -e '
+        my $d = eval { decode_json(join("", <STDIN>)) };
+        ref($d) eq "ARRAY" or do { print "unknown"; exit };
+        for my $a (@$d) {
+          next unless ref($a) eq "HASH" && ($a->{sessionId} // "") eq $ARGV[0];
+          my $w = ($a->{status} // "") eq "waiting" || ($a->{state} // "") eq "blocked";
+          print $w ? "waiting" : "moved";
+          exit;
+        }
+        print "gone";' "$session" 2>/dev/null || echo unknown
+    }
+
+    # The loop a waiting hook starts: one per session, checking every few
+    # seconds until the wait is over.
+    if [ "$1" = --watch ]; then
+      session=$2
+      case "$session" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
+      waiting="${TMPDIR:-/tmp}/wallboard-waiting-$session"
+      lock="$waiting.watch"
+      event=WaitEnded
+      every=${WALLBOARD_WATCH_EVERY:-3}
+      limit=${WALLBOARD_WATCH_LIMIT:-43200}
+      # The lock is a folder, made in one step, holding the loop's process
+      # id; a lock whose loop died is taken over.
+      if ! mkdir "$lock" 2>/dev/null; then
+        old=$(cat "$lock/pid" 2>/dev/null)
+        [ -n "$old" ] && kill -0 "$old" 2>/dev/null && exit 0
+        rm -rf "$lock"
+        mkdir "$lock" 2>/dev/null || exit 0
+      fi
+      echo $$ > "$lock/pid"
+      trap 'rm -rf "$lock"' EXIT
+      trap 'exit 0' HUP INT TERM
+      names
+      start=$(date +%s)
+      seen=no
+      misses=0
+      while [ -f "$waiting" ] && [ $(( $(date +%s) - start )) -lt "$limit" ]; do
+        sleep "$every"
+        case "$(agent_state)" in
+          waiting)
+            seen=yes ;;
+          moved|gone)
+            if [ "$seen" = yes ]; then
+              at=$(now_ms)
+              done_waiting && seen=no
+            else
+              # Never seen waiting: nothing here to watch.
+              misses=$((misses + 1))
+              [ $((misses * every)) -ge 60 ] && exit 0
+            fi ;;
+        esac
+      done
+      exit 0
+    fi
+
     input=$(cat)
     # The first "name":"value" in the hook's JSON, looked for in the first
     # 4 KB and then in the rest. Claude writes the hook's own fields before
@@ -192,14 +299,6 @@ defmodule Wallboard.Archive.Ingest do
       v=$(printf '%s' "$input" | head -c 4096 | grep -o '"'"$1"'":"[^"]*"' | head -n 1)
       [ -n "$v" ] || v=$(printf '%s' "$input" | grep -o '"'"$1"'":"[^"]*"' | head -n 1)
       printf '%s' "$v" | sed 's/^"[^"]*":"//; s/"$//'
-    }
-    # Milliseconds, so the hub can put "waiting" and "done waiting" back in
-    # order when they arrive the other way round.
-    now_ms() {
-      t=$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null)
-      [ -n "$t" ] || t=$(date +%s%3N 2>/dev/null)
-      case "$t" in ''|*[!0-9]*) t="$(date +%s)000" ;; esac
-      printf '%s' "$t"
     }
 
     event=$(field hook_event_name)
@@ -237,35 +336,16 @@ defmodule Wallboard.Archive.Ingest do
         exit 0 ;;
     esac
 
-    machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
-    machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
-    account=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
-    account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
-
-    send_status() {
-      curl -fsS --connect-timeout 3 --max-time 10 -X POST \\
-        -H "Authorization: Bearer $KEY" \\
-        -H "Content-Type: application/json" \\
-        --data-binary @- \\
-        "$HUB/ingest/status?machine=$machine&account=$account&at=$at" >/dev/null 2>&1
-    }
-    # Claims the marker, sends "done waiting", and puts the marker back when
-    # the hub did not take it (unless a new wait began meanwhile), so the
-    # next hook tries again.
-    done_waiting() {
-      claim="$waiting.$$"
-      mv "$waiting" "$claim" 2>/dev/null || return 0
-      if printf '{"hook_event_name":"%s","session_id":"%s"}' "$event" "$session" | send_status; then
-        rm -f "$claim"
-      elif [ -f "$waiting" ]; then
-        rm -f "$claim"
-      else
-        mv "$claim" "$waiting"
-      fi
-    }
+    names
 
     case "$event" in
       Notification|PreToolUse)
+        # The loop is started in its own session, with nothing tied to this
+        # hook, so the hook returns at once and Claude never waits on it.
+        if command -v claude >/dev/null 2>&1; then
+          perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$0" --watch "$session" \\
+            </dev/null >/dev/null 2>&1 &
+        fi
         printf '%s' "$input" | send_status
         exit 0 ;;
       PostToolUse|UserPromptSubmit)
