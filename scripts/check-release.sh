@@ -7,14 +7,14 @@
 #
 # The board runs with a scratch home folder and database and none of your
 # environment, so it reads and writes nothing of yours, and on a port of its
-# own (4799, or $PORT), so a board you already run is not the one that
+# own (4799, or $CHECK_PORT), so a board you already run is not the one that
 # answers. It runs without Erlang remote connections and is stopped by its
 # process id, so it cannot reach any other board.
 set -eu
 
-PORT=${PORT:-4799}
+PORT=${CHECK_PORT:-4799}
 case $PORT in '' | *[!0-9]*)
-  echo "PORT must be a number." >&2
+  echo "CHECK_PORT must be a number." >&2
   exit 1
   ;;
 esac
@@ -40,6 +40,12 @@ tar -xzf "$TARBALL" -C "$WORK"
   exit 1
 }
 mkdir -p "$WORK/home"
+
+# Something already on the port would answer in the board's place.
+if curl -s --max-time 5 -o /dev/null "http://127.0.0.1:$PORT/"; then
+  echo "Something already answers on port $PORT. Stop it, or set CHECK_PORT." >&2
+  exit 1
+fi
 
 # The example settings, as a new user starts from, on this check's own port
 # and database. No announcing on the network: this board is gone in seconds.
@@ -75,4 +81,5 @@ until code=$(curl -s --max-time 5 -o "$WORK/page.html" -w '%{http_code}' "http:/
 done
 
 grep -q 'phx-' "$WORK/page.html" || failed "Port $PORT answered, but not with the board's page."
+kill -0 "$BOARD" 2>/dev/null || failed "Port $PORT answered, but the board this check started is not running."
 echo "The board started from $(basename "$1") and answered on port $PORT."
