@@ -16,15 +16,16 @@ defmodule Wallboard.Sources.Codex do
   you comes from VitalAIze's Codex hook instead (priv/codex-hook.sh). The
   board keeps a copy at <codex dir>/vitalaize/hook.sh; once the person adds
   it to ~/.codex/hooks.json and approves it in Codex, Codex runs it on
-  PermissionRequest, PostToolUse, UserPromptSubmit, Stop and SessionEnd, and
-  it keeps the latest call for each session as vitalaize/<session id>.json,
-  and for each helper agent in it as vitalaize/<session id>.<agent id>.json.
-  A session needs you when one of those is
+  PermissionRequest, PostToolUse, UserPromptSubmit, Stop, SubagentStop,
+  Interrupt and SessionEnd, and it keeps the latest call for each session as
+  vitalaize/<session id>.json, for each helper agent in it as
+  vitalaize/<session id>.<agent id>.json, and the latest approval request of
+  each beside it as <name>.ask.json. A session needs you when one of those is
 
     * PermissionRequest: Codex is asking to run something, or
     * Stop, with a last message whose last paragraph ends in a question mark
 
-  and nothing has moved on since (see `waiting/2`). A session with an
+  and nothing has settled it since (see `waiting/3`). A session with an
   approval request out stays on the board for up to 12 hours, past the idle
   window, since Codex writes nothing while it waits.
 
@@ -191,7 +192,7 @@ defmodule Wallboard.Sources.Codex do
   for the session and one for each helper agent working in it (its calls
   carry `agent_id`), so a helper's call never replaces the session's own.
 
-  Leaves out approval requests older than two days and other calls older
+  Leaves out approval requests older than 12 hours and other calls older
   than the idle window; removes files older than a week, and any
   half-written file the hook left behind when it was stopped.
 
@@ -211,7 +212,7 @@ defmodule Wallboard.Sources.Codex do
 
     found =
       for {path, name} <- hook_files(settings),
-          name =~ ~r/^[0-9A-Za-z_-]+(\.[0-9A-Za-z_-]+)?\.json$/,
+          name =~ ~r/^[0-9A-Za-z_-]+(\.[0-9A-Za-z_-]+)?(\.ask)?\.json$/,
           {:ok, %{mtime: mtime, size: size}} <- [File.stat(path, time: :posix)],
           mtime >= cutoff or forget(path, mtime, now_s),
           mark = cached(read[path], {mtime, size}) || decode(path, mtime),
@@ -265,37 +266,45 @@ defmodule Wallboard.Sources.Codex do
     false
   end
 
+  # Hook calls after which nothing from the turn is still waiting.
+  @turn_over ["Stop", "SubagentStop", "UserPromptSubmit", "Interrupt", "SessionEnd"]
+
   @doc """
   Why a session is waiting on you, from one of its hook calls, or nil when it
-  is not. A call is out of date when a turn started after it. An approval
-  request is also over once the session writes anything later (the command
-  ran, or was turned down) or its turn ends (it was interrupted). A turn that
-  ended on a question counts only in a session a person started in Codex:
-  one run by a script or by Claude has nobody at the keyboard.
+  is not. `others` are the session's other latest hook calls (see
+  `marks/3`). A call is out of date when a turn started after it. A turn
+  that ended on a question counts only in a session a person started in
+  Codex: one run by a script or by Claude has nobody at the keyboard.
 
-  A helper agent's approval request (it carries `agent_id` and comes under
-  the session's id) is judged on its own: the session's file says nothing
-  about the helper, so only the helper's next hook call clears it.
+  The hook keeps an approval request in a file of its own, so another tool
+  call finishing does not replace it. It is over when:
+
+    * a PostToolUse comes in for the same turn and the same command (it was
+      approved and ran), or
+    * its agent's turn ends, or the person interrupts or quits (it was
+      turned down, or left), or
+    * for the session's own request, its file shows the turn has ended.
+
+  A helper agent's request (it carries `agent_id`) is judged only on hook
+  calls: the session's file says nothing about the helper.
   """
-  def waiting(nil, _t), do: nil
+  def waiting(mark, t, others \\ [])
 
-  def waiting(%{"at" => at} = mark, t) do
+  def waiting(nil, _t, _others), do: nil
+
+  def waiting(%{"at" => at} = mark, t, others) do
     started = t.turn_started_at && DateTime.to_unix(t.turn_started_at)
-    last = t.last_at && DateTime.to_unix(t.last_at)
-    helper? = mark["agent_id"] not in [nil, ""]
+    helper? = agent(mark) != nil
 
     case mark["hook_event_name"] do
       "PermissionRequest" when helper? ->
-        approval(mark)
+        if not answered?(mark, others), do: approval(mark)
 
       _ when started != nil and at < started ->
         nil
 
       "PermissionRequest" ->
-        # Codex's own lines are stamped to the second and may land in the
-        # same second as the request, so a line counts only from two seconds
-        # after it.
-        if t.running and not (last && last > at + 1), do: approval(mark)
+        if t.running and not answered?(mark, others), do: approval(mark)
 
       # Another Stop hook can send the turn on, so it counts once the turn
       # has really ended.
@@ -308,7 +317,36 @@ defmodule Wallboard.Sources.Codex do
     end
   end
 
-  def waiting(_, _t), do: nil
+  def waiting(_, _t, _others), do: nil
+
+  defp agent(mark), do: if(mark["agent_id"] in [nil, ""], do: nil, else: mark["agent_id"])
+
+  # A later hook call that settles an approval request. Hook times are to the
+  # second, so the matching PostToolUse may share its second; an end of turn
+  # must come after it.
+  defp answered?(%{"at" => at} = ask, others) do
+    Enum.any?(others, fn other ->
+      same_agent? = agent(other) == agent(ask)
+      event = other["hook_event_name"]
+      other_at = other["at"]
+
+      cond do
+        not is_integer(other_at) -> false
+        same_agent? and event == "PostToolUse" -> other_at >= at and same_call?(ask, other)
+        same_agent? and event in @turn_over -> other_at > at
+        # The person interrupting or quitting ends the helpers' work too.
+        agent(other) == nil and event in ["Interrupt", "SessionEnd"] -> other_at > at
+        true -> false
+      end
+    end)
+  end
+
+  defp same_call?(ask, done) do
+    ask["turn_id"] == done["turn_id"] and call_input(ask) == call_input(done)
+  end
+
+  defp call_input(%{"tool_input" => %{"command" => command}}), do: command
+  defp call_input(mark), do: mark["tool_input"]
 
   # Only the program's name: the rest of a command can hold a password or a
   # token, and this text goes on the board and into a text message.
@@ -319,7 +357,7 @@ defmodule Wallboard.Sources.Codex do
     words =
       if is_list(command),
         do: Enum.filter(command, &is_binary/1),
-        else: OptionParser.split(command)
+        else: shell_words(command)
 
     case program(words) do
       nil -> approval(Map.delete(mark, "tool_input"))
@@ -346,7 +384,7 @@ defmodule Wallboard.Sources.Codex do
 
       Path.basename(word) in @shells and match?([<<"-", _::binary>>, _ | _], rest) ->
         [_flag, script | _] = rest
-        program(OptionParser.split(script))
+        program(shell_words(script))
 
       true ->
         Path.basename(word)
@@ -354,6 +392,32 @@ defmodule Wallboard.Sources.Codex do
   end
 
   defp program([]), do: nil
+
+  @doc """
+  A command's words, roughly as a shell splits them: on any space, tab or
+  line break, and on ; & | between commands, keeping quoted text together.
+  It never fails: an unclosed quote runs to the end, and a backslash is kept
+  as written inside single quotes.
+  """
+  def shell_words(text) when is_binary(text), do: words(text, "", nil, [])
+
+  defp words(<<>>, word, _quote, acc), do: Enum.reverse(push(word, acc))
+
+  defp words(<<?\\, c::utf8, rest::binary>>, word, quote, acc) when quote != ?',
+    do: words(rest, word <> <<c::utf8>>, quote, acc)
+
+  defp words(<<c, rest::binary>>, word, nil, acc) when c in [?', ?"],
+    do: words(rest, word, c, acc)
+
+  defp words(<<c, rest::binary>>, word, c, acc), do: words(rest, word, nil, acc)
+
+  defp words(<<c, rest::binary>>, word, nil, acc) when c in ~c" \t\n\r;&|",
+    do: words(rest, "", nil, push(word, acc))
+
+  defp words(<<c, rest::binary>>, word, quote, acc), do: words(rest, word <> <<c>>, quote, acc)
+
+  defp push("", acc), do: acc
+  defp push(word, acc), do: [word | acc]
 
   @doc """
   The question a message ends on, or nil. A message ends on a question when
@@ -414,16 +478,22 @@ defmodule Wallboard.Sources.Codex do
   # helper's approval requests reach the person; its questions go to the
   # session that started it.
   defp waiting_on(t, kids, marks) do
+    session = Map.get(marks, t.thread_id, [])
+
     own =
-      for mark <- Map.get(marks, t.thread_id, []),
-          mark["agent_id"] in [nil, ""] or approval?(mark),
-          do: {t, mark}
+      for mark <- session,
+          agent(mark) == nil or approval?(mark),
+          do: {t, mark, session}
 
     helpers =
-      for k <- kids, mark <- Map.get(marks, k.thread_id, []), approval?(mark), do: {k, mark}
+      for k <- kids,
+          list = Map.get(marks, k.thread_id, []),
+          mark <- list,
+          approval?(mark),
+          do: {k, mark, list}
 
-    Enum.find_value(own ++ helpers, {nil, nil}, fn {who, mark} ->
-      if why = waiting(mark, who), do: {why, DateTime.from_unix!(mark["at"])}
+    Enum.find_value(own ++ helpers, {nil, nil}, fn {who, mark, others} ->
+      if why = waiting(mark, who, others -- [mark]), do: {why, DateTime.from_unix!(mark["at"])}
     end)
   end
 

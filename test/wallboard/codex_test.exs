@@ -193,6 +193,8 @@ defmodule Wallboard.CodexTest do
             {~s[PGPASSWORD="hunter2 horse" psql], "psql"},
             {["bash", "-lc", ~s[API_KEY="a b" deploy]], "deploy"},
             {["/bin/zsh", "-lc", "rm -r x"], "rm"},
+            {["bash", "-lc", "set\nAPI_KEY=sk-live-abc\ndeploy prod"], "set"},
+            {["bash", "-lc", "tee x <<'EOF'\nDon't stop\nEOF"], "tee"},
             {~s[bash -c "psql postgres://u:pw@h"], "psql"},
             {"grep -c x file", "grep"}
           ] do
@@ -205,16 +207,68 @@ defmodule Wallboard.CodexTest do
                "Asks for your approval"
     end
 
-    test "an approval request is over once the session moves on or its turn ends" do
+    test "an approval request is over once it ran, or its turn ends" do
       t = running_tally()
-      mark = %{"hook_event_name" => "PermissionRequest", "at" => at(5)}
 
-      # The last line (13:00:09) is more than a second after the request.
-      assert Codex.waiting(mark, t) == nil
-      assert Codex.waiting(%{mark | "at" => at(8)}, t) == "Asks for your approval"
+      ask = %{
+        "hook_event_name" => "PermissionRequest",
+        "turn_id" => "t1",
+        "tool_input" => %{"command" => "mix test"},
+        "at" => at(20)
+      }
 
-      # Interrupted or turned down: the turn ended.
-      assert Codex.waiting(%{mark | "at" => at(30)}, %{t | running: false}) == nil
+      ran = %{ask | "hook_event_name" => "PostToolUse", "at" => at(90)}
+      assert Codex.waiting(ask, t, []) == "Asks to run mix"
+
+      # The same command in the same turn finished: it was approved and ran.
+      assert Codex.waiting(ask, t, [ran]) == nil
+
+      # Another tool call finishing, even at once, leaves it waiting.
+      other = %{ran | "tool_input" => %{"command" => "ls"}, "at" => at(21)}
+      assert Codex.waiting(ask, t, [other]) == "Asks to run mix"
+      assert Codex.waiting(ask, t, [%{ran | "turn_id" => "t0"}]) == "Asks to run mix"
+
+      # Turned down or left: the turn ended, the person interrupted or quit.
+      assert Codex.waiting(ask, %{t | running: false}, []) == nil
+
+      for event <- ["Stop", "UserPromptSubmit", "Interrupt", "SessionEnd"] do
+        assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(21)}]) == nil
+        # One from before the request is older news.
+        assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(20)}])
+      end
+    end
+
+    test "a helper's approval request is over when the helper stops or the person interrupts" do
+      t = running_tally()
+      ask = %{"hook_event_name" => "PermissionRequest", "agent_id" => "a1", "at" => at(20)}
+      assert Codex.waiting(ask, t, []) == "Asks for your approval"
+
+      stop = %{"hook_event_name" => "SubagentStop", "agent_id" => "a1", "at" => at(25)}
+      assert Codex.waiting(ask, t, [stop]) == nil
+      assert Codex.waiting(ask, t, [%{stop | "agent_id" => "a2"}]) == "Asks for your approval"
+
+      for event <- ["Interrupt", "SessionEnd"] do
+        assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(25)}]) == nil
+      end
+
+      # The session's own turn ending says nothing about the helper.
+      assert Codex.waiting(ask, t, [%{"hook_event_name" => "Stop", "at" => at(25)}]) ==
+               "Asks for your approval"
+    end
+
+    test "a command splits like a shell's, and never fails" do
+      assert Codex.shell_words(~s[PGPASSWORD="a b" psql -c 'x y']) ==
+               ["PGPASSWORD=a b", "psql", "-c", "x y"]
+
+      assert Codex.shell_words("set\nAPI_KEY=k\tdeploy prod") ==
+               ["set", "API_KEY=k", "deploy", "prod"]
+
+      assert Codex.shell_words("cd x && make; ls|wc") == ["cd", "x", "make", "ls", "wc"]
+      assert Codex.shell_words("'a\\' b") == ["a\\", "b"]
+      assert Codex.shell_words("tee x <<'EOF'\nDon't stop\nEOF") |> hd() == "tee"
+      assert Codex.shell_words(~s[echo "unclosed]) == ["echo", "unclosed"]
+      assert Codex.shell_words(<<"ls ", 0xFF, " x\\">>) |> hd() == "ls"
+      assert Codex.shell_words("") == []
     end
 
     test "a turn that ended on a question needs you; any later hook call clears it" do

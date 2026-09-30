@@ -6,8 +6,8 @@
 # each session, as <session id>.json next to this script, and for each helper
 # agent working in it (whose calls carry agent_id) as
 # <session id>.<agent id>.json, so a helper never replaces the session's own.
-# The board reads those: an approval request, or a turn that ended on a
-# question, shows the session as needing you until the next hook call.
+# An approval request goes in a file of its own, <name>.ask.json, so another
+# tool call finishing never replaces it. The board reads those files.
 #
 # It prints nothing and always exits 0, so it can never hold Codex up.
 
@@ -25,11 +25,14 @@ first() {
 
 id=$(first session_id)
 agent=$(first agent_id)
+event=$(first hook_event_name)
 
-if [ -n "$id" ] && [ -n "$agent" ]; then
-  mv -f "$tmp" "$dir/$id.$agent.json"
-elif [ -n "$id" ]; then
-  mv -f "$tmp" "$dir/$id.json"
+name=$id
+[ -n "$agent" ] && name="$id.$agent"
+[ "$event" = "PermissionRequest" ] && name="$name.ask"
+
+if [ -n "$id" ]; then
+  mv -f "$tmp" "$dir/$name.json"
 else
   rm -f "$tmp"
 fi

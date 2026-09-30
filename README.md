@@ -168,6 +168,8 @@ Run the tests with `mix test`.
       "PostToolUse": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
       "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
       "Stop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "SubagentStop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "Interrupt": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
       "SessionEnd": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}]
     }
   }
