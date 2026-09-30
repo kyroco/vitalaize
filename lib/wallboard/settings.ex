@@ -437,7 +437,7 @@ defmodule Wallboard.Settings do
       path == [:alerts, :ntfy_topic] and not (value =~ ~r/^[\w-]{1,64}$/) ->
         {:error, "use letters, numbers, - and _ only"}
 
-      path == [:alerts, :ntfy_server] and not (value =~ ~r{^https?://[^\s/]+/?$}) ->
+      path == [:alerts, :ntfy_server] and not (value =~ ~r{^https?://[^\s/]+(/\S*)?$}) ->
         {:error, "use an address like https://ntfy.sh"}
 
       path in [[:alerts, :pushover_user], [:alerts, :pushover_token]] and

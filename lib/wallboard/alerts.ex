@@ -85,7 +85,12 @@ defmodule Wallboard.Alerts do
   end
 
   def request(:ntfy, text, settings) do
-    server = (settings.alerts[:ntfy_server] || @ntfy_server) |> String.trim_trailing("/")
+    server =
+      case settings.alerts[:ntfy_server] do
+        server when is_binary(server) -> String.trim_trailing(server, "/")
+        _ -> @ntfy_server
+      end
+
     url = server <> "/" <> URI.encode(settings.alerts.ntfy_topic, &URI.char_unreserved?/1)
     {url, [{"Title", @title}, {"Tags", "bell"}], "text/plain; charset=utf-8", text}
   end
@@ -155,10 +160,11 @@ defmodule Wallboard.Alerts do
     |> String.replace(">", "&gt;")
   end
 
-  defp name(:messages), do: "Messages"
-  defp name(:slack), do: "Slack"
-  defp name(:ntfy), do: "ntfy"
-  defp name(:pushover), do: "Pushover"
+  @doc "The channel's name as people say it."
+  def name(:messages), do: "Messages"
+  def name(:slack), do: "Slack"
+  def name(:ntfy), do: "ntfy"
+  def name(:pushover), do: "Pushover"
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 end

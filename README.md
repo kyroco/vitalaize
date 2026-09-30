@@ -163,6 +163,10 @@ Run the tests with `mix test`.
     if you run your own.
   - Pushover: set `pushover_user` to your user key, and `pushover_token` to
     the API token of an app you make at pushover.net.
+
+  Alerts cover the Claude sessions on the machine that runs the board. A
+  hub does not alert for sessions on the Macs that send it their sessions,
+  since those arrive only when a turn ends.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
   rather than per-token prices, so its cards show tokens and plan use. Codex
   writes nothing while it waits on you, so a Codex session never shows as

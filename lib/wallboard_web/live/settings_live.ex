@@ -84,9 +84,30 @@ defmodule WallboardWeb.SettingsLive do
     )
   end
 
-  defp values(settings) do
+  @kept "••••••••"
+
+  @doc """
+  The page's field values. A secret that is set (a webhook address, a key,
+  the board password) goes to the browser as dots, never as itself, so
+  anyone who can open the page cannot read it from the page source.
+  """
+  def values(settings) do
     for {_, fs} <- Settings.editable(), {path, _, type, _, _} <- fs, into: %{} do
-      {Enum.join(path, "."), to_text(type, get_in(settings, path))}
+      value = get_in(settings, path)
+      text = if type == :secret and value != nil, do: @kept, else: to_text(type, value)
+      {Enum.join(path, "."), text}
+    end
+  end
+
+  @doc "Turns a secret that came back as dots into the value it stands for."
+  def unmask(values, settings) do
+    for {_, fs} <- Settings.editable(), {path, _, :secret, _, _} <- fs, reduce: values do
+      acc ->
+        key = Enum.join(path, ".")
+
+        if Map.get(acc, key) == @kept,
+          do: Map.put(acc, key, to_text(:secret, get_in(settings, path))),
+          else: acc
     end
   end
 
@@ -110,7 +131,7 @@ defmodule WallboardWeb.SettingsLive do
   def handle_event("save", %{"s" => values}, socket) do
     before = Settings.get()
 
-    case Settings.check(values, Settings.base()) do
+    case Settings.check(unmask(values, before), Settings.base()) do
       {:ok, overrides} ->
         after_ = Settings.save_overrides(overrides)
 

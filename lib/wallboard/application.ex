@@ -141,8 +141,13 @@ defmodule Wallboard.Application do
     if settings.token == nil,
       do: Logger.info("No token set, so anyone on this network can open the board.")
 
-    if settings.alerts.phone == nil,
-      do: Logger.info("Text alerts are off (no phone number in settings).")
+    case Wallboard.Alerts.channels(settings) do
+      [] ->
+        Logger.info("Alerts are off (no phone, Slack, ntfy or Pushover in settings).")
+
+      channels ->
+        Logger.info("Alerts go by #{Enum.map_join(channels, ", ", &Wallboard.Alerts.name/1)}.")
+    end
   end
 
   @impl true

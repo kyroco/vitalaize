@@ -187,6 +187,29 @@ defmodule Wallboard.AlertsTest do
       assert Map.has_key?(errors, "alerts.ntfy_topic")
     end
 
+    test "accepts an ntfy server under a path, such as a self-hosted one" do
+      assert {:ok, over} = page(%{"alerts.ntfy_server" => "https://example.com/ntfy"})
+      assert over.alerts.ntfy_server == "https://example.com/ntfy"
+    end
+
+    test "a set secret reaches the page as dots, and dots sent back keep it" do
+      hook = "https://hooks.slack.com/services/T/B/X"
+      settings = alerts(%{slack_webhook: hook, ntfy_topic: nil})
+      shown = WallboardWeb.SettingsLive.values(settings)
+
+      assert shown["alerts.slack_webhook"] == "••••••••"
+      refute Enum.any?(Map.values(shown), &(&1 =~ "hooks.slack.com"))
+      assert shown["alerts.ntfy_topic"] == ""
+
+      back = WallboardWeb.SettingsLive.unmask(shown, settings)
+      assert back["alerts.slack_webhook"] == hook
+
+      typed = Map.put(shown, "alerts.slack_webhook", "https://hooks.slack.com/new")
+
+      assert WallboardWeb.SettingsLive.unmask(typed, settings)["alerts.slack_webhook"] ==
+               "https://hooks.slack.com/new"
+    end
+
     test "empty fields leave the channels off" do
       assert {:ok, over} = page(%{})
       refute Map.has_key?(over, :alerts)
