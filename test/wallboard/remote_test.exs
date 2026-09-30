@@ -218,8 +218,8 @@ defmodule Wallboard.RemoteTest do
   end
 
   defp tmp_dir do
-    dir = Path.join(System.tmp_dir!(), "wallboard-remote-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
+    dir = Wallboard.Fixtures.tmp_path("wallboard-remote")
+    File.mkdir!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     dir
   end
@@ -271,29 +271,67 @@ defmodule Wallboard.RemoteTest do
   # The loop's lock is a link to a process id, so look at the link itself.
   defp locked?(ctx), do: match?({:ok, _}, File.lstat(marker(ctx) <> ".watch"))
 
-  # Loops for this session, not counting the short-lived copies of a loop
-  # the shell makes for a check or a sleep (their parent is the loop).
-  defp loops do
-    {out, 0} = System.cmd("ps", ["-axo", "pid=,ppid=,command="])
+  # This test's loops for this session, not counting the short-lived copies
+  # of a loop the shell makes for a check or a sleep (their parent is the
+  # loop). A loop runs as `sh <script> --watch <session>`, and each test's
+  # script sits in its own folder, so matching the script's full path sees
+  # only this test's loops: never another test run's on the same machine,
+  # nor a real collector's.
+  defp loops(ctx), do: ctx |> loop_roots() |> length()
 
-    procs =
-      for line <- String.split(out, "\n"),
-          line =~ "upload.sh --watch #{@sid}",
-          [pid, ppid | _] <- [String.split(line)],
-          do: {pid, ppid}
-
+  defp loop_roots(ctx) do
+    procs = loop_procs(ctx)
     pids = MapSet.new(procs, &elem(&1, 0))
-    Enum.count(procs, fn {_, ppid} -> not MapSet.member?(pids, ppid) end)
+    for {pid, ppid} <- procs, not MapSet.member?(pids, ppid), do: pid
   end
 
-  # Stops this file's loops and waits until they are gone, so the next test
-  # never counts one of them.
-  defp stop_loops do
-    System.cmd("pkill", ["-f", "upload.sh --watch #{@sid}"])
+  defp loop_procs(ctx) do
+    # -ww: never cut a long command line to the terminal's width.
+    {out, 0} = System.cmd("ps", ["-axwwo", "pid=,ppid=,command="])
+    mine = "#{ctx.script} --watch #{@sid}"
 
-    Enum.reduce_while(1..50, nil, fn _, _ ->
-      if loops() == 0, do: {:halt, :ok}, else: {:cont, Process.sleep(100)}
+    for line <- String.split(out, "\n"),
+        String.contains?(line, mine),
+        [pid, ppid | _] <- [String.split(line)],
+        do: {pid, ppid}
+  end
+
+  # Stops this test's loops and waits until they are gone, never signalling
+  # a pattern the whole machine matches. A loop is started in its own
+  # session, so its process group holds it and everything it runs (a check,
+  # a sleep, the stand-in claude); the group is what is stopped. A loop
+  # still there after five seconds is killed outright, and one that
+  # survives even that fails the test rather than being left running.
+  defp stop_loops(ctx) do
+    groups = loop_roots(ctx)
+
+    with false <- stopped?(ctx, groups, "-TERM"),
+         false <- stopped?(ctx, groups, "-KILL") do
+      flunk("upload loops still running in process groups #{inspect(groups)}")
+    end
+  end
+
+  # Signals the groups still alive, then waits up to five seconds for no
+  # loop to match and every group to be empty.
+  defp stopped?(ctx, groups, signal) do
+    case Enum.filter(groups, &group_alive?/1) do
+      [] ->
+        :ok
+
+      alive ->
+        System.cmd("kill", [signal, "--" | Enum.map(alive, &("-" <> &1))], stderr_to_stdout: true)
+    end
+
+    Enum.any?(1..50, fn _ ->
+      gone = loops(ctx) == 0 and not Enum.any?(groups, &group_alive?/1)
+      unless gone, do: Process.sleep(100)
+      gone
     end)
+  end
+
+  defp group_alive?(group) do
+    {_, code} = System.cmd("kill", ["-0", "--", "-" <> group], stderr_to_stdout: true)
+    code == 0
   end
 
   defp this_machine do
@@ -321,7 +359,10 @@ defmodule Wallboard.RemoteTest do
         })
       end
 
-      script = Path.join(dir, "wallboard-upload.sh")
+      # Not named wallboard-upload.sh: copies of this file from before
+      # VIT-32 stop every `upload.sh --watch <session>` on the machine, and
+      # would stop this run's loops if they ran beside it.
+      script = Path.join(dir, "upload-under-test")
       File.write!(script, Ingest.upload_script(hub, Ingest.token()))
       %{dir: dir, script: script, settings: settings, hub: hub}
     end
@@ -331,7 +372,7 @@ defmodule Wallboard.RemoteTest do
     test "approving a prompt ends the wait though no hook fires, and the hook never waits for the loop",
          ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       fake_claude(ctx.dir, "waiting")
       quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
 
@@ -341,32 +382,32 @@ defmodule Wallboard.RemoteTest do
       assert micros < 2_000_000
       assert_receive {:remote, [_]}, 5_000
       Process.sleep(1_500)
-      assert loops() == 1
+      assert loops(ctx) == 1
 
       # A second prompt in the same session starts no second loop.
       assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), quick)
       Process.sleep(1_500)
-      assert loops() == 1
+      assert loops(ctx) == 1
 
       # Approved: the session is running again, and no hook said so.
       fake_claude(ctx.dir, "busy")
       assert_receive {:remote, []}, 5_000
       refute File.exists?(marker(ctx))
       Process.sleep(2_000)
-      assert loops() == 0
+      assert loops(ctx) == 0
       refute locked?(ctx)
     end
 
     test "a loop stops at its time limit even while the session still waits", ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       fake_claude(ctx.dir, "waiting")
       env = [{"WALLBOARD_WATCH_EVERY", "1"}, {"WALLBOARD_WATCH_LIMIT", "2"}]
 
       assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), env)
       assert_receive {:remote, [_]}, 5_000
       Process.sleep(4_000)
-      assert loops() == 0
+      assert loops(ctx) == 0
       refute locked?(ctx)
       # The wait itself stays up for the hooks to end.
       assert File.exists?(marker(ctx))
@@ -377,13 +418,13 @@ defmodule Wallboard.RemoteTest do
       assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"))
       assert_receive {:remote, [_]}, 5_000
       Process.sleep(500)
-      assert loops() == 0
+      assert loops(ctx) == 0
       refute locked?(ctx)
     end
 
     test "while the loop watches, a tool that ran beside the prompt does not end the wait", ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       fake_claude(ctx.dir, "waiting")
       quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
 
@@ -402,7 +443,7 @@ defmodule Wallboard.RemoteTest do
 
     test "a new prompt that opens during a check is not taken for the one just answered", ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       # Each check takes 1.5 seconds and reads the status only at its end.
       fake_claude(ctx.dir, "waiting", 1.5)
       quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
@@ -430,7 +471,7 @@ defmodule Wallboard.RemoteTest do
 
     test "a prompt answered too fast for the loop to see still ends at its tool call", ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       # claude agents never gets to show it waiting.
       fake_claude(ctx.dir, "busy")
       quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
@@ -443,20 +484,20 @@ defmodule Wallboard.RemoteTest do
 
     test "a loop whose check keeps failing leaves after a while", ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       fake_claude(ctx.dir, :fail)
       env = [{"WALLBOARD_WATCH_EVERY", "1"}, {"WALLBOARD_WATCH_PATIENCE", "2"}]
 
       assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), env)
       assert_receive {:remote, [_]}, 5_000
       Process.sleep(4_500)
-      assert loops() == 0
+      assert loops(ctx) == 0
       refute locked?(ctx)
     end
 
     test "a lock left by a loop that died is taken over", ctx do
       ctx.settings.("the-hub")
-      on_exit(&stop_loops/0)
+      on_exit(fn -> stop_loops(ctx) end)
       fake_claude(ctx.dir, "waiting")
       # A process id that is not running.
       File.ln_s!("999999", marker(ctx) <> ".watch")
@@ -467,7 +508,7 @@ defmodule Wallboard.RemoteTest do
                ])
 
       Process.sleep(1_000)
-      assert loops() == 1
+      assert loops(ctx) == 1
       assert {:ok, pid} = File.read_link(marker(ctx) <> ".watch")
       assert pid != "999999"
     end

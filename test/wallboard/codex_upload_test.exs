@@ -63,7 +63,7 @@ defmodule Wallboard.CodexUploadTest do
   defp name(id, time \\ "2026-09-29T13-00-00"), do: "rollout-#{time}-#{id}.jsonl"
 
   defp tmp_dir do
-    dir = Path.join(System.tmp_dir!(), "codex-upload-#{System.unique_integer([:positive])}")
+    dir = Wallboard.Fixtures.tmp_path("codex-upload")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     dir

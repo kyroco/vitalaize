@@ -373,7 +373,7 @@ defmodule Wallboard.CodexTest do
     end
 
     test "the board keeps the hook in place and reads its calls from each Codex folder" do
-      dir = Path.join(System.tmp_dir!(), "codex-hook-#{System.unique_integer([:positive])}")
+      dir = Wallboard.Fixtures.tmp_path("codex-hook")
       marks = Path.join(dir, "vitalaize")
       File.mkdir_p!(marks)
       on_exit(fn -> File.rm_rf!(dir) end)
@@ -474,7 +474,7 @@ defmodule Wallboard.CodexTest do
 
   test "a Codex session saves as a codex row, its helper agents as subagents" do
     start_supervised!({Store, path: ":memory:"})
-    dir = Path.join(System.tmp_dir!(), "codex-test-#{System.unique_integer([:positive])}")
+    dir = Wallboard.Fixtures.tmp_path("codex-test")
     File.mkdir_p!(dir)
     main = Path.join(dir, "rollout-2026-09-29T13-00-00-#{@id}.jsonl")
     File.write!(main, lines() <> "\n")

@@ -287,7 +287,7 @@ defmodule Wallboard.ReposTest do
     # Outside this project, whose own checkout would answer for any folder
     # without a .git of its own.
     test "finds a folder's repo from its checkout, and a worktree's from its main checkout" do
-      dir = Path.join(System.tmp_dir!(), "wallboard-remote-#{System.unique_integer([:positive])}")
+      dir = Wallboard.Fixtures.tmp_path("wallboard-repos")
       on_exit(fn -> File.rm_rf!(dir) end)
       main = Path.join(dir, "shop")
       File.mkdir_p!(Path.join([main, ".git", "worktrees", "fix"]))
