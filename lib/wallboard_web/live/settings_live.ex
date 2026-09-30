@@ -94,7 +94,8 @@ defmodule WallboardWeb.SettingsLive do
       keys: if(settings.archive.enabled, do: MachineKeys.list(), else: []),
       old_tries: if(settings.archive.enabled, do: MachineKeys.old_tries(), else: []),
       machines: machines(settings),
-      release?: System.get_env("RELEASE_ROOT") != nil
+      release?: System.get_env("RELEASE_ROOT") != nil,
+      settings_file: Settings.path() || "settings.exs"
     )
   end
 
@@ -156,11 +157,16 @@ defmodule WallboardWeb.SettingsLive do
     before = Settings.get()
 
     # The address other machines use goes into the scripts the board signs,
-    # so it changes only where the connect key shows.
+    # so it changes only where the connect key shows. The first board
+    # password comes from the settings file, never this page: without one,
+    # any account on this Mac can open the page, and setting a password here
+    # would open the connect key to it.
     values =
       if socket.assigns.keys?,
         do: values,
         else: Map.put(values, "archive.hub_url", to_text(:string, before.archive[:hub_url]))
+
+    values = if before.token == nil, do: Map.put(values, "token", ""), else: values
 
     case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
       {:ok, overrides} ->
@@ -207,16 +213,19 @@ defmodule WallboardWeb.SettingsLive do
   # whoever saw it may have worked out the keys of machines connected with
   # it. So every machine is disconnected too, to connect again.
   def handle_event("new_key", _params, socket) do
-    MachineKeys.reset_connect_key()
+    notice =
+      case MachineKeys.reset_connect_key() do
+        {:ok, _} ->
+          "New connect key made, and every machine disconnected. Connect each one again."
+
+        {:error, reason} ->
+          "Could not make a new connect key: #{reason}"
+      end
 
     {:noreply,
      socket
      |> load()
-     |> assign(
-       confirm_new_key?: false,
-       show_key?: true,
-       notice: "New connect key made, and every machine disconnected. Connect each one again."
-     )}
+     |> assign(confirm_new_key?: false, show_key?: true, notice: notice)}
   end
 
   # Takes one machine's key away, after a second tap on the same button.
@@ -333,9 +342,11 @@ defmodule WallboardWeb.SettingsLive do
           disconnect a machine. Copied here, the command could have been changed on the way.
         </p>
         <p :if={@local? and !@keys?} class="detail-note">
-          Give the board a password first (Board password, above, then restart). Until then any
-          account on this Mac could open this page, so it does not show the connect command or key,
-          and machines cannot be disconnected or the address above changed here.
+          Give the board a password first. Until then any account on this Mac could open this page,
+          so it does not show the connect command or key, and machines cannot be disconnected or the
+          address above changed here. The first password goes in the settings file, not this page:
+          add <code>token: "your password"</code> to {@settings_file}, restart the board, and open
+          this page with ?token= and the password at the end of the address.
         </p>
         <pre :if={@keys?} class="settings-code">Connect key: {if @show_key?, do: @key, else: "••••••••"}</pre>
         <div :if={@keys?} class="row">

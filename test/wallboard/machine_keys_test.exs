@@ -151,6 +151,19 @@ defmodule Wallboard.MachineKeysTest do
     defp saved_machines,
       do: Store.query("SELECT machine FROM sessions", []) |> Enum.map(& &1.machine)
 
+    # The hook hands the send to a run of its own and returns, so the
+    # session arrives a moment later.
+    defp arrived(tries \\ 100) do
+      case saved_machines() do
+        [] when tries > 0 ->
+          Process.sleep(100)
+          arrived(tries - 1)
+
+        machines ->
+          machines
+      end
+    end
+
     test "gives the machine a key of its own that never crosses the network, and it sends", ctx do
       assert {out, 0} = connect(ctx)
       assert [_, machine] = Regex.run(~r/Connected as (\S+)\./, out)
@@ -172,7 +185,7 @@ defmodule Wallboard.MachineKeysTest do
       end
 
       assert {"", 0} = stop_hook(ctx)
-      assert saved_machines() == [machine]
+      assert arrived() == [machine]
       assert [%{last_used_at: used}] = MachineKeys.list()
       assert is_integer(used)
     end
@@ -270,7 +283,7 @@ defmodule Wallboard.MachineKeysTest do
       assert {out, 0} = connect(ctx)
       assert out =~ "Connected as"
       assert {"", 0} = stop_hook(ctx)
-      assert length(saved_machines()) == 1
+      assert length(arrived()) == 1
     end
 
     test "the connect key cannot send sessions, and a machine key cannot connect", ctx do
@@ -297,70 +310,106 @@ defmodule Wallboard.MachineKeysTest do
   end
 
   describe "signed requests" do
-    # A request as the hub sees it, signed at `time` with `key`.
-    defp signed_conn(target, body, key_id, key, time) do
+    # A request as the hub sees it, signed at `time` with `key` over the
+    # body hash it states (`stated`, the real one unless given).
+    defp signed_conn(target, body, key_id, key, time, stated \\ nil) do
       [path, query] = String.split(target, "?")
       nonce = "0123456789abcdef"
-      sig = MachineKeys.hmac(key, MachineKeys.message("POST", path, query, time, nonce, body))
+      stated = stated || MachineKeys.sha256(body)
+
+      sig =
+        MachineKeys.hmac(
+          key,
+          MachineKeys.message("POST", path, query, time, nonce, {:sha256, stated})
+        )
 
       Plug.Test.conn(:post, target, body)
       |> Plug.Conn.put_req_header("x-vitalaize-key", key_id)
       |> Plug.Conn.put_req_header("x-vitalaize-time", time)
       |> Plug.Conn.put_req_header("x-vitalaize-nonce", nonce)
+      |> Plug.Conn.put_req_header("x-vitalaize-content-sha256", stated)
       |> Plug.Conn.put_req_header("x-vitalaize-signature", sig)
     end
 
-    test "a copy of a request is refused, however slowly either comes, and an unsigned one writes nothing" do
+    test "the signature is checked before the body, a copy is refused, and a wrong one writes nothing" do
       dir = tmp_dir()
       hub(dir)
       {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
-      t = System.os_time(:second)
-      conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
+      t = to_string(System.os_time(:second))
+      conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, t)
 
-      # Nothing is kept for a request until its signature checks out.
-      assert {:ok, _} = MachineKeys.precheck(conn)
-      assert {:ok, parts} = MachineKeys.precheck(conn)
-      bad = %{parts | signature: String.duplicate("0", 64)}
-      assert {:error, 401, "wrong signature"} = MachineKeys.verify(conn, bad, "{}")
+      # Signed with another key: refused, and nothing is kept.
+      wrong = signed_conn("/ingest/status?machine=laptop", "{}", id, String.duplicate("0", 64), t)
+      assert {:error, 401, "wrong signature"} = MachineKeys.authenticate(wrong)
       assert Store.query("SELECT * FROM seen_requests", []) == []
 
-      # Then taken once; its copy is refused.
-      assert MachineKeys.verify(conn, parts, "{}") == {:ok, "laptop"}
+      # Taken once, before any body is read; its copy is refused.
+      assert {:ok, parts} = MachineKeys.authenticate(conn)
+      assert parts.machine == "laptop"
+      assert {:error, 401, "this request was already sent once"} = MachineKeys.authenticate(conn)
 
-      assert {:error, 401, "this request was already sent once"} =
-               MachineKeys.verify(conn, parts, "{}")
+      # The body must be the one whose hash was signed.
+      assert MachineKeys.confirm(parts, MachineKeys.sha256("{}")) == {:ok, "laptop"}
 
-      # A nonce is kept past the window for as long as the slowest body may
-      # take, so a copy that started inside the window and came slowly is
-      # still refused; one signed before all that is refused as stale.
+      assert {:error, 400, "the body is not the one that was signed"} =
+               MachineKeys.confirm(parts, MachineKeys.sha256("{\"other\":1}"))
+
+      # Signed more than five minutes ago, or claimed past the window.
+      old =
+        signed_conn(
+          "/ingest/status?machine=laptop",
+          "{}",
+          id,
+          key,
+          to_string(String.to_integer(t) - 301)
+        )
+
+      assert {:error, 401, "request time is more than 5 minutes" <> _} =
+               MachineKeys.authenticate(old)
+
       keep = MachineKeys.keep_nonces()
-      assert keep >= MachineKeys.window() + MachineKeys.upload_deadline()
-      slow = t - MachineKeys.window() - MachineKeys.upload_deadline()
-      assert Store.claim_nonce(id, "aaaa0000aaaa0000", slow, MachineKeys.window(), keep) == :ok
-      assert Store.claim_nonce(id, "aaaa0000aaaa0000", slow, MachineKeys.window(), keep) == :seen
+      assert keep >= MachineKeys.window()
+      now = String.to_integer(t)
 
-      assert Store.claim_nonce(id, "bbbb0000bbbb0000", t - keep - 5, MachineKeys.window(), keep) ==
+      assert Store.claim_nonce(id, "bbbb0000bbbb0000", now - keep - 5, MachineKeys.window(), keep) ==
                :stale
 
-      assert Store.claim_nonce(id, "cccc0000cccc0000", t + 400, MachineKeys.window(), keep) ==
+      assert Store.claim_nonce(id, "cccc0000cccc0000", now + 400, MachineKeys.window(), keep) ==
                :stale
-
-      old = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t - 301))
-      assert {:error, 401, "request time is more than 5 minutes" <> _} = MachineKeys.precheck(old)
     end
 
     test "a machine disconnected while its upload is on the way is refused" do
       dir = tmp_dir()
       hub(dir)
       {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
-      t = System.os_time(:second)
-      conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
 
-      assert {:ok, parts} = MachineKeys.precheck(conn)
+      conn =
+        signed_conn(
+          "/ingest/status?machine=laptop",
+          "{}",
+          id,
+          key,
+          to_string(System.os_time(:second))
+        )
+
+      assert {:ok, parts} = MachineKeys.authenticate(conn)
       MachineKeys.revoke(id)
 
-      assert MachineKeys.verify(conn, parts, "{}", t) ==
+      assert MachineKeys.confirm(parts, MachineKeys.sha256("{}")) ==
                {:error, 401, "this machine's key was taken away"}
+    end
+
+    test "a body other than the one signed is refused, and nothing is saved" do
+      dir = tmp_dir()
+      url = hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+
+      assert {"400", "the body is not the one that was signed"} =
+               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "swapped", id, key,
+                 body_sha256: MachineKeys.sha256("the real one")
+               )
+
+      assert Store.query("SELECT * FROM sessions", []) == []
     end
 
     test "a connect request with a form body is refused, so the form cannot change what was signed" do
@@ -370,6 +419,7 @@ defmodule Wallboard.MachineKeysTest do
       target = "/ingest/connect?machine=alpha&key=#{String.duplicate("b", 32)}"
       t = to_string(System.os_time(:second))
       nonce = "0123456789abcdef"
+      stated = MachineKeys.sha256("")
 
       sig =
         MachineKeys.hmac(
@@ -380,7 +430,7 @@ defmodule Wallboard.MachineKeysTest do
             String.split(target, "?") |> List.last(),
             t,
             nonce,
-            ""
+            {:sha256, stated}
           )
         )
 
@@ -388,7 +438,7 @@ defmodule Wallboard.MachineKeysTest do
         System.cmd("curl", [
           "-s",
           "-w",
-          "\\n%{http_code}",
+          "\n%{http_code}",
           "-H",
           "Content-Type: application/x-www-form-urlencoded",
           "-H",
@@ -397,6 +447,8 @@ defmodule Wallboard.MachineKeysTest do
           "X-Vitalaize-Time: #{t}",
           "-H",
           "X-Vitalaize-Nonce: #{nonce}",
+          "-H",
+          "X-Vitalaize-Content-SHA256: #{stated}",
           "-H",
           "X-Vitalaize-Signature: #{sig}",
           "--data-binary",
@@ -408,24 +460,24 @@ defmodule Wallboard.MachineKeysTest do
       assert [%{key_id: ^victim, machine: "victim"}] = MachineKeys.list()
     end
 
-    test "an upload with a wrong signature is never read into memory, and leaves no file" do
+    test "an upload with a wrong signature is refused before its body is read" do
       dir = tmp_dir()
       url = hub(dir)
       {id, _} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
-      tmp = System.tmp_dir!()
-      before = tmp |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "wallboard-upload-"))
 
-      assert {"401", "wrong signature"} =
-               Fixtures.signed_post(
-                 url,
-                 "/ingest/transcript?machine=laptop",
-                 :binary.copy("x", 3_000_000),
-                 id,
-                 String.duplicate("0", 64)
-               )
+      {micros, reply} =
+        :timer.tc(fn ->
+          Fixtures.signed_post(
+            url,
+            "/ingest/transcript?machine=laptop",
+            :binary.copy("x", 3_000_000),
+            id,
+            String.duplicate("0", 64)
+          )
+        end)
 
-      after_ = tmp |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "wallboard-upload-"))
-      assert after_ -- before == []
+      assert reply == {"401", "wrong signature"}
+      assert micros < 5_000_000
     end
 
     test "a connect request with a body is refused" do
@@ -441,96 +493,92 @@ defmodule Wallboard.MachineKeysTest do
                  MachineKeys.connect_key()
                )
     end
+
+    test "a connect that names its own new key as the one it replaces keeps it" do
+      dir = tmp_dir()
+      hub(dir)
+      id = String.duplicate("d", 32)
+      assert :ok = MachineKeys.connect("laptop", id, id, MachineKeys.connect_key())
+      assert [%{key_id: ^id}] = MachineKeys.list()
+    end
   end
 
   describe "upload limits" do
     alias Wallboard.Archive.UploadGate
 
-    test "unchecked uploads are capped per key and in all, and let go when their process ends" do
+    test "two signed uploads run at once, the rest wait their turn, and a dead one gives its place back" do
       start_supervised!(UploadGate)
       parent = self()
 
-      # Holds a place from its own process until told to stop.
-      hold = fn key, bytes ->
+      run = fn name, wait ->
         spawn(fn ->
-          send(parent, {:admitted, self(), UploadGate.admit(key, bytes)})
+          result =
+            UploadGate.run(
+              fn ->
+                send(parent, {:started, name, self()})
 
-          receive do
-            :stop -> :ok
-          end
+                receive do
+                  :done -> :ok
+                end
+              end,
+              wait
+            )
+
+          send(parent, {:finished, name, result})
         end)
       end
 
-      admitted = fn pid ->
-        receive do
-          {:admitted, ^pid, result} -> result
-        end
-      end
+      _ = run.(:a, 5_000)
+      _ = run.(:b, 5_000)
+      _ = run.(:c, 5_000)
 
-      a1 = hold.("k1", 100)
-      assert admitted.(a1) == :ok
-      a2 = hold.("k1", 100)
-      assert admitted.(a2) == :ok
-      # A third from the same key waits for the next turn.
-      a3 = hold.("k1", 100)
-      assert {:error, "this machine is already sending" <> _} = admitted.(a3)
-
-      # Past 2 GB in all, from any key.
-      big = hold.("k2", 1_999_999_900)
-      assert {:error, "the hub is busy" <> _} = admitted.(big)
-
-      # A holder that dies gives its place back.
-      Process.exit(a1, :kill)
-      Process.sleep(50)
-      a4 = hold.("k1", 100)
-      assert admitted.(a4) == :ok
-      big = hold.("k2", 1_000_000_000)
-      assert admitted.(big) == :ok
-    end
-
-    test "only two checked uploads unpack at once; the next waits its turn" do
-      start_supervised!(UploadGate)
-      parent = self()
-
-      unpack = fn name ->
-        spawn(fn ->
-          UploadGate.unpack(fn ->
-            send(parent, {:started, name})
-
-            receive do
-              :done -> :ok
-            end
-          end)
-        end)
-      end
-
-      pids = %{a: unpack.(:a), b: unpack.(:b), c: unpack.(:c)}
-
-      # Two start, in whatever order they asked; the third waits.
       started =
         for _ <- 1..2 do
-          assert_receive {:started, name}
-          name
+          assert_receive {:started, name, pid}
+          {name, pid}
         end
 
-      refute_receive {:started, _}, 200
+      refute_receive {:started, _, _}, 200
 
-      send(pids[hd(started)], :done)
-      [waiting] = Map.keys(pids) -- started
-      assert_receive {:started, ^waiting}
+      # One finishes: the one waiting starts.
+      [{first, pid} | _] = started
+      send(pid, :done)
+      assert_receive {:finished, ^first, {:ok, :ok}}
+      assert_receive {:started, third, third_pid}
+      refute third in Enum.map(started, &elem(&1, 0))
+
+      # One dies inside: its place is given back.
+      [{_, other} | _] = tl(started)
+      Process.exit(other, :kill)
+      _ = run.(:d, 5_000)
+      assert_receive {:started, :d, d_pid}
+
+      # With both places taken, one that waits too long is told to come again.
+      _ = run.(:e, 100)
+      assert_receive {:finished, :e, {:error, :busy}}, 1_000
+
+      send(third_pid, :done)
+      send(d_pid, :done)
     end
 
-    test "an upload is kept in a folder only this user can open, and is gone once saved" do
+    test "the board does not speak HTTP/2, where a body could run past its length and deadline" do
+      assert Wallboard.Application.http_options(4747)[:http_2_options] == [enabled: false]
+
       dir = tmp_dir()
       url = hub(dir)
-      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
 
-      assert {"422", "not a .tar.gz"} =
-               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "x", id, key)
+      {out, _} =
+        System.cmd("curl", [
+          "-s",
+          "-o",
+          "/dev/null",
+          "-w",
+          "%{http_version}",
+          "--http2-prior-knowledge",
+          url <> "/ingest/upload.sh"
+        ])
 
-      incoming = Path.join(dir, "incoming")
-      assert Bitwise.band(File.stat!(incoming).mode, 0o777) == 0o700
-      assert File.ls!(incoming) == []
+      refute out == "2"
     end
 
     test "an upload that does not say its length is refused before it is read" do
@@ -539,11 +587,19 @@ defmodule Wallboard.MachineKeysTest do
       {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
       t = to_string(System.os_time(:second))
       nonce = "0123456789abcdef"
+      stated = MachineKeys.sha256("x")
 
       sig =
         MachineKeys.hmac(
           key,
-          MachineKeys.message("POST", "/ingest/transcript", "machine=laptop", t, nonce, "x")
+          MachineKeys.message(
+            "POST",
+            "/ingest/transcript",
+            "machine=laptop",
+            t,
+            nonce,
+            {:sha256, stated}
+          )
         )
 
       {out, 0} =
@@ -562,6 +618,8 @@ defmodule Wallboard.MachineKeysTest do
           "-H",
           "X-Vitalaize-Nonce: #{nonce}",
           "-H",
+          "X-Vitalaize-Content-SHA256: #{stated}",
+          "-H",
           "X-Vitalaize-Signature: #{sig}",
           "--data-binary",
           "x",
@@ -569,6 +627,49 @@ defmodule Wallboard.MachineKeysTest do
         ])
 
       assert out == "say how long the upload is\n\n411"
+    end
+
+    # A hub that says it is busy the first `busy` times, then takes it.
+    defmodule Busy do
+      @behaviour Plug
+      import Plug.Conn
+
+      def init(opts), do: opts
+
+      def call(conn, %{counter: counter, busy: busy, test: test}) do
+        n = :counters.get(counter, 1) + 1
+        :counters.put(counter, 1, n)
+        {:ok, _, conn} = read_body(conn)
+        send(test, {:try, n, get_req_header(conn, "x-vitalaize-nonce")})
+        if n <= busy, do: send_resp(conn, 503, "busy\n"), else: send_resp(conn, 200, "saved\n")
+      end
+    end
+
+    test "a collector tries a busy hub again, signing each try afresh" do
+      dir = tmp_dir()
+      counter = :counters.new(1, [])
+      hub = TestHub.serve({Busy, %{counter: counter, busy: 2, test: self()}})
+      script = Path.join(dir, "upload.sh")
+      Fixtures.write_key(dir, String.duplicate("a", 32), "laptop", String.duplicate("b", 64))
+
+      # The helpers from the Claude script, run on their own.
+      File.write!(script, """
+      #!/bin/sh
+      HUB='#{hub}'
+      #{Ingest.signing()}
+      load_key || exit 3
+      printf 'x' > "#{dir}/up.tgz"
+      send_upload "/ingest/transcript?machine=laptop" "#{dir}/up.tgz"
+      """)
+
+      assert {_, 0} =
+               System.cmd("sh", [script], env: [{"WALLBOARD_RETRY_WAITS", "0 0 0"}])
+
+      assert_receive {:try, 1, [n1]}
+      assert_receive {:try, 2, [n2]}
+      assert_receive {:try, 3, [n3]}
+      refute_receive {:try, 4, _}, 200
+      assert length(Enum.uniq([n1, n2, n3])) == 3
     end
   end
 
@@ -715,6 +816,25 @@ defmodule Wallboard.MachineKeysTest do
       values = Map.put(socket.assigns.values, "archive.hub_url", "http://10.0.0.9:4747")
       {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
       refute (Store.get_meta("settings_overrides") || "") =~ "10.0.0.9"
+    end
+
+    test "the first board password comes from the settings file, but the page can change it" do
+      dir = tmp_dir()
+      hub(dir)
+      saved = fn -> Store.get_meta("settings_overrides") || "" end
+
+      # No password yet: whoever opened the page could set one and see the key.
+      socket = page(true, false)
+      values = Map.put(socket.assigns.values, "token", "chosen-here")
+      {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
+      refute saved.() =~ "chosen-here"
+      assert Settings.get().token == nil
+
+      Settings.put(Map.put(Settings.get(), :token, "from-the-file"))
+      socket = page(true, true)
+      values = Map.put(socket.assigns.values, "token", "changed-here")
+      {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
+      assert saved.() =~ "changed-here"
     end
 
     test "another device, even with the board's password, cannot see the key or disconnect" do

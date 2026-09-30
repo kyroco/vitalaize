@@ -31,7 +31,9 @@ machines, known limits, building from source and how it works.
 - **Safer uploads from other machines**: each connected machine has a key of
   its own that never crosses the network, every upload and "waiting"
   message is signed with it, and Settings can disconnect one machine alone.
-  An upload that would unpack to more than 512 MB is refused.
+  An upload that would unpack to more than 512 MB is refused. The hub takes
+  two uploads at a time and queues the rest, and a machine tries again a
+  few times when the hub is busy.
 
 If you run 0.2.0 on Linux, upgrade. Every copy of that download had the same
 built-in secret for remote control, so if you started the board by hand
@@ -122,7 +124,10 @@ afterwards type `/hooks` in Codex on that machine and trust the two
 `wallboard-upload.sh` hooks.
 
 The connect key shows on the hub's Settings page only on the hub itself, and
-only once the board has a password. Treat it like a password: someone who
+only once the board has a password. The first password goes in
+`settings.exs`, as `token: "your password"`, since the Settings page cannot
+set one when there is none yet (anyone who can open the page could);
+after that, the page can change it. Treat the connect key like a password: someone who
 has it, and who also records your network, can work out a connected
 machine's key. If it may have been seen, make a new one on the Settings page;
 that disconnects every machine, to connect again.

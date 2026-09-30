@@ -126,12 +126,20 @@ defmodule Wallboard.Application do
       ]
   end
 
+  @doc """
+  How the board listens. HTTP/2 is off: nothing here needs it, and over it
+  a request's body can keep coming past its declared length and past the
+  upload deadline (see WallboardWeb.IngestController).
+  """
+  def http_options(port),
+    do: [ip: {0, 0, 0, 0}, port: port, http_2_options: [enabled: false]]
+
   defp configure_endpoint(settings) do
     config =
       Application.get_env(:wallboard, WallboardWeb.Endpoint, [])
       |> Keyword.merge(
         server: true,
-        http: [ip: {0, 0, 0, 0}, port: settings.port],
+        http: http_options(settings.port),
         url: [host: "localhost"],
         secret_key_base: Wallboard.Settings.secret_key_base(settings),
         check_origin: false

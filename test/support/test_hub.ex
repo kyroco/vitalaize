@@ -17,7 +17,16 @@ defmodule Wallboard.TestHub do
     if plug == __MODULE__ and Process.whereis(Wallboard.Archive.UploadGate) == nil,
       do: ExUnit.Callbacks.start_supervised!(Wallboard.Archive.UploadGate)
 
-    {:ok, pid} = Bandit.start_link(plug: plug, ip: :loopback, port: 0, startup_log: false)
+    # HTTP/2 off, as on the board (Wallboard.Application.http_options/1).
+    {:ok, pid} =
+      Bandit.start_link(
+        plug: plug,
+        ip: :loopback,
+        port: 0,
+        startup_log: false,
+        http_2_options: [enabled: false]
+      )
+
     {:ok, {_, port}} = ThousandIsland.listener_info(pid)
     "http://127.0.0.1:#{port}"
   end

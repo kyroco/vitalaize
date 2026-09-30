@@ -415,6 +415,13 @@ defmodule Wallboard.Archive.Ingest do
         print "gone";' "$session" 2>/dev/null || echo unknown
     }
 
+    # A transcript sent from its own run (see the end of this script).
+    if [ "$1" = --send ]; then
+      send_upload "$3" "$2"
+      rm -f "$2"
+      exit 0
+    fi
+
     # The loop a waiting hook starts: one per session, checking every few
     # seconds until the wait is over.
     if [ "$1" = --watch ]; then
@@ -574,9 +581,15 @@ defmodule Wallboard.Archive.Ingest do
     else
       COPYFILE_DISABLE=1 tar -czf "$tmp" -C "$dir" "$session.jsonl"
     fi
-    signed_post "/ingest/transcript?machine=$machine&account=$account" application/gzip "$tmp" \\
-      -fsS --max-time 120 >/dev/null 2>&1
-    rm -f "$tmp"
+    # Sent from a run of its own, detached like the loop, since trying again
+    # can take a few minutes and Claude stops a hook after two.
+    target="/ingest/transcript?machine=$machine&account=$account"
+    if perl -MPOSIX -e 1 >/dev/null 2>&1; then
+      perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$0" --send "$tmp" "$target" \\
+        </dev/null >/dev/null 2>&1 &
+    else
+      ( trap '' HUP; send_upload "$target" "$tmp"; rm -f "$tmp" ) </dev/null >/dev/null 2>&1 &
+    fi
     exit 0
     """
   end
@@ -678,8 +691,7 @@ defmodule Wallboard.Archive.Ingest do
       # still hold the session's own file.
       COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@"
       if [ $? -le 1 ] && tar -tzf "$stage/up.tgz" 2>/dev/null | grep -qxF "$(basename "$path")"; then
-        signed_post "/ingest/transcript?tool=codex&machine=$machine&account=$account" \\
-          application/gzip "$stage/up.tgz" -fsS --max-time 120
+        send_upload "/ingest/transcript?tool=codex&machine=$machine&account=$account" "$stage/up.tgz"
       fi
       rm -rf "$stage"
     }
@@ -706,9 +718,11 @@ defmodule Wallboard.Archive.Ingest do
   @doc """
   The shell functions that sign a request to the hub, shared by the
   scripts: `load_key` reads this machine's key from the wallboard-key file
-  beside the script, and `signed_post <path?query> <type> <body file>
-  [curl options]` posts the file signed with $KEY_ID and $KEY, as
-  MachineKeys.verify/4 checks it. perl's Digest::SHA makes the signature,
+  beside the script, `signed_post <path?query> <type> <body file> [curl
+  options]` posts the file signed with $KEY_ID and $KEY, as
+  MachineKeys.authenticate/1 checks it, and `send_upload <path?query>
+  <file>` posts an upload the same way, trying again a few times when the
+  hub is busy or out of reach. perl's Digest::SHA makes the signature,
   or python3 where perl lacks it (a Mac always has the first; Linux
   collectors need python3 anyway). Either is handed the key in its
   environment, which other users of the machine cannot see, never as an
@@ -743,7 +757,9 @@ defmodule Wallboard.Archive.Ingest do
       [ -n "$KEY" ]
     }
     # Posts the file $3, of type $2, to $1 on the hub, signed. The key itself
-    # is never sent: the hub checks the signature with its own copy.
+    # is never sent: the hub checks the signature with its own copy. The
+    # body's SHA-256 goes in a signed header, so the hub checks the
+    # signature before it reads the body.
     signed_post() {
       _target=$1 _type=$2 _file=$3
       shift 3
@@ -752,11 +768,26 @@ defmodule Wallboard.Archive.Ingest do
       _query=${_query#\?}
       _time=$(date +%s)
       _nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+      _body=$(sha256_of "$_file")
       _sig=$(hmac "$KEY" "$(printf 'vitalaize-v1\nPOST\n%s\n%s\n%s\n%s\n%s' \
-        "$_path" "$_query" "$_time" "$_nonce" "$(sha256_of "$_file")")")
+        "$_path" "$_query" "$_time" "$_nonce" "$_body")")
       curl "$@" -X POST -H "Content-Type: $_type" -H "X-Vitalaize-Key: $KEY_ID" \
         -H "X-Vitalaize-Time: $_time" -H "X-Vitalaize-Nonce: $_nonce" \
+        -H "X-Vitalaize-Content-SHA256: $_body" \
         -H "X-Vitalaize-Signature: $_sig" --data-binary @"$_file" "$HUB$_target"
+    }
+    # Posts the upload $2 to $1, signed afresh each time, and tries again
+    # when the hub is busy (503) or out of reach: after 10, 30 and 90
+    # seconds, so a session's last send is not lost to a busy moment.
+    # WALLBOARD_RETRY_WAITS changes the waits (tests).
+    send_upload() {
+      for _wait in ${WALLBOARD_RETRY_WAITS:-10 30 90} last; do
+        _code=$(signed_post "$1" application/gzip "$2" -sS -o /dev/null -w '%{http_code}' \
+          --connect-timeout 5 --max-time 120 2>/dev/null) || _code=000
+        case "$_code" in 503|000) ;; *) return 0 ;; esac
+        [ "$_wait" = last ] && return 1
+        sleep "$_wait"
+      done
     }
     """
   end

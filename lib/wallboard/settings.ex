@@ -315,7 +315,8 @@ defmodule Wallboard.Settings do
           "0 stops the pages turning"},
          {[:timezone], "Time zone", :string, false, "Like America/New_York"},
          {[:token], "Board password", :secret, true,
-          "Optional. With one, other devices need ?token= once, and can change settings"},
+          "Optional. With one, other devices need ?token= once, and can change settings. " <>
+            "The first one goes in the settings file; after that it can be changed here"},
          {[:updates, :check], "Tell me when a new version is out", :boolean, false,
           "Checks GitHub once a day"}
        ]},

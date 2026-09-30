@@ -498,6 +498,7 @@ enum Setup {
                                            "-H", "X-Vitalaize-Key: \(keyID)",
                                            "-H", "X-Vitalaize-Time: \(time)",
                                            "-H", "X-Vitalaize-Nonce: \(nonce)",
+                                           "-H", "X-Vitalaize-Content-SHA256: \(bodyHash)",
                                            "-H", "X-Vitalaize-Signature: \(hmac(key: key, message: message))",
                                            "--data-binary", "", base + target], timeout: 20)
         let lines = r.output.components(separatedBy: "\n")

@@ -29,13 +29,16 @@ defmodule Wallboard.Fixtures do
   @doc """
   Posts `body` to the hub at `target` (a path and query) with curl, signed
   with `key_id` and `key` unless `opts` changes a part: :time, :nonce,
-  :signature, or :headers to send instead. Returns {status code, reply}.
+  :body_sha256, :signature, or :headers to send instead. Returns {status
+  code, reply}.
   """
   def signed_post(hub, target, body, key_id, key, opts \\ []) do
     [path | rest] = String.split(target, "?", parts: 2)
     query = List.first(rest) || ""
     time = opts[:time] || to_string(System.os_time(:second))
     nonce = opts[:nonce] || 12 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+    # The body hash the request states, and signs: :body_sha256 states another.
+    stated = opts[:body_sha256] || MachineKeys.sha256(body)
 
     headers =
       opts[:headers] ||
@@ -43,9 +46,13 @@ defmodule Wallboard.Fixtures do
           "X-Vitalaize-Key: #{key_id}",
           "X-Vitalaize-Time: #{time}",
           "X-Vitalaize-Nonce: #{nonce}",
+          "X-Vitalaize-Content-SHA256: #{stated}",
           "X-Vitalaize-Signature: " <>
             (opts[:signature] ||
-               MachineKeys.hmac(key, MachineKeys.message("POST", path, query, time, nonce, body)))
+               MachineKeys.hmac(
+                 key,
+                 MachineKeys.message("POST", path, query, time, nonce, {:sha256, stated})
+               ))
         ]
 
     file = Path.join(System.tmp_dir!(), "wallboard-body-#{System.unique_integer([:positive])}")

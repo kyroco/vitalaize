@@ -15,13 +15,18 @@ defmodule Wallboard.Archive.MachineKeys do
       works out the same key and keeps it with the machine's name. Neither
       side ever sends it.
 
-  A signed request carries four headers: the key id, the time in seconds,
-  a random nonce, and an HMAC-SHA256 made with the key over the method,
-  path, query, time, nonce and a SHA-256 of the body (`message/6`). The
-  board refuses a request whose time is more than five minutes from its
-  own, whose nonce that key already used, or whose signature is wrong. A
-  machine's key can only send for the machine it was made for, and
-  removing it on the settings page leaves every other machine connected.
+  A signed request carries five headers: the key id, the time in seconds,
+  a random nonce, the SHA-256 of its body, and an HMAC-SHA256 made with the
+  key over the method, path, query, time, nonce and that body hash
+  (`message/6`). So the hub checks the signature, and claims the nonce,
+  before it reads any of the body (authenticate/1), and then checks the
+  body against the signed hash as it reads (confirm/2). Nobody without a
+  machine's key can make the hub read or keep anything. The board refuses
+  a request whose time is more than five minutes from its own, whose nonce
+  that key already used, whose signature is wrong, or whose body is not
+  the one signed. A machine's key can only send for the machine it was
+  made for, and removing it on the settings page leaves every other
+  machine connected.
 
   What this does not hide: the sessions themselves still cross the network
   as they are (see the README).
@@ -36,14 +41,13 @@ defmodule Wallboard.Archive.MachineKeys do
   # endpoint stops reading at this deadline.
   @upload_deadline 600
 
-  # How long a nonce is kept: past the window, plus the slowest body, plus
-  # a margin. A copy of a request started inside the window finishes before
-  # its nonce is forgotten, so it is always refused.
-  @keep_nonces @window + @upload_deadline + 120
+  # How long a nonce is kept. It is claimed before the body is read, so only
+  # the window matters: past it, a copy of the request is stale anyway.
+  @keep_nonces @window + 60
 
   @key_id ~r/\A[0-9a-f]{32}\z/
   @nonce ~r/\A[0-9a-f]{16,64}\z/
-  @signature ~r/\A[0-9a-f]{64}\z/
+  @hex64 ~r/\A[0-9a-f]{64}\z/
 
   @doc "How far a request's time may be from this board's clock, in seconds."
   def window, do: @window
@@ -69,7 +73,7 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc "Makes the connect key. A board without one gets one on first use."
   def new_connect_key do
-    k = 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    k = random_key()
     Store.put_meta("connect_key", k)
     k
   end
@@ -81,10 +85,15 @@ defmodule Wallboard.Archive.MachineKeys do
   old key finds it gone (see connect/5).
   """
   def reset_connect_key do
-    k = 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-    :ok = Store.reset_connect_key(k)
-    k
+    k = random_key()
+
+    case Store.reset_connect_key(k) do
+      :ok -> {:ok, k}
+      {:error, reason} -> {:error, reason}
+    end
   end
+
+  defp random_key, do: 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
   @doc "True when `given` is the shared key collectors used before 0.3.0."
   def old_shared_key?(given) when is_binary(given) do
@@ -108,7 +117,7 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc """
   What a request's signature is made over. `body` is the body itself, or
-  {:sha256, hex} when it was hashed as it was read.
+  {:sha256, hex}: the hash the request says its body has.
   """
   def message(method, path, query, time, nonce, {:sha256, hash}),
     do: Enum.join(["vitalaize-v1", method, path, query, time, nonce, hash], "\n")
@@ -124,50 +133,58 @@ defmodule Wallboard.Archive.MachineKeys do
     do: :crypto.mac(:hmac, :sha256, key, message) |> Base.encode16(case: :lower)
 
   @doc """
-  The signed parts of a request, before its body is read: {:ok, parts} when
-  the headers are there, well formed and recent, and the key is known;
-  {:error, :unsigned} when there are none; otherwise {:error, status,
-  reason}. Nothing is written for a request this far: key ids are not
-  secret, so anyone may get here.
+  Checks a request before any of its body is read: the headers are there
+  and well formed, the time is recent, the key is known, the signature over
+  the method, path, query, time, nonce and stated body hash is right, and
+  the nonce is new. Only then is the nonce claimed (Store.claim_nonce/5,
+  on the database's own clock), so a request that is not signed right
+  writes nothing.
+
+  {:ok, parts} with the machine (nil for the connect key); {:error,
+  :unsigned} when no header is there; otherwise {:error, status, reason}.
   """
-  def precheck(conn) do
+  def authenticate(conn) do
     with {:ok, parts} <- headers(conn),
          :ok <- fresh(parts.time, System.os_time(:second)),
-         {:ok, secret, machine} <- secret(parts.key_id) do
+         {:ok, secret, machine} <- secret(parts.key_id),
+         :ok <- signed_right(conn, parts, secret),
+         :ok <- claim(parts) do
       {:ok, Map.merge(parts, %{secret: secret, machine: machine})}
     end
   end
 
-  @doc """
-  Checks a request's signature over its body (or {:sha256, hex}, see
-  message/6), that its key was not taken away while the body came, and only
-  then claims its nonce. Returns {:ok, machine} (nil for the connect key)
-  or {:error, status, reason}.
-
-  The nonce is claimed on the database's own clock, in one step with its
-  time check (Store.claim_nonce/5), and kept for keep_nonces/0. A body may
-  take up to the upload deadline after a request passed precheck, so a
-  slow upload is never refused for being slow, and a copy of it is still
-  refused however slowly either comes.
-  """
-  def verify(conn, parts, body, now \\ System.os_time(:second)) do
+  defp signed_right(conn, parts, secret) do
     expected =
       hmac(
-        parts.secret,
-        message(conn.method, conn.request_path, conn.query_string, parts.time, parts.nonce, body)
+        secret,
+        message(
+          conn.method,
+          conn.request_path,
+          conn.query_string,
+          parts.time,
+          parts.nonce,
+          {:sha256, parts.body_sha256}
+        )
       )
 
-    cond do
-      not Plug.Crypto.secure_compare(expected, parts.signature) ->
-        {:error, 401, "wrong signature"}
+    if Plug.Crypto.secure_compare(expected, parts.signature),
+      do: :ok,
+      else: {:error, 401, "wrong signature"}
+  end
 
-      # Disconnected, or given a new connect key, while its body was on
-      # the way.
+  @doc """
+  Once the body is in: its SHA-256 (`hash`, lower-case hex) is the one that
+  was signed, and the key was not taken away while it came. {:ok, machine}
+  or {:error, status, reason}.
+  """
+  def confirm(parts, hash, now \\ System.os_time(:second)) do
+    cond do
+      not Plug.Crypto.secure_compare(hash, parts.body_sha256) ->
+        {:error, 400, "the body is not the one that was signed"}
+
+      # Disconnected, or given a new connect key, while its body came.
       secret(parts.key_id) != {:ok, parts.secret, parts.machine} ->
         {:error, 401, "this machine's key was taken away"}
-
-      (claimed = claim(parts)) != :ok ->
-        claimed
 
       true ->
         if parts.machine,
@@ -202,6 +219,7 @@ defmodule Wallboard.Archive.MachineKeys do
       key_id: get.("x-vitalaize-key"),
       time: get.("x-vitalaize-time"),
       nonce: get.("x-vitalaize-nonce"),
+      body_sha256: get.("x-vitalaize-content-sha256"),
       signature: get.("x-vitalaize-signature")
     }
 
@@ -212,7 +230,8 @@ defmodule Wallboard.Archive.MachineKeys do
       not (is_binary(parts.key_id) and (parts.key_id == "connect" or parts.key_id =~ @key_id)) or
         not (is_binary(parts.time) and parts.time =~ ~r/\A[0-9]{1,12}\z/) or
         not (is_binary(parts.nonce) and parts.nonce =~ @nonce) or
-          not (is_binary(parts.signature) and parts.signature =~ @signature) ->
+        not (is_binary(parts.body_sha256) and parts.body_sha256 =~ @hex64) or
+          not (is_binary(parts.signature) and parts.signature =~ @hex64) ->
         {:error, 401, "badly signed request"}
 
       true ->
@@ -254,7 +273,8 @@ defmodule Wallboard.Archive.MachineKeys do
   made meanwhile cannot leave behind a machine connected with the old one.
   """
   def connect(machine, key_id, replaces, connect_key, now \\ System.os_time(:second)) do
-    replaces = if is_binary(replaces) and replaces =~ @key_id, do: replaces
+    # Never the key being saved: it would be dropped as soon as it was kept.
+    replaces = if is_binary(replaces) and replaces =~ @key_id and replaces != key_id, do: replaces
 
     if is_binary(key_id) and key_id =~ @key_id do
       case Store.connect_machine(
@@ -270,6 +290,7 @@ defmodule Wallboard.Archive.MachineKeys do
         :ok -> :ok
         :taken -> {:error, 409, "that key id is taken"}
         :key_changed -> {:error, 401, "the connect key changed: copy the new one"}
+        {:error, reason} -> {:error, 500, "the hub could not save the key (#{reason})"}
       end
     else
       {:error, 422, "bad key id"}
