@@ -74,7 +74,10 @@ defmodule Wallboard.ReleaseSteps do
   download the build they already run.
   """
   def check_version(release) do
-    case System.cmd("git", ["tag", "--points-at", "HEAD", "--list", "v*"], stderr_to_stdout: true) do
+    git = System.find_executable("git")
+    args = ["tag", "--points-at", "HEAD", "--list", "v[0-9]*"]
+
+    case git && System.cmd(git, args) do
       {out, 0} ->
         tags = String.split(out, "\n", trim: true)
         wanted = "v#{release.version}"

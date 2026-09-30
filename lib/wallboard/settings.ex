@@ -495,12 +495,14 @@ defmodule Wallboard.Settings do
     end)
   end
 
-  defp normalize(settings) do
+  @doc false
+  def normalize(settings) do
     settings
     |> update_in([:claude, :config_dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:codex, :dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:alerts, :phone], &blank_to_nil/1)
     |> update_in([:token], &blank_to_nil/1)
+    |> Map.update(:updates, @defaults.updates, &updates/1)
     |> update_in([:archive, :path], &db_path/1)
     |> update_in([:brand, :logo], fn
       nil -> nil
@@ -532,6 +534,13 @@ defmodule Wallboard.Settings do
         Path.join([base, "vitalaize", "wallboard.db"])
     end
   end
+
+  # The file may say `updates: false` or leave `check` out; the rest of the
+  # board only ever sees %{check: true} or %{check: false}.
+  defp updates(%{check: check}), do: %{check: check == true}
+  defp updates(%{}), do: @defaults.updates
+  defp updates(nil), do: @defaults.updates
+  defp updates(_), do: %{check: false}
 
   defp blank_to_nil(nil), do: nil
 

@@ -70,6 +70,22 @@ defmodule Wallboard.ReleaseTest do
     end
   end
 
+  test "a settings file's updates value always becomes on or off, so the settings page can read it" do
+    for {file, check} <- [
+          {false, false},
+          {"off", false},
+          {nil, true},
+          {%{}, true},
+          {%{check: nil}, false},
+          {%{check: true}, true}
+        ] do
+      settings = Settings.defaults() |> Map.put(:updates, file) |> Settings.normalize()
+      assert settings.updates == %{check: check}
+      # What the settings page runs on open and on save; it raised on `updates: false`.
+      assert {_, _} = Settings.check(%{"updates.check" => "#{check}"}, settings)
+    end
+  end
+
   test "the check is on by default and on the settings page" do
     assert Settings.defaults().updates.check == true
 

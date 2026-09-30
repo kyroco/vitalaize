@@ -3,13 +3,14 @@ defmodule Wallboard.Sources.Release do
   Whether a newer VitalAIze is out, from the latest release on GitHub.
 
   The poller runs every minute, so the settings switch takes effect as fast
-  as the rest of the page, but GitHub is asked at most once a day, whether
-  that ask worked or not; the minutes between reuse the last answer. With
+  as the rest of the page, but GitHub is asked once a day (an hour after a
+  failed ask); the minutes between reuse the last answer. With
   `updates.check` off, nothing is asked and the note goes away.
   """
 
   @repo "kyroco/vitalaize"
   @day_seconds 24 * 60 * 60
+  @retry_seconds 60 * 60
 
   # ---------------------------------------------------------------------------
   # Poller hooks (see Wallboard.Poller)
@@ -28,10 +29,12 @@ defmodule Wallboard.Sources.Release do
             facts = newer(body, current())
             {:ok, facts, %{checked_at: now, facts: facts}}
 
-          # Keep the last answer and wait a day, so a board with no internet
-          # or over GitHub's limit does not ask again every minute.
+          # Keep the last answer and try again in an hour, so a board with no
+          # internet or over GitHub's limit does not ask every minute, and a
+          # board that woke before its Wi-Fi does not wait a whole day.
           {:error, reason} ->
-            {:error, reason, %{checked_at: now, facts: memory && memory.facts}}
+            retry_at = DateTime.add(now, @retry_seconds - @day_seconds)
+            {:error, reason, %{checked_at: retry_at, facts: memory && memory.facts}}
         end
     end
   end
