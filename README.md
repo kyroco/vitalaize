@@ -50,9 +50,11 @@ anywhere except between your own machines, if you connect more than one.
    - **Hub and collector**, for your main Mac: it runs the board and saves
      this Mac's sessions.
    - **Hub only**: it runs the board and keeps what other Macs send it.
-   - **Collector only**, for your other Macs: it sends this Mac's sessions to
-     a hub. It finds hubs on your network by itself; you paste the hub's key
-     from the hub's Settings page (Connect another Mac).
+   - **Collector only**, for your other Macs: it sends this Mac's Claude and
+     Codex sessions to a hub. It finds hubs on your network by itself; you
+     paste the hub's key from the hub's Settings page (Connect another Mac).
+     Codex runs a new hook only once you trust it, so afterwards type
+     `/hooks` in Codex and trust the two `wallboard-upload.sh` hooks.
 4. It fills in what it can find (your Claude and Codex folders, the GitHub
    repository your sessions work in and its workflows, your AWS profiles) and
    asks you to check it. Click **Install**. The board starts now and again
@@ -94,7 +96,8 @@ text alerts need a Mac (they use Messages); and the database lives in
 network by themselves, install `avahi-utils` on the hub; without it,
 collectors type the hub's address. A Linux machine can be a collector too:
 run the command from the hub's Settings page (Connect another Mac) there. It
-needs `python3` and `curl`.
+needs `python3` and `curl`. Like the app, the command hooks up Codex too when
+the machine has it, and says to trust the new hooks with `/hooks` in Codex.
 
 ## What you need
 

@@ -17,14 +17,21 @@ defmodule Wallboard.Archive.Ingest do
   `<session id>/subagents/` files, nothing else. They are kept under the
   database's folder, in inbox/<machine>/<account>/, so Refresh can read
   them again.
+
+  Codex sessions come the same way, from a Codex Stop and SessionEnd hook
+  (see `codex_upload_script/2`), with `tool=codex`: one session's
+  rollout file, its helper agents' rollout files, and optionally its lines
+  from Codex's session_index.jsonl. They are read with the same reader as
+  this Mac's own Codex sessions.
   """
 
-  alias Wallboard.Archive.Collector
+  alias Wallboard.Archive.{CodexTranscript, Collector}
   alias Wallboard.Sources.Claude
   alias Wallboard.Store
 
   @session ~r/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/
   @sub ~r/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/subagents\/([A-Za-z0-9._-]+\.(?:jsonl|meta\.json))$/
+  @rollout ~r/^rollout-[0-9A-Za-z-]{1,40}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/
   @name ~r/^[A-Za-z0-9._-]{1,64}$/
 
   @doc "The key other Macs send with each upload. Made once, then kept."
@@ -128,6 +135,97 @@ defmodule Wallboard.Archive.Ingest do
     end
   end
 
+  @doc """
+  Saves one uploaded Codex session: its rollout file, the rollout files of
+  the helper agents it started, and optionally its lines from Codex's
+  session_index.jsonl (for its title). Returns {:ok, thread_id} or
+  {:error, reason}.
+  """
+  def receive_codex(gzip_tar, machine, account, settings) do
+    with true <- valid_name?(machine) || {:error, "bad machine name"},
+         true <- valid_name?(account) || {:error, "bad account name"},
+         {:ok, files} <- unpack(gzip_tar),
+         {:ok, up} <- sort_codex_files(files) do
+      dir = Path.join([Path.dirname(settings.archive.path), "inbox", machine, account])
+      File.mkdir_p!(dir)
+      {main_name, main} = up.main
+      main_path = Path.join(dir, main_name)
+      File.write!(main_path, main)
+
+      helpers =
+        for {name, body, nickname} <- up.helpers do
+          path = Path.join(dir, name)
+          File.write!(path, body)
+          {path, nickname}
+        end
+
+      ctx = %{
+        prices: settings.usage.prices,
+        machine: machine,
+        account: Collector.codex_account(account),
+        title: up.title,
+        size: byte_size(gzip_tar),
+        mtime: System.os_time(:second),
+        now: System.os_time(:second)
+      }
+
+      if Collector.save_codex(main_path, helpers, ctx),
+        do: {:ok, up.id},
+        else: {:ok, :empty}
+    end
+  end
+
+  @doc false
+  def sort_codex_files(files) do
+    {index, rest} = Enum.split_with(files, fn {name, _} -> name == "session_index.jsonl" end)
+
+    threads =
+      for {name, body} <- rest,
+          [_, id] <- [Regex.run(@rollout, name)],
+          do: {name, id, body, CodexTranscript.head_of(body)}
+
+    cond do
+      length(threads) != length(rest) or length(index) > 1 ->
+        {:error, "unexpected files in the upload"}
+
+      # The id in a file's name is the one inside it.
+      not Enum.all?(threads, fn {_, id, _, head} -> match?({^id, _, _}, head) end) ->
+        {:error, "not a Codex session file"}
+
+      true ->
+        case Enum.split_with(threads, fn {_, _, _, {_, parent, _}} -> is_nil(parent) end) do
+          {[{name, id, body, _}], helpers} ->
+            if Enum.all?(helpers, fn {_, _, _, {_, parent, _}} -> parent == id end) do
+              {:ok,
+               %{
+                 id: id,
+                 main: {name, body},
+                 helpers: for({n, _, b, {_, _, nick}} <- helpers, do: {n, b, nick}),
+                 title: codex_title(index, id)
+               }}
+            else
+              {:error, "helper threads from another session"}
+            end
+
+          _ ->
+            {:error, "expected exactly one Codex session"}
+        end
+    end
+  end
+
+  # When a thread has more than one line, the last one wins, as in
+  # Collector.codex_titles/1.
+  defp codex_title([{_, text}], id) do
+    for line <- String.split(text, "\n", trim: true),
+        {:ok, %{"id" => ^id, "thread_name" => name}} <- [Jason.decode(line)],
+        is_binary(name) and name != "",
+        reduce: nil do
+      _ -> name
+    end
+  end
+
+  defp codex_title(_, _id), do: nil
+
   # ---------------------------------------------------------------------------
   # What the other Mac runs
 
@@ -183,29 +281,107 @@ defmodule Wallboard.Archive.Ingest do
   end
 
   @doc """
-  What another Mac runs once to connect: saves the upload script and adds
-  the two hooks to that Mac's Claude settings (after backing them up).
+  The script another machine saves as ~/.codex/wallboard-upload.sh. Codex
+  runs it (in the background) when a turn ends and when a session ends,
+  with the hook's JSON on stdin. It sends the session's rollout file, the
+  rollout files of the helper agents it started, and the session's lines
+  from session_index.jsonl (its title). Like the Claude one, it sends at
+  most once a minute per session while the session runs, and always at the
+  end.
+
+  Checked against codex-cli 0.155.1 (2026-09-30): a helper agent's thread
+  has its own rollout file whose first line names its parent, and the
+  parent's file names each helper as `"agent_thread_id"`. Codex reads a
+  Stop hook's output as JSON, so the script prints an empty object.
+  """
+  def codex_upload_script(hub_url, token) do
+    """
+    #!/bin/sh
+    # Sends this Codex session, with the helper agents it started, to the
+    # wallboard at #{hub_url}. Codex runs this from a Stop and a SessionEnd
+    # hook. It never blocks Codex: the hook runs in the background, and a
+    # failed send is simply tried again at the next turn.
+    HUB="#{hub_url}"
+    KEY="#{token}"
+
+    # Codex reads a Stop hook's output as JSON.
+    echo '{}'
+
+    input=$(cat)
+    path=$(printf '%s' "$input" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
+    [ -f "$path" ] || exit 0
+    # A helper agent's thread goes up with the session that started it.
+    head -n 1 "$path" | grep -q '"parent_thread_id":"' && exit 0
+
+    id=$(basename "$path" .jsonl | sed -n 's/.*\\([0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}\\)$/\\1/p')
+    [ -n "$id" ] || exit 0
+
+    event=$(printf '%s' "$input" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\\([A-Za-z]*\\)".*/\\1/p')
+    marker="${TMPDIR:-/tmp}/wallboard-sent-$id"
+    if [ "$event" != "SessionEnd" ]; then
+      [ -n "$(find "$marker" -mmin -1 2>/dev/null)" ] && exit 0
+    fi
+    touch "$marker"
+
+    # The file is at <codex home>/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl.
+    day=$(dirname "$path")
+    sessions=$(dirname "$(dirname "$(dirname "$day")")")
+    home=$(dirname "$sessions")
+
+    machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
+    machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+    account=$(basename "$home")
+    account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+
+    set -- -C "$day" "$(basename "$path")"
+    for kid in $(grep -o '"agent_thread_id":"[0-9a-f-]*"' "$path" | cut -d'"' -f4 | sort -u); do
+      for f in "$sessions"/*/*/*/rollout-*-"$kid".jsonl; do
+        [ -f "$f" ] || continue
+        head -n 1 "$f" | grep -q '"parent_thread_id":"'"$id"'"' || continue
+        set -- "$@" -C "$(dirname "$f")" "$(basename "$f")"
+      done
+    done
+
+    stage=$(mktemp -d "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
+    if grep '"id":"'"$id"'"' "$home/session_index.jsonl" > "$stage/session_index.jsonl" 2>/dev/null; then
+      set -- "$@" -C "$stage" session_index.jsonl
+    fi
+    # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
+    COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@" &&
+      curl -fsS --max-time 120 -X POST \\
+        -H "Authorization: Bearer $KEY" \\
+        -H "Content-Type: application/gzip" \\
+        --data-binary @"$stage/up.tgz" \\
+        "$HUB/ingest/transcript?tool=codex&machine=$machine&account=$account" >/dev/null 2>&1
+    rm -rf "$stage"
+    exit 0
+    """
+  end
+
+  @doc """
+  What another machine runs once to connect: saves the Claude upload script
+  and adds its two hooks to Claude's settings, and when Codex is there,
+  does the same for Codex's hooks.json. Each file is backed up first.
+
+  Codex skips a new hook until the person trusts it with /hooks in Codex,
+  so the script says to do that. It never marks the hooks trusted itself.
   """
   def install_script(hub_url, token) do
     """
     #!/bin/sh
-    # Connects this Mac's Claude Code to the wallboard at #{hub_url}.
+    # Connects this machine's Claude Code and Codex to the wallboard at #{hub_url}.
     set -e
-    CONF="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    mkdir -p "$CONF"
-    SCRIPT="$CONF/wallboard-upload.sh"
-    cat > "$SCRIPT" <<'WALLBOARD_UPLOAD'
-    #{upload_script(hub_url, token)}WALLBOARD_UPLOAD
-    chmod 700 "$SCRIPT"
 
-    SETTINGS="$CONF/settings.json"
-    [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-    cp "$SETTINGS" "$SETTINGS.before-wallboard"
-    # On a Mac, osascript's JavaScript edits the settings with no other tool.
+    # Adds a Stop and a SessionEnd hook running $2 to the hooks file $1
+    # (Claude's settings.json or Codex's hooks.json), after backing it up.
+    # On a Mac, osascript's JavaScript edits the file with no other tool.
     # Elsewhere (Linux), python3 does the same edit.
-    if ! command -v osascript >/dev/null 2>&1; then
-      command -v python3 >/dev/null 2>&1 || { echo "Needs python3 to edit $SETTINGS." >&2; exit 1; }
-      python3 - "$SETTINGS" "$SCRIPT" <<'WALLBOARD_PY'
+    add_hooks() {
+      [ -f "$1" ] || echo '{}' > "$1"
+      cp "$1" "$1.before-wallboard"
+      if ! command -v osascript >/dev/null 2>&1; then
+        command -v python3 >/dev/null 2>&1 || { echo "Needs python3 to edit $1." >&2; exit 1; }
+        python3 - "$1" "$2" <<'WALLBOARD_PY'
     import json, os, sys
     path, script = sys.argv[1], sys.argv[2]
     raw = open(path).read().strip()
@@ -221,11 +397,9 @@ defmodule Wallboard.Archive.Ingest do
         f.write(json.dumps(s, indent=2) + "\\n")
     os.replace(tmp, path)
     WALLBOARD_PY
-      echo "Connected. Claude sessions on this machine now go to #{hub_url}."
-      echo "Your previous settings are in $SETTINGS.before-wallboard."
-      exit 0
-    fi
-    osascript -l JavaScript - "$SETTINGS" "$SCRIPT" <<'WALLBOARD_JS'
+        return
+      fi
+      osascript -l JavaScript - "$1" "$2" <<'WALLBOARD_JS'
     ObjC.import("Foundation");
     function run(argv) {
       const file = argv[0], script = argv[1];
@@ -245,8 +419,29 @@ defmodule Wallboard.Archive.Ingest do
       }
     }
     WALLBOARD_JS
-    echo "Connected. Claude sessions on this Mac now go to #{hub_url}."
-    echo "Your previous settings are in $SETTINGS.before-wallboard."
+    }
+
+    CONF="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    mkdir -p "$CONF"
+    SCRIPT="$CONF/wallboard-upload.sh"
+    cat > "$SCRIPT" <<'WALLBOARD_UPLOAD'
+    #{upload_script(hub_url, token)}WALLBOARD_UPLOAD
+    chmod 700 "$SCRIPT"
+    add_hooks "$CONF/settings.json" "$SCRIPT"
+    echo "Connected. Claude sessions on this machine now go to #{hub_url}."
+    echo "Your previous Claude settings are in $CONF/settings.json.before-wallboard."
+
+    CODEX="${CODEX_HOME:-$HOME/.codex}"
+    if [ -d "$CODEX" ]; then
+      CODEX_SCRIPT="$CODEX/wallboard-upload.sh"
+      cat > "$CODEX_SCRIPT" <<'WALLBOARD_CODEX_UPLOAD'
+    #{codex_upload_script(hub_url, token)}WALLBOARD_CODEX_UPLOAD
+      chmod 700 "$CODEX_SCRIPT"
+      add_hooks "$CODEX/hooks.json" "$CODEX_SCRIPT"
+      echo "Codex sessions on this machine go there too, once you trust the new hooks:"
+      echo "type /hooks in Codex and trust the two wallboard-upload.sh hooks. Codex skips a new hook until then."
+      echo "Your previous Codex hooks are in $CODEX/hooks.json.before-wallboard."
+    fi
     """
   end
 end

@@ -341,9 +341,11 @@ defmodule Wallboard.Archive.Collector do
       false
   end
 
-  # No label for ~/.codex (the icon already says Codex); another folder is
-  # named by its own name.
-  defp codex_account(dir) do
+  @doc """
+  The account label for a Codex folder: none for ~/.codex (the icon already
+  says Codex); another folder is named by its own name.
+  """
+  def codex_account(dir) do
     case dir |> Path.basename() |> String.trim_leading(".") do
       "codex" -> nil
       other -> other
