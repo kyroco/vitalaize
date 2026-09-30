@@ -150,6 +150,9 @@ defmodule Wallboard.Settings do
     },
     # Whether this team uses Korium. Off hides the Korium numbers.
     korium: %{enabled: true},
+    # Once a day, ask GitHub for the latest release and show a note by
+    # Settings when it is newer than this board.
+    updates: %{check: true},
     archive: %{
       enabled: true,
       # Save this Mac's own Claude sessions. Off makes a hub that only keeps
@@ -297,7 +300,9 @@ defmodule Wallboard.Settings do
           "0 stops the pages turning"},
          {[:timezone], "Time zone", :string, false, "Like America/New_York"},
          {[:token], "Board password", :secret, true,
-          "Optional. With one, other devices need ?token= once, and can change settings"}
+          "Optional. With one, other devices need ?token= once, and can change settings"},
+         {[:updates, :check], "Tell me when a new version is out", :boolean, false,
+          "Checks GitHub once a day"}
        ]},
       {"What this board shows",
        [

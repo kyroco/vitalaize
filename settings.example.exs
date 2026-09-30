@@ -47,6 +47,10 @@
     days_back: 21
   },
 
+  # Once a day the board asks GitHub for the latest VitalAIze release and,
+  # when it is newer, shows a note by Settings. false stops the check.
+  updates: %{check: true},
+
   # Text alerts. When a Claude session starts waiting on you, this Mac sends
   # an iMessage from the Apple ID signed in to its Messages app, to this
   # number. Leave it nil and alerts are off.
