@@ -200,8 +200,10 @@ jobs:
       - run: mix deps.get --check-locked
       # Hex lets mix.exs (or HEX_IGNORE_* variables) name advisories and
       # retired packages to ignore, and passes when only those are found.
-      # Any ignored finding fails this step too, so a pull request cannot
-      # turn the check off; the same idea as Sobelow's --no-config above.
+      # Any ignored finding fails this step too, so an ignore list cannot
+      # hide one; the same idea as Sobelow's --no-config above. The audit
+      # sees only Hex packages: a git or path dependency, or a `hex:` mirror
+      # setting in mix.exs, would still escape it, so review those.
       - name: No known security holes or retired packages
         run: |
           if mix hex.audit > audit.log 2>&1; then status=0; else status=$?; fi
