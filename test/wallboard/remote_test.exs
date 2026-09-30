@@ -247,29 +247,54 @@ defmodule Wallboard.RemoteTest do
   end
 
   # A stand-in `claude` whose `agents --json` reports this session as
-  # waiting or busy, whatever the test last set.
-  defp fake_claude(dir, status) do
+  # waiting or busy, whatever the test last set. It can take `delay`
+  # seconds, reading the status only at the end, as a slow check would;
+  # :fail makes every check fail.
+  defp fake_claude(dir, status, delay \\ 0) do
     bin = Path.join(dir, "bin")
     File.mkdir_p!(bin)
+    agents = Path.join(dir, "agents.json")
 
-    File.write!(
-      Path.join(dir, "agents.json"),
-      Jason.encode!([%{"sessionId" => @sid, "status" => status}])
-    )
+    if status != :fail,
+      do: File.write!(agents, Jason.encode!([%{"sessionId" => @sid, "status" => status}]))
+
+    body =
+      if status == :fail,
+        do: "exit 1",
+        else: "sleep #{delay}\ncat \"#{agents}\""
 
     path = Path.join(bin, "claude")
-    File.write!(path, "#!/bin/sh\ncat \"#{Path.join(dir, "agents.json")}\"\n")
+    File.write!(path, "#!/bin/sh\n#{body}\n")
     File.chmod!(path, 0o755)
   end
 
+  # The loop's lock is a link to a process id, so look at the link itself.
+  defp locked?(ctx), do: match?({:ok, _}, File.lstat(marker(ctx) <> ".watch"))
+
+  # Loops for this session, not counting the short-lived copies of a loop
+  # the shell makes for a check or a sleep (their parent is the loop).
   defp loops do
-    case System.cmd("pgrep", ["-f", "upload.sh --watch #{@sid}"]) do
-      {out, 0} -> out |> String.split() |> length()
-      _ -> 0
-    end
+    {out, 0} = System.cmd("ps", ["-axo", "pid=,ppid=,command="])
+
+    procs =
+      for line <- String.split(out, "\n"),
+          line =~ "upload.sh --watch #{@sid}",
+          [pid, ppid | _] <- [String.split(line)],
+          do: {pid, ppid}
+
+    pids = MapSet.new(procs, &elem(&1, 0))
+    Enum.count(procs, fn {_, ppid} -> not MapSet.member?(pids, ppid) end)
   end
 
-  defp stop_loops, do: System.cmd("pkill", ["-f", "upload.sh --watch #{@sid}"])
+  # Stops this file's loops and waits until they are gone, so the next test
+  # never counts one of them.
+  defp stop_loops do
+    System.cmd("pkill", ["-f", "upload.sh --watch #{@sid}"])
+
+    Enum.reduce_while(1..50, nil, fn _, _ ->
+      if loops() == 0, do: {:halt, :ok}, else: {:cont, Process.sleep(100)}
+    end)
+  end
 
   defp this_machine do
     {out, 0} = System.cmd("sh", ["-c", "scutil --get LocalHostName 2>/dev/null || hostname -s"])
@@ -320,7 +345,7 @@ defmodule Wallboard.RemoteTest do
 
       # A second prompt in the same session starts no second loop.
       assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), quick)
-      Process.sleep(500)
+      Process.sleep(1_500)
       assert loops() == 1
 
       # Approved: the session is running again, and no hook said so.
@@ -329,7 +354,7 @@ defmodule Wallboard.RemoteTest do
       refute File.exists?(marker(ctx))
       Process.sleep(2_000)
       assert loops() == 0
-      refute File.exists?(marker(ctx) <> ".watch")
+      refute locked?(ctx)
     end
 
     test "a loop stops at its time limit even while the session still waits", ctx do
@@ -342,7 +367,7 @@ defmodule Wallboard.RemoteTest do
       assert_receive {:remote, [_]}, 5_000
       Process.sleep(4_000)
       assert loops() == 0
-      refute File.exists?(marker(ctx) <> ".watch")
+      refute locked?(ctx)
       # The wait itself stays up for the hooks to end.
       assert File.exists?(marker(ctx))
     end
@@ -353,7 +378,98 @@ defmodule Wallboard.RemoteTest do
       assert_receive {:remote, [_]}, 5_000
       Process.sleep(500)
       assert loops() == 0
-      refute File.exists?(marker(ctx) <> ".watch")
+      refute locked?(ctx)
+    end
+
+    test "while the loop watches, a tool that ran beside the prompt does not end the wait", ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      fake_claude(ctx.dir, "waiting")
+      quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
+
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), quick)
+      assert_receive {:remote, [_]}, 5_000
+      Process.sleep(1_500)
+
+      # A Grep beside the prompt finishes; claude agents still says waiting.
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, hook("PostToolUse"), quick)
+      refute_receive {:remote, []}, 2_500
+      assert [_] = Remote.sessions()
+
+      fake_claude(ctx.dir, "busy")
+      assert_receive {:remote, []}, 5_000
+    end
+
+    test "a new prompt that opens during a check is not taken for the one just answered", ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      # Each check takes 1.5 seconds and reads the status only at its end.
+      fake_claude(ctx.dir, "waiting", 1.5)
+      quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
+
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt", "A"), quick)
+      assert_receive {:remote, [%{why: "A"}]}, 5_000
+      # Checks run from about 1 to 2.5 seconds (A seen waiting), then from
+      # about 3.5 to 5: switch in the middle of that second check.
+      Process.sleep(4_000)
+
+      # A is approved and B opens at once, likely while a check is running.
+      fake_claude(ctx.dir, "busy", 1.5)
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt", "B"), quick)
+      Process.sleep(4_000)
+
+      assert [%{why: "B"}] = Remote.sessions()
+      assert File.read!(marker(ctx)) =~ ~r/^notice: /
+
+      # B, once seen waiting and then answered, still ends as usual.
+      fake_claude(ctx.dir, "waiting", 0)
+      Process.sleep(2_500)
+      fake_claude(ctx.dir, "busy", 0)
+      assert_receive {:remote, []}, 5_000
+    end
+
+    test "a prompt answered too fast for the loop to see still ends at its tool call", ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      # claude agents never gets to show it waiting.
+      fake_claude(ctx.dir, "busy")
+      quick = [{"WALLBOARD_WATCH_EVERY", "1"}]
+
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), quick)
+      assert_receive {:remote, [_]}, 5_000
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, hook("PostToolUse"), quick)
+      assert_receive {:remote, []}, 5_000
+    end
+
+    test "a loop whose check keeps failing leaves after a while", ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      fake_claude(ctx.dir, :fail)
+      env = [{"WALLBOARD_WATCH_EVERY", "1"}, {"WALLBOARD_WATCH_PATIENCE", "2"}]
+
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"), env)
+      assert_receive {:remote, [_]}, 5_000
+      Process.sleep(4_500)
+      assert loops() == 0
+      refute locked?(ctx)
+    end
+
+    test "a lock left by a loop that died is taken over", ctx do
+      ctx.settings.("the-hub")
+      on_exit(&stop_loops/0)
+      fake_claude(ctx.dir, "waiting")
+      # A process id that is not running.
+      File.ln_s!("999999", marker(ctx) <> ".watch")
+
+      assert {"", 0} =
+               run_hook(ctx.script, ctx.dir, notice("permission_prompt"), [
+                 {"WALLBOARD_WATCH_EVERY", "1"}
+               ])
+
+      Process.sleep(1_000)
+      assert loops() == 1
+      assert {:ok, pid} = File.read_link(marker(ctx) <> ".watch")
+      assert pid != "999999"
     end
 
     test "a prompt answered before the board's own check would see it sends no alert", ctx do

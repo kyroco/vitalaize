@@ -174,10 +174,17 @@ defmodule Wallboard.Archive.Ingest do
   as `--watch <session>`). Every few seconds it asks `claude agents --json`
   whether the session still waits, the same check the hub makes for its
   own sessions, and posts "done waiting" once it has seen the session
-  waiting and then not. It stops when the marker is gone, when the session
-  never shows as waiting within about a minute, and after 12 hours at
-  most. Without `claude` on the PATH, or perl, there is no loop and the
-  hooks alone end the wait.
+  waiting and then not. Each wait's marker carries a stamp of its own, and
+  the loop ends only the wait it saw, so a new prompt that opens during a
+  check is never taken for the one just answered. While the loop runs, a
+  finished tool call after a permission prompt is left for the loop to
+  judge, since it may be a tool that ran beside the prompt: the hook leaves
+  a note, and the loop ends the wait once `claude agents` says the session
+  is not waiting, even if it was answered too fast to be seen waiting. The loop stops
+  when the marker is gone, when the session never shows as waiting (or the
+  check keeps failing) for about a minute, and after 12 hours at most.
+  Without `claude` on the PATH, or perl, there is no loop and the hooks
+  alone end the wait.
 
   When a turn ends and when a session ends it sends the transcript: at most
   once a minute per session while the session runs, and always at the end.
@@ -214,20 +221,30 @@ defmodule Wallboard.Archive.Ingest do
         --data-binary @- \\
         "$HUB/ingest/status?machine=$machine&account=$account&at=$at" >/dev/null 2>&1
     }
-    # Claims the marker, sends "done waiting", and puts the marker back when
-    # the hub did not take it (unless a new wait began meanwhile), so the
-    # next try sends it again. Fails when the hub did not take it.
+    # Claims the marker and sends "done waiting". Given the marker's words,
+    # it ends only that wait: a newer one is put back untouched. When the
+    # hub does not take it, the marker goes back so the next try sends it
+    # again, and this fails. Putting back never overwrites a newer marker.
     done_waiting() {
       claim="$waiting.$$"
       mv "$waiting" "$claim" 2>/dev/null || return 0
+      if [ -n "$1" ] && [ "$(cat "$claim" 2>/dev/null)" != "$1" ]; then
+        mv -n "$claim" "$waiting" 2>/dev/null
+        rm -f "$claim"
+        return 0
+      fi
       if printf '{"hook_event_name":"%s","session_id":"%s"}' "$event" "$session" | send_status; then
         rm -f "$claim"
-      elif [ -f "$waiting" ]; then
-        rm -f "$claim"
       else
-        mv "$claim" "$waiting"
+        mv -n "$claim" "$waiting" 2>/dev/null
+        rm -f "$claim"
         return 1
       fi
+    }
+    # Writes the marker in one step: the kind of wait, then a stamp that is
+    # new for every wait, so the loop can tell one wait from the next.
+    mark_waiting() {
+      printf '%s %s-%s' "$1" "$at" "$$" > "$waiting.new.$$" && mv -f "$waiting.new.$$" "$waiting"
     }
     # This session in `claude agents --json`: waiting, moved (running or
     # idle), gone, or unknown when the check fails. The check gets 20
@@ -256,37 +273,57 @@ defmodule Wallboard.Archive.Ingest do
       event=WaitEnded
       every=${WALLBOARD_WATCH_EVERY:-3}
       limit=${WALLBOARD_WATCH_LIMIT:-43200}
-      # The lock is a folder, made in one step, holding the loop's process
-      # id; a lock whose loop died is taken over.
-      if ! mkdir "$lock" 2>/dev/null; then
-        old=$(cat "$lock/pid" 2>/dev/null)
+      patience=${WALLBOARD_WATCH_PATIENCE:-60}
+      # The lock is a link to the loop's process id, made in one step, so
+      # it never exists without the id. A lock whose loop died is taken
+      # over, and a loop removes the lock only while it is still its own.
+      if ! ln -s "$$" "$lock" 2>/dev/null; then
+        old=$(readlink "$lock" 2>/dev/null)
         [ -n "$old" ] && kill -0 "$old" 2>/dev/null && exit 0
-        rm -rf "$lock"
-        mkdir "$lock" 2>/dev/null || exit 0
+        rm -f "$lock"
+        ln -s "$$" "$lock" 2>/dev/null || exit 0
       fi
-      echo $$ > "$lock/pid"
-      trap 'rm -rf "$lock"' EXIT
+      trap '[ "$(readlink "$lock" 2>/dev/null)" = "$$" ] && rm -f "$lock"' EXIT
       trap 'exit 0' HUP INT TERM
       names
       start=$(date +%s)
-      seen=no
+      seen=""
+      last=""
       misses=0
       while [ -f "$waiting" ] && [ $(( $(date +%s) - start )) -lt "$limit" ]; do
-        sleep "$every"
+        # Waited on in the background, so a request to stop is heard at once.
+        sleep "$every" &
+        wait $!
+        # The wait as it stood before the check. Only a wait seen waiting,
+        # and still the same wait after the check, is ended here.
+        before=$(cat "$waiting" 2>/dev/null) || continue
+        [ "$before" = "$last" ] || { last=$before; misses=0; }
         case "$(agent_state)" in
           waiting)
-            seen=yes ;;
+            seen=$before ;;
           moved|gone)
-            if [ "$seen" = yes ]; then
+            # Seen waiting and now not, or answered too fast to be seen: a
+            # tool call by the waiting agent has finished since it began.
+            if [ "$seen" = "$before" ] || [ "$(cat "$waiting.ran" 2>/dev/null)" = "$before" ]; then
               at=$(now_ms)
-              done_waiting && seen=no
+              done_waiting "$before" && { seen=""; rm -f "$waiting.ran"; }
             else
-              # Never seen waiting: nothing here to watch.
               misses=$((misses + 1))
-              [ $((misses * every)) -ge 60 ] && exit 0
             fi ;;
+          *)
+            misses=$((misses + 1)) ;;
         esac
+        # A wait never seen waiting, or a check that keeps failing: nothing
+        # here to watch, so the hooks end it.
+        [ "$seen" = "$before" ] || [ $((misses * every)) -lt "$patience" ] || exit 0
       done
+      # A new wait that began as this loop ended found the lock taken. The
+      # lock goes first and the marker is looked at after, so either its
+      # hook starts a loop or this one hands over to a fresh loop for it.
+      [ "$(readlink "$lock" 2>/dev/null)" = "$$" ] && rm -f "$lock"
+      if [ -f "$waiting" ] && [ $(( $(date +%s) - start )) -lt "$limit" ]; then
+        exec sh "$0" --watch "$session"
+      fi
       exit 0
     fi
 
@@ -309,21 +346,32 @@ defmodule Wallboard.Archive.Ingest do
     # Which wait this is. The time is taken before the marker is written,
     # and a "done waiting" takes its time after reading the marker, so the
     # end of a wait is always later than its start.
+    expect=""
     case "$event" in
       Notification)
         at=$(now_ms)
-        printf 'notice:%s' "$(field agent_id)" > "$waiting" ;;
+        mark_waiting "notice:$(field agent_id)" ;;
       PreToolUse)
         [ "$(field tool_name)" = AskUserQuestion ] || exit 0
         at=$(now_ms)
-        printf 'tool:%s' "$(field tool_use_id)" > "$waiting" ;;
+        mark_waiting "tool:$(field tool_use_id)" ;;
       PostToolUse)
-        # Only the end of the wait's own tool call, or a tool call by the
-        # same agent after a permission prompt: a helper agent or another
-        # tool finishing meanwhile leaves the wait on.
+        # The end of the question's own tool call ends its wait. After a
+        # permission prompt, a tool call by the same agent may be one that
+        # ran beside the prompt, so while the loop is watching it decides
+        # from `claude agents`; without the loop, this is the best sign
+        # there is. A helper agent or another tool finishing never counts.
         [ -f "$waiting" ] || exit 0
-        case "$(cat "$waiting" 2>/dev/null)" in
-          "notice:$(field agent_id)"|"tool:$(field tool_use_id)") ;;
+        expect=$(cat "$waiting" 2>/dev/null)
+        case "${expect%% *}" in
+          "tool:$(field tool_use_id)") ;;
+          "notice:$(field agent_id)")
+            loop=$(readlink "$waiting.watch" 2>/dev/null)
+            if [ -n "$loop" ] && kill -0 "$loop" 2>/dev/null; then
+              # Tell the loop a tool call finished during this wait.
+              printf '%s' "$expect" > "$waiting.ran"
+              exit 0
+            fi ;;
           *) exit 0 ;;
         esac
         at=$(now_ms) ;;
@@ -349,7 +397,7 @@ defmodule Wallboard.Archive.Ingest do
         printf '%s' "$input" | send_status
         exit 0 ;;
       PostToolUse|UserPromptSubmit)
-        done_waiting
+        done_waiting "$expect"
         exit 0 ;;
       Stop|SessionEnd)
         done_waiting ;;
