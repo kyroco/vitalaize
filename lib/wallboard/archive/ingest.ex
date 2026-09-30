@@ -347,8 +347,13 @@ defmodule Wallboard.Archive.Ingest do
     waiting="$marker.waiting"
 
     send() {
-      # The thread may have been archived while this waited.
-      [ -f "$path" ] || return
+      # The thread may have been archived while this waited: Codex moves
+      # its file, under the same name, to archived_sessions/.
+      if [ ! -f "$path" ]; then
+        path="$home/archived_sessions/$(basename "$path")"
+        day=$(dirname "$path")
+        [ -f "$path" ] || return
+      fi
       touch "$marker"
       machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
       machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
@@ -370,9 +375,11 @@ defmodule Wallboard.Archive.Ingest do
       fi
       # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
       # GNU tar exits 1 when a file grew while it was read (a helper still
-      # at work); the archive is whole, so it is sent anyway.
+      # at work); the archive is whole, so it is sent anyway. macOS tar
+      # also exits 1 for a file it could not read, so the archive must
+      # still hold the session's own file.
       COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@"
-      if [ $? -le 1 ]; then
+      if [ $? -le 1 ] && tar -tzf "$stage/up.tgz" 2>/dev/null | grep -qxF "$(basename "$path")"; then
         curl -fsS --max-time 120 -X POST \\
           -H "Authorization: Bearer $KEY" \\
           -H "Content-Type: application/gzip" \\

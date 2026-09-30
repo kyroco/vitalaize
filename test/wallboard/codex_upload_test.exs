@@ -300,13 +300,29 @@ defmodule Wallboard.CodexUploadTest do
       assert wait_for(fn -> sends(ctx) == 2 end)
     end
 
-    test "a waiting send whose thread was archived meanwhile sends nothing", ctx do
+    # Two quick turns, so the second waits; returns the waiting file.
+    defp start_waiting(ctx) do
       run(ctx, ctx.main, "Stop")
       assert wait_for(fn -> sends(ctx) == 1 end)
-
       run(ctx, ctx.main, "Stop")
       waiting = Path.join(ctx.dir, "wallboard-sent-#{@main}.waiting")
       assert wait_for(fn -> File.exists?(waiting) end)
+      waiting
+    end
+
+    test "a waiting send whose thread was archived meanwhile sends it from the archive", ctx do
+      start_waiting(ctx)
+      archive = Path.join(ctx.home, "archived_sessions")
+      File.mkdir_p!(archive)
+      File.rename!(ctx.main, Path.join(archive, name(@main)))
+
+      assert wait_for(fn -> sends(ctx) == 2 end)
+      {:ok, files} = :erl_tar.extract(ctx.out <> ".tgz", [:compressed, :memory])
+      assert name(@main) in Enum.map(files, &to_string(elem(&1, 0)))
+    end
+
+    test "a waiting send whose thread was deleted meanwhile sends nothing", ctx do
+      waiting = start_waiting(ctx)
       File.rm!(ctx.main)
 
       assert wait_for(fn -> not File.exists?(waiting) end)
@@ -340,6 +356,26 @@ defmodule Wallboard.CodexUploadTest do
       File.chmod!(Path.join(ctx.bin, "tar"), 0o755)
       run(ctx, ctx.main, "Stop")
       assert wait_for(fn -> sends(ctx) == 1 end)
+    end
+
+    test "an archive that lost the session's own file is not sent", ctx do
+      # What macOS tar does when the file vanishes between the check and
+      # the read: exit 1, with an archive of the rest.
+      real = System.find_executable("tar")
+
+      File.write!(Path.join(ctx.bin, "tar"), """
+      #!/bin/sh
+      case "$1" in
+        -czf) echo x > "$TMPDIR/other.txt"; #{real} -czf "$2" -C "$TMPDIR" other.txt; exit 1 ;;
+        *) exec #{real} "$@" ;;
+      esac
+      """)
+
+      File.chmod!(Path.join(ctx.bin, "tar"), 0o755)
+      run(ctx, ctx.main, "Stop")
+      assert wait_for(fn -> File.exists?(Path.join(ctx.dir, "other.txt")) end)
+      Process.sleep(500)
+      assert sends(ctx) == 0
     end
 
     test "a helper agent's own stop sends nothing", ctx do

@@ -248,12 +248,12 @@ enum Setup {
     /// Installs everything the choices ask for. `say` reports each step.
     static func install(_ c: Choices, say: (String) -> Void) throws {
         // Kept from an earlier setup, so Uninstall still finds Codex's hooks
-        // when this run could not reach them. Read before the data folder
-        // changes, since the record lives in the earlier one.
+        // when this run could not reach them. The earlier record stays
+        // where Uninstall looks until this run has written its own: the
+        // remembered data folder moves only at the end.
         var hookedCodex: String? = installed()?.hookedCodex
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
-        dataFolder = c.dataFolder
         var hooked: [String] = []
 
         if c.role.runsBoard {
@@ -314,6 +314,7 @@ enum Setup {
         var saved = record
         saved.choices.hubKey = ""   // the key lives in the upload script, not here
         try enc.encode(saved).write(to: data.appendingPathComponent("install.json"))
+        dataFolder = c.dataFolder
         say("Done")
     }
 
