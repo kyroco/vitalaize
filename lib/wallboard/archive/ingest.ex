@@ -132,37 +132,117 @@ defmodule Wallboard.Archive.Ingest do
   # What the other Mac runs
 
   @doc """
+  The Claude Code hooks the upload script runs from, as
+  [%{"event" => name, "matcher" => matcher or nil}]. Stop and SessionEnd
+  send the transcript; the rest tell the hub the moment a session starts
+  or stops waiting on you (see Wallboard.Remote). The Mac app adds the same
+  list in macos/Wallboard/Setup.swift.
+  """
+  def hooks do
+    [
+      %{"event" => "Stop", "matcher" => nil},
+      %{"event" => "SessionEnd", "matcher" => nil},
+      %{
+        "event" => "Notification",
+        "matcher" =>
+          "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input"
+      },
+      %{"event" => "PreToolUse", "matcher" => "AskUserQuestion"},
+      %{"event" => "PostToolUse", "matcher" => nil},
+      %{"event" => "UserPromptSubmit", "matcher" => nil}
+    ]
+  end
+
+  @doc """
   The script another Mac saves as ~/.claude/wallboard-upload.sh. Claude
-  Code runs it (in the background) when a turn ends and when a session
-  ends, with the hook's JSON on stdin. It sends at most once a minute per
-  session while the session runs, and always at the end.
+  Code runs it in the background from each hook in `hooks/0`, with the
+  hook's JSON on stdin.
+
+  When a session starts waiting on you (a permission prompt, a question, an
+  MCP form), it posts that hook's JSON to /ingest/status right away and
+  leaves a marker file. When the session moves on (a tool finished, you
+  typed, the turn or session ended) and the marker is there, it posts a
+  short "done waiting". Every other tool call costs one file check and no
+  network.
+
+  When a turn ends and when a session ends it sends the transcript: at most
+  once a minute per session while the session runs, and always at the end.
   """
   def upload_script(hub_url, token) do
     """
     #!/bin/sh
-    # Sends this Claude session's transcript to the wallboard at #{hub_url}.
-    # Claude Code runs this from a Stop and a SessionEnd hook. It never
-    # blocks Claude: the hook runs in the background, and a failed send is
-    # simply tried again at the next turn.
+    # Sends this Claude session's transcript to the wallboard at #{hub_url},
+    # and tells it the moment the session starts or stops waiting on you.
+    # Claude Code runs this from its hooks in the background, so it never
+    # blocks Claude, and a hub it cannot reach costs at most a few seconds
+    # of this script's own time. A failed send is tried again next time.
     HUB="#{hub_url}"
     KEY="#{token}"
 
-    input=$(cat)
-    path=$(printf '%s' "$input" | sed -n 's/.*"transcript_path":"\\([^"]*\\)".*/\\1/p')
-    [ -f "$path" ] || exit 0
+    # The time first, so "waiting" and "done waiting" keep their order even
+    # when the two sends reach the hub the other way round.
+    at=$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null) || at=""
+    [ -n "$at" ] || at="$(date +%s)000"
 
-    session=$(basename "$path" .jsonl)
-    marker="${TMPDIR:-/tmp}/wallboard-sent-$session"
-    case "$input" in
-      *'"hook_event_name":"SessionEnd"'*) ;;
-      *) [ -n "$(find "$marker" -mmin -1 2>/dev/null)" ] && exit 0 ;;
-    esac
-    touch "$marker"
+    input=$(cat)
+    # The first "name":"value" in the hook's JSON. Claude writes the hook's
+    # own fields before any tool input, and quotes inside a value are
+    # escaped, so a tool's input cannot stand in for them.
+    field() {
+      printf '%s' "$input" | grep -o '"'"$1"'":"[^"]*"' | head -n 1 | sed 's/^"[^"]*":"//; s/"$//'
+    }
+    event=$(field hook_event_name)
+    session=$(field session_id)
+    case "$session" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
 
     machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
     machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
     account=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
     account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+
+    waiting="${TMPDIR:-/tmp}/wallboard-waiting-$session"
+    send_status() {
+      curl -fsS --connect-timeout 3 --max-time 10 -X POST \\
+        -H "Authorization: Bearer $KEY" \\
+        -H "Content-Type: application/json" \\
+        --data-binary @- \\
+        "$HUB/ingest/status?machine=$machine&account=$account&at=$at" >/dev/null 2>&1
+    }
+    done_waiting() {
+      [ -f "$waiting" ] || return 0
+      rm -f "$waiting"
+      printf '{"hook_event_name":"%s","session_id":"%s"}' "$event" "$session" | send_status
+    }
+
+    case "$event" in
+      Notification)
+        touch "$waiting"
+        printf '%s' "$input" | send_status
+        exit 0 ;;
+      PreToolUse)
+        [ "$(field tool_name)" = AskUserQuestion ] || exit 0
+        touch "$waiting"
+        printf '%s' "$input" | send_status
+        exit 0 ;;
+      PostToolUse|UserPromptSubmit)
+        done_waiting
+        exit 0 ;;
+      Stop|SessionEnd)
+        done_waiting ;;
+      *)
+        exit 0 ;;
+    esac
+
+    path=$(field transcript_path)
+    [ -f "$path" ] || exit 0
+
+    session=$(basename "$path" .jsonl)
+    marker="${TMPDIR:-/tmp}/wallboard-sent-$session"
+    case "$event" in
+      SessionEnd) ;;
+      *) [ -n "$(find "$marker" -mmin -1 2>/dev/null)" ] && exit 0 ;;
+    esac
+    touch "$marker"
 
     dir=$(dirname "$path")
     tmp=$(mktemp "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
@@ -184,9 +264,13 @@ defmodule Wallboard.Archive.Ingest do
 
   @doc """
   What another Mac runs once to connect: saves the upload script and adds
-  the two hooks to that Mac's Claude settings (after backing them up).
+  its hooks (`hooks/0`) to that Mac's Claude settings, after backing them
+  up. Running it again on a Mac connected before adds only the hooks it is
+  missing.
   """
   def install_script(hub_url, token) do
+    hooks = Jason.encode!(hooks())
+
     """
     #!/bin/sh
     # Connects this Mac's Claude Code to the wallboard at #{hub_url}.
@@ -212,10 +296,13 @@ defmodule Wallboard.Archive.Ingest do
     s = json.loads(raw) if raw else {}
     hooks = s.setdefault("hooks", {})
     hook = {"type": "command", "command": script, "async": True, "timeout": 120}
-    for ev in ("Stop", "SessionEnd"):
-        lst = hooks.setdefault(ev, [])
+    for want in json.loads('#{hooks}'):
+        lst = hooks.setdefault(want["event"], [])
         if not any(h.get("command") == script for m in lst for h in m.get("hooks", [])):
-            lst.append({"hooks": [hook]})
+            entry = {"hooks": [hook]}
+            if want["matcher"]:
+                entry["matcher"] = want["matcher"]
+            lst.append(entry)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write(json.dumps(s, indent=2) + "\\n")
@@ -234,10 +321,10 @@ defmodule Wallboard.Archive.Ingest do
       const s = raw === "" ? {} : JSON.parse(raw);
       s.hooks = s.hooks || {};
       const hook = { type: "command", command: script, async: true, timeout: 120 };
-      for (const ev of ["Stop", "SessionEnd"]) {
-        const list = s.hooks[ev] = s.hooks[ev] || [];
+      for (const want of #{hooks}) {
+        const list = s.hooks[want.event] = s.hooks[want.event] || [];
         const has = list.some(m => (m.hooks || []).some(h => h.command === script));
-        if (!has) list.push({ hooks: [hook] });
+        if (!has) list.push(want.matcher ? { matcher: want.matcher, hooks: [hook] } : { hooks: [hook] });
       }
       const out = $(JSON.stringify(s, null, 2) + "\\n");
       if (!out.writeToFileAtomicallyEncodingError(file, true, $.NSUTF8StringEncoding, null)) {

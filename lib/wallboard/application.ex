@@ -23,7 +23,8 @@ defmodule Wallboard.Application do
   defp archive_children(%{archive: %{enabled: true} = a} = settings) do
     [
       {Wallboard.Store, path: a.path},
-      Wallboard.Archive.StatusRecorder
+      Wallboard.Archive.StatusRecorder,
+      Wallboard.Remote
     ] ++
       if(a.collect_local, do: [Wallboard.Archive.Collector], else: []) ++
       [Wallboard.Archive.GitHubCollector] ++

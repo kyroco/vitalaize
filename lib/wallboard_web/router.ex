@@ -15,6 +15,7 @@ defmodule WallboardWeb.Router do
   # request carries the ingest key itself.
   scope "/ingest", WallboardWeb do
     post "/transcript", IngestController, :transcript
+    post "/status", IngestController, :status
     get "/install.sh", IngestController, :install
     get "/upload.sh", IngestController, :upload
   end

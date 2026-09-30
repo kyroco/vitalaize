@@ -37,6 +37,64 @@ defmodule WallboardWeb.IngestController do
     end
   end
 
+  # A status is one Claude hook's JSON: a notification or a question, never
+  # a transcript.
+  @max_status 256_000
+
+  @doc """
+  A collector's session starting or stopping to wait on its person (see
+  Wallboard.Remote). The body is the Claude hook's JSON; `at` is the
+  collector's clock in milliseconds.
+  """
+  def status(conn, params) do
+    settings = Wallboard.Settings.get()
+
+    with :ok <- authorize(conn, settings),
+         {:ok, body, conn} <- read_small(conn),
+         {:ok, hook} <- decode(body),
+         true <- Ingest.valid_name?(params["machine"]) || {:error, 422, "bad machine name"},
+         account = params["account"] || "claude",
+         true <- Ingest.valid_name?(account) || {:error, 422, "bad account name"},
+         :ok <- report(hook, params["machine"], account, params["at"]) do
+      send_resp(conn, 200, "ok\n")
+    else
+      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+    end
+  end
+
+  defp read_small(conn) do
+    case read_body(conn, length: @max_status, read_timeout: 15_000) do
+      {:ok, body, conn} -> {:ok, body, conn}
+      {:more, _, _} -> {:error, 413, "status too large"}
+      {:error, _} -> {:error, 400, "could not read the status"}
+    end
+  end
+
+  defp decode(body) do
+    case Jason.decode(body) do
+      {:ok, %{} = hook} -> {:ok, hook}
+      _ -> {:error, 422, "expected the hook's JSON"}
+    end
+  end
+
+  defp report(hook, machine, account, at) do
+    at =
+      case Integer.parse(to_string(at)) do
+        {n, ""} -> n
+        _ -> System.os_time(:millisecond)
+      end
+
+    case Wallboard.Remote.report(
+           hook,
+           machine,
+           Wallboard.Sources.Claude.account_label(account),
+           at
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:error, 422, reason}
+    end
+  end
+
   def install(conn, _params) do
     settings = Wallboard.Settings.get()
 

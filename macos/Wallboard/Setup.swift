@@ -366,7 +366,20 @@ enum Setup {
         }
     }
 
-    /// Saves the upload script in a Claude folder and adds the two hooks to
+    /// The Claude Code hooks the upload script runs from, with each one's
+    /// matcher. Stop and SessionEnd send the transcript; the rest tell the
+    /// hub the moment a session starts or stops waiting on you. The same
+    /// list is Wallboard.Archive.Ingest.hooks/0 on the board.
+    static let uploadHooks: [(event: String, matcher: String?)] = [
+        ("Stop", nil),
+        ("SessionEnd", nil),
+        ("Notification", "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input"),
+        ("PreToolUse", "AskUserQuestion"),
+        ("PostToolUse", nil),
+        ("UserPromptSubmit", nil),
+    ]
+
+    /// Saves the upload script in a Claude folder and adds its hooks to
     /// that folder's settings.json, after backing it up.
     static func hookUp(folder: String, script: String) throws {
         let dir = URL(fileURLWithPath: folder)
@@ -387,10 +400,14 @@ enum Setup {
 
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
         let hook: [String: Any] = ["type": "command", "command": scriptURL.path, "async": true, "timeout": 120]
-        for event in ["Stop", "SessionEnd"] {
+        for (event, matcher) in uploadHooks {
             var list = hooks[event] as? [[String: Any]] ?? []
             let has = list.contains { m in ((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path } }
-            if !has { list.append(["hooks": [hook]]) }
+            if !has {
+                var entry: [String: Any] = ["hooks": [hook]]
+                if let matcher = matcher { entry["matcher"] = matcher }
+                list.append(entry)
+            }
             hooks[event] = list
         }
         settings["hooks"] = hooks
@@ -406,7 +423,7 @@ enum Setup {
         if let data = try? Data(contentsOf: settingsURL),
            var settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            var hooks = settings["hooks"] as? [String: Any] {
-            for event in ["Stop", "SessionEnd"] {
+            for (event, _) in uploadHooks {
                 let list = (hooks[event] as? [[String: Any]] ?? []).filter { m in
                     !((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path }
                 }

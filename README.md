@@ -164,9 +164,15 @@ Run the tests with `mix test`.
   - Pushover: set `pushover_user` to your user key, and `pushover_token` to
     the API token of an app you make at pushover.net.
 
-  Alerts cover the Claude sessions on the machine that runs the board. A
-  hub does not alert for sessions on the Macs that send it their sessions,
-  since those arrive only when a turn ends.
+  Alerts cover the Claude sessions on the machine that runs the board and on
+  every machine that sends it sessions. A connected machine tells the hub
+  the moment one of its sessions starts waiting (a permission prompt, a
+  question, or a form from an MCP server), and the session shows as needing
+  you on the hub's board, marked with that machine's name, until it moves
+  on. If the hub cannot be reached, the session carries on as usual. A
+  machine connected by version 0.2.0 or earlier needs connecting once more (Connect
+  another Mac on the hub's Settings page) to add these hooks. Codex sessions
+  on other machines do not alert yet.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
   rather than per-token prices, so its cards show tokens and plan use. Codex
   writes nothing while it waits on you, so a Codex session never shows as
