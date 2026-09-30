@@ -21,6 +21,9 @@ else
   ROOT=$(cd "$HERE/.." && pwd)
   REL="$ROOT/_build/prod/rel/wallboard"
 fi
+# The board's process shows its folder with symlinks resolved, so resolve
+# them here too, or a board in a linked folder is never found to stop.
+[ -d "$REL" ] && REL=$(cd "$REL" && pwd -P)
 SETTINGS="$ROOT/settings.exs"
 NAME=vitalaize
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
