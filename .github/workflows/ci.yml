@@ -61,17 +61,19 @@ jobs:
             _build
           key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
+        id: deps
       - name: Code is formatted
         run: mix format --check-formatted
       # --force recompiles this project (not its dependencies), so a warning
       # in a file the cache already built still shows up and fails the run.
       # Runs even when the style check failed, so one push reports both.
       - name: No compiler warnings
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: mix compile --warnings-as-errors --force
       # --warnings-as-errors here covers the test files, which the compile
       # step above does not build.
-      - if: ${{ !cancelled() }}
+      - name: Tests
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: mix test --warnings-as-errors
 
   linux-download:
