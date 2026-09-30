@@ -160,6 +160,9 @@ defmodule Wallboard.Settings do
     },
     # Whether this team uses Korium. Off hides the Korium numbers.
     korium: %{enabled: true},
+    # Once a day, ask GitHub for the latest release and show a note by
+    # Settings when it is newer than this board.
+    updates: %{check: true},
     archive: %{
       enabled: true,
       # Save this Mac's own Claude sessions. Off makes a hub that only keeps
@@ -307,7 +310,9 @@ defmodule Wallboard.Settings do
           "0 stops the pages turning"},
          {[:timezone], "Time zone", :string, false, "Like America/New_York"},
          {[:token], "Board password", :secret, true,
-          "Optional. With one, other devices need ?token= once, and can change settings"}
+          "Optional. With one, other devices need ?token= once, and can change settings"},
+         {[:updates, :check], "Tell me when a new version is out", :boolean, false,
+          "Checks GitHub once a day"}
        ]},
       {"What this board shows",
        [
@@ -522,7 +527,8 @@ defmodule Wallboard.Settings do
     end)
   end
 
-  defp normalize(settings) do
+  @doc false
+  def normalize(settings) do
     settings
     |> update_in([:claude, :config_dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:codex, :dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
@@ -534,6 +540,7 @@ defmodule Wallboard.Settings do
       )
     end)
     |> update_in([:token], &blank_to_nil/1)
+    |> Map.update(:updates, @defaults.updates, &updates/1)
     |> update_in([:archive, :path], &db_path/1)
     |> update_in([:brand, :logo], fn
       nil -> nil
@@ -565,6 +572,13 @@ defmodule Wallboard.Settings do
         Path.join([base, "vitalaize", "wallboard.db"])
     end
   end
+
+  # The file may say `updates: false` or leave `check` out; the rest of the
+  # board only ever sees %{check: true} or %{check: false}.
+  defp updates(%{check: check}), do: %{check: check == true}
+  defp updates(%{}), do: @defaults.updates
+  defp updates(nil), do: @defaults.updates
+  defp updates(_), do: %{check: false}
 
   defp blank_to_nil(nil), do: nil
 

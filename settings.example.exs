@@ -47,6 +47,10 @@
     days_back: 21
   },
 
+  # Once a day the board asks GitHub for the latest VitalAIze release and,
+  # when it is newer, shows a note by Settings. false stops the check.
+  updates: %{check: true},
+
   # Alerts. When a Claude session starts waiting on you, every channel set up
   # here gets one alert. Leave them all nil and alerts are off.
   alerts: %{
