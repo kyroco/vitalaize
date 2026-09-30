@@ -1,6 +1,12 @@
 defmodule WallboardWeb.Router do
   use WallboardWeb, :router
 
+  # Scripts, styles, fonts and images stay open: the page has inline theme
+  # styles and a script, and the font stylesheet and logo can come from any
+  # address in settings. This stops what those do not need: other sites
+  # framing the board, plugins, and a changed <base> or form target.
+  @csp "frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -8,7 +14,7 @@ defmodule WallboardWeb.Router do
     plug WallboardWeb.Auth
     plug :protect_from_forgery
     plug :put_root_layout, html: {WallboardWeb.Layouts, :root}
-    plug :put_secure_browser_headers
+    plug :put_secure_browser_headers, %{"content-security-policy" => @csp}
   end
 
   # Other Macs sending Claude sessions. No cookies or forms here: each

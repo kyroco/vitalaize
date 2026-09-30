@@ -1,0 +1,18 @@
+# Sobelow's settings. CI runs `mix sobelow --config`, which reads this file,
+# and fails on any finding at medium confidence or above.
+[
+  verbose: false,
+  private: true,
+  skip: true,
+  router: "",
+  exit: "medium",
+  format: "txt",
+  out: "",
+  threshold: "medium",
+  # Config.HTTPS: the board serves plain HTTP on purpose. It runs on a
+  # home or office network and the iPad and other Macs reach it by its local
+  # address, where there is no certificate to serve.
+  ignore: ["Config.HTTPS"],
+  ignore_files: [],
+  version: false
+]

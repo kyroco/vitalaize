@@ -1,0 +1,23 @@
+# Weekly pull requests for newer versions of the Elixir packages (mix) and of
+# the actions CI uses. Each week's updates come as one pull request per kind,
+# not one per package. GitHub cannot open automatic security-fix pull requests
+# for Elixir packages, so these weekly ones are how those fixes arrive.
+version: 2
+updates:
+  - package-ecosystem: mix
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      elixir-packages:
+        patterns: ["*"]
+
+  # CI pins each action to a commit with its version beside it; Dependabot
+  # updates both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

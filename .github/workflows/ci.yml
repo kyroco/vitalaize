@@ -1,5 +1,6 @@
 # Runs the tests, plus the code style and compiler warning checks, on Linux
-# and macOS for every pull request and every push to main. On a version tag
+# and macOS, and a security scan of the Elixir code on Linux, for every pull
+# request and every push to main. On a version tag
 # (v0.3.0) it also builds the two Linux downloads on real Intel and ARM
 # machines, checks each one starts, and attaches them to that tag's GitHub
 # release.
@@ -75,6 +76,49 @@ jobs:
       - name: Tests
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: mix test --warnings-as-errors
+
+  # Sobelow reads the Elixir code for security problems, since GitHub's own
+  # scanner (CodeQL) cannot read Elixir. Its settings, and each finding it is
+  # told to skip with the reason, are in .sobelow-conf. The check fails on
+  # anything at medium confidence or above.
+  security:
+    name: Security scan (Sobelow)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        id: beam
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      # The same cache as the Linux tests, so it is usually already there.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - name: Sobelow
+        id: sobelow
+        run: mix sobelow --config --format sarif > sobelow.sarif
+      # Puts the findings under the repo's Security tab. A pull request from
+      # a fork gets no permission to upload, so there the failing check
+      # above is the whole report.
+      - name: Upload the findings to GitHub
+        if: ${{ !cancelled() && hashFiles('sobelow.sarif') != '' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: sobelow.sarif
+          category: sobelow
 
   linux-download:
     name: Linux download (${{ matrix.arch }})
