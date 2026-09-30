@@ -25,7 +25,7 @@ defmodule Wallboard.HubTest do
 
   test "macOS attribute files in an upload are left out, and the session is saved" do
     start_supervised!({Store, path: ":memory:"})
-    dir = Path.join(System.tmp_dir!(), "wallboard-hub-test-#{System.unique_integer([:positive])}")
+    dir = Wallboard.Fixtures.tmp_path("wallboard-hub-test")
     File.mkdir_p!(dir)
 
     line =
@@ -109,7 +109,7 @@ defmodule Wallboard.HubTest do
     script = Ingest.install_script("http://192.168.1.20:4747", "abc")
     [_, rest] = String.split(script, "<<'WALLBOARD_PY'\n", parts: 2)
     [python, _] = String.split(rest, "\nWALLBOARD_PY", parts: 2)
-    path = Path.join(System.tmp_dir!(), "wallboard-connect-test.py")
+    path = Wallboard.Fixtures.tmp_path("wallboard-connect-test") <> ".py"
     File.write!(path, python)
 
     if System.find_executable("python3") do
@@ -121,7 +121,7 @@ defmodule Wallboard.HubTest do
 
   test "the upload script is valid shell" do
     script = Ingest.install_script("http://192.168.1.20:4747", "abc")
-    path = Path.join(System.tmp_dir!(), "wallboard-install-test.sh")
+    path = Wallboard.Fixtures.tmp_path("wallboard-install-test") <> ".sh"
     File.write!(path, script)
     assert {_, 0} = System.cmd("sh", ["-n", path])
     File.rm(path)

@@ -218,15 +218,8 @@ defmodule Wallboard.RemoteTest do
   end
 
   defp tmp_dir do
-    # unique_integer starts over in every test run, so the OS process id
-    # keeps two runs at once on the same machine out of each other's folder.
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "wallboard-remote-#{System.pid()}-#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(dir)
+    dir = Wallboard.Fixtures.tmp_path("wallboard-remote")
+    File.mkdir!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     dir
   end
@@ -284,9 +277,12 @@ defmodule Wallboard.RemoteTest do
   # script sits in its own folder, so matching the script's full path sees
   # only this test's loops: never another test run's on the same machine,
   # nor a real collector's.
-  defp loops(ctx) do
+  defp loops(ctx), do: ctx |> loop_roots() |> length()
+
+  defp loop_roots(ctx) do
     procs = loop_procs(ctx)
-    Enum.count(procs, fn {_, ppid} -> not Enum.any?(procs, &(elem(&1, 0) == ppid)) end)
+    pids = MapSet.new(procs, &elem(&1, 0))
+    for {pid, ppid} <- procs, not MapSet.member?(pids, ppid), do: pid
   end
 
   defp loop_procs(ctx) do
@@ -300,17 +296,32 @@ defmodule Wallboard.RemoteTest do
         do: {pid, ppid}
   end
 
-  # Stops this test's loops and waits until they are gone. Only the process
-  # ids found above are signalled, never a pattern the whole machine matches.
+  # Stops this test's loops and waits until they are gone, never signalling
+  # a pattern the whole machine matches. A loop is started in its own
+  # session, so its process group holds it and everything it runs (a check,
+  # a sleep, the stand-in claude); the group is what is stopped. A loop
+  # still there after five seconds is killed outright, and one that
+  # survives even that fails the test rather than being left running.
   defp stop_loops(ctx) do
-    case Enum.map(loop_procs(ctx), &elem(&1, 0)) do
-      [] -> :ok
-      pids -> System.cmd("kill", pids, stderr_to_stdout: true)
+    with :running <- stop_loops(ctx, "-TERM"),
+         :running <- stop_loops(ctx, "-KILL") do
+      flunk("upload loops still running: #{inspect(loop_roots(ctx))}")
     end
+  end
 
-    Enum.reduce_while(1..50, nil, fn _, _ ->
-      if loops(ctx) == 0, do: {:halt, :ok}, else: {:cont, Process.sleep(100)}
-    end)
+  defp stop_loops(ctx, signal) do
+    case loop_roots(ctx) do
+      [] ->
+        :ok
+
+      roots ->
+        groups = Enum.map(roots, &("-" <> &1))
+        System.cmd("kill", [signal, "--" | groups ++ roots], stderr_to_stdout: true)
+
+        Enum.reduce_while(1..50, :running, fn _, _ ->
+          if loops(ctx) == 0, do: {:halt, :ok}, else: {:cont, Process.sleep(100)}
+        end)
+    end
   end
 
   defp this_machine do
@@ -338,7 +349,10 @@ defmodule Wallboard.RemoteTest do
         })
       end
 
-      script = Path.join(dir, "wallboard-upload.sh")
+      # Not named wallboard-upload.sh: copies of this file from before
+      # VIT-32 stop every `upload.sh --watch <session>` on the machine, and
+      # would stop this run's loops if they ran beside it.
+      script = Path.join(dir, "upload-under-test")
       File.write!(script, Ingest.upload_script(hub, Ingest.token()))
       %{dir: dir, script: script, settings: settings, hub: hub}
     end
