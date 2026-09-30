@@ -123,11 +123,11 @@
     restartTimer();
   };
 
-  // An address ending in a tab's name (#git, #new_relic) opens on it, and
-  // #page2 still opens the second tab.
+  // An address ending in a tab's name (#git, #new_relic) opens on it.
+  // #page2, from when New Relic was page 2, still opens New Relic.
   const startPage = () => {
-    const want = location.hash.slice(1);
-    if (want === "page2") return 1;
+    let want = location.hash.slice(1);
+    if (want === "page2") want = "new_relic";
     const tab = Array.from(document.querySelectorAll("[data-tab]")).find((t) => t.dataset.tab === want);
     return tab ? parseInt(tab.dataset.goto, 10) : page;
   };

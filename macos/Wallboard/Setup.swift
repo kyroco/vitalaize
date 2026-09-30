@@ -154,12 +154,13 @@ enum Setup {
             }
         }
 
-        // Every repository the sessions work in: the busiest first, and its
-        // workflows fill in the questions; the rest follow it.
+        // The repositories the sessions work in: the busiest first, and its
+        // workflows fill in the questions; the rest follow it. Six at most,
+        // since each costs about 600 GitHub calls an hour of the 5,000 allowed.
         let found = Detect.githubRepos(folders: c.claudeFolders)
         if let repo = found.first {
             c.repo = repo
-            c.otherRepos = Array(found.dropFirst())
+            c.otherRepos = Array(found.dropFirst().prefix(5))
             c.branch = Detect.defaultBranch(repo: repo) ?? "main"
             let guess = Detect.guessWorkflows(Detect.workflows(repo: repo))
             c.gateWorkflow = guess.gate
@@ -245,9 +246,10 @@ enum Setup {
         if c.importedSettings != nil {
             return header + """
             # Your earlier settings file is the base; the answers below win.
+            # A repository the base gives settings of its own keeps them.
             {base, _} = Code.eval_file(Path.join(__DIR__, "settings.imported.exs"))
 
-            Wallboard.Settings.merge(
+            Wallboard.Settings.apply_overrides(
               base,
               \(answers)
             )

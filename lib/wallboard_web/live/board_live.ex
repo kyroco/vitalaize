@@ -284,9 +284,12 @@ defmodule WallboardWeb.BoardLive do
 
   # Every repository, the ones with a column on the Git tab and the quiet
   # rest, and the first one's summary, which the Dev and Prod tiles read.
+  # The repository list comes from the settings as they are now, like the
+  # poller's, so one added or removed on the settings page shows without a
+  # reload.
   defp derive_github(socket) do
-    %{github: facts, settings: settings, now: now} = socket.assigns
-    repos = GitHub.repos(facts, settings, now)
+    %{github: facts, now: now} = socket.assigns
+    repos = GitHub.repos(facts, Settings.get(), now)
     {columns, quiet} = GitHub.arrange(repos)
 
     assign(socket,
@@ -1828,9 +1831,14 @@ defmodule WallboardWeb.BoardLive do
   attr :meta, :map, required: true
 
   defp git_tab(assigns) do
+    assigns = assign(assigns, skipped: Settings.skipped_repos(Settings.get()))
+
     ~H"""
     <div class="git-tab">
       <div :if={@meta.error} class="stale-note small">GitHub: {@meta.error}</div>
+      <div :if={@skipped != []} class="stale-note small">
+        Left out of settings, not owner/name: {Enum.join(@skipped, ", ")}
+      </div>
       <div
         class="git-cols"
         style={"grid-template-columns: repeat(#{max(length(@columns), 1)}, minmax(0, 1fr))"}
@@ -1841,7 +1849,10 @@ defmodule WallboardWeb.BoardLive do
         <div class="heading-row quiet-head">
           <h2 class="kicker">Quiet repos · {length(@quiet)}</h2>
           <span class="counts muted-ink">
-            nothing running or failed in 6 hours; one moves up the moment it runs or goes red
+            {if Enum.any?(@quiet, & &1.hot?),
+              do: "more are busy than fit; the four busiest have columns",
+              else:
+                "nothing running or failed in 6 hours; one moves up the moment it runs or goes red"}
           </span>
         </div>
         <div class="quiet-list">
@@ -1911,12 +1922,13 @@ defmodule WallboardWeb.BoardLive do
         do: "#{length(@r.s.running)} running",
         else: "Nothing running"}</span>
       <span class="ql-last">
+        <%!-- A repository that cannot be read says so before anything old. --%>
         <%= cond do %>
+          <% @r.error -> %>
+            <span class="stale-note">stale: {@r.error}</span>
           <% @last -> %>
             Last: {@last.label} · {@last.what}
             <span class={result_class(@last.conclusion)}>{result_icon(@last.conclusion)}</span>
-          <% @r.error -> %>
-            <span class="stale-note">stale: {@r.error}</span>
           <% true -> %>
             No runs in the last day
         <% end %>

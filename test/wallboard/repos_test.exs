@@ -57,13 +57,26 @@ defmodule Wallboard.ReposTest do
       assert Enum.map(api.lanes, & &1.label) == ["CI", "Staging", "Production"]
     end
 
-    test "a bad or repeated entry is left out" do
+    test "the setup app's answers laid over an earlier file keep a repo's own settings" do
+      # What a file written by the Mac app evaluates: the earlier file, then
+      # the answers, with one repository added.
+      {base, _} = load("several_repos.exs")
+      answers = %{github: %{repos: ["acme/api", "acme/mobile", "acme/web", "acme/docs"]}}
+
+      merged = Settings.merge(Settings.defaults(), Settings.apply_overrides(base, answers))
+
+      assert [_, %{repo: "acme/mobile", gate_workflow: "build.yml"}, _, %{repo: "acme/docs"}] =
+               Settings.github_repos(merged)
+    end
+
+    test "a bad or repeated entry is left out, and the Git tab can name it" do
       settings =
         Settings.merge(Settings.defaults(), %{
           github: %{repos: ["acme/api", "not a repo", "acme/api", %{branch: "x"}]}
         })
 
       assert Settings.repo_names(settings) == ["acme/api"]
+      assert Settings.skipped_repos(settings) == ["not a repo", "%{branch: \"x\"}"]
     end
 
     test "the settings page shows the repos one per line, and a list saved there keeps a repo's own settings" do
@@ -89,12 +102,29 @@ defmodule Wallboard.ReposTest do
                Settings.github_repos(after_)
     end
 
-    test "a repo the page saved before several repos becomes the list" do
-      assert Settings.atomize(%{"github" => %{"repo" => "acme/shop"}}) ==
-               %{github: %{repos: ["acme/shop"]}}
+    test "a repo the page saved before several repos is still followed, until a file lists repos" do
+      saved = Settings.atomize(%{"github" => %{"repo" => "acme/shop"}})
+      assert saved == %{github: %{repo: "acme/shop"}}
 
+      # An old one-repo file: the page's repo wins, as it always did.
+      {_, old_file} = load("one_repo.exs")
+
+      after_ =
+        Settings.apply_overrides(
+          %{old_file | github: %{old_file.github | repo: "acme/other"}},
+          saved
+        )
+
+      assert Settings.repo_names(after_) == ["acme/shop"]
+
+      # A file that now lists several repos (a Reconfigure, say) wins over it.
+      {_, several} = load("several_repos.exs")
+      after_ = Settings.apply_overrides(several, saved)
+      assert Settings.repo_names(after_) == ["acme/api", "acme/mobile", "acme/web"]
+
+      # A list saved on the page since then is read as is.
       assert Settings.atomize(%{"github" => %{"repo" => "acme/shop", "repos" => ["a/b", "c/d"]}}) ==
-               %{github: %{repos: ["a/b", "c/d"]}}
+               %{github: %{repo: "acme/shop", repos: ["a/b", "c/d"]}}
     end
   end
 

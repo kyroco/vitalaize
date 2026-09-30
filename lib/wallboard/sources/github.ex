@@ -142,9 +142,12 @@ defmodule Wallboard.Sources.GitHub do
           end
         end)
 
-      # If every deploy call failed, keep what we had rather than blanking the tiles.
+      # If every deploy call failed, keep what we had rather than blanking the
+      # tiles, and wait the usual time before asking again: a repository
+      # without these workflow files fails every time, and asking on every
+      # poll would spend GitHub's hourly limit on nothing.
       if runs == [] and prev,
-        do: %{runs: prev.deploys, checked_at: prev.deploys_checked_at},
+        do: %{runs: prev.deploys, checked_at: now},
         else: %{runs: runs, checked_at: now}
     end
   end

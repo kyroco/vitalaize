@@ -484,12 +484,12 @@ defmodule Wallboard.Settings do
     end
   end
 
-  # Before several repositories, the page saved one as github.repo. It
-  # becomes the list, so a board updated in place keeps following it.
-  defp legacy_repo(%{"github" => %{"repo" => repo} = gh}) when is_binary(repo) do
-    if Map.has_key?(gh, "repos") or not repo_name?(repo),
-      do: %{},
-      else: %{github: %{repos: [repo]}}
+  # Before several repositories, the page saved one as github.repo. It stays
+  # that, so a board updated in place keeps following it just as before: it
+  # stands in for the file's `repo`, and a file that lists `repos` wins. The
+  # page shows it, and saving the page turns it into the list.
+  defp legacy_repo(%{"github" => %{"repo" => repo}}) when is_binary(repo) do
+    if repo_name?(repo), do: %{github: %{repo: repo}}, else: %{}
   end
 
   defp legacy_repo(_), do: %{}
@@ -540,6 +540,22 @@ defmodule Wallboard.Settings do
     |> Enum.filter(&(&1 && repo_name?(&1.repo)))
     |> Enum.uniq_by(& &1.repo)
   end
+
+  @doc "Entries in `repos` that are left out because they are not owner/name, as written."
+  def skipped_repos(settings) do
+    settings.github
+    |> Map.get(:repos)
+    |> List.wrap()
+    |> Enum.map(fn
+      %{repo: name} -> name
+      name -> name
+    end)
+    |> Enum.reject(&repo_name?/1)
+    |> Enum.map(&inspect_name/1)
+  end
+
+  defp inspect_name(name) when is_binary(name), do: name
+  defp inspect_name(other), do: inspect(other)
 
   @doc "The names (owner/name) of the repositories the board follows."
   def repo_names(settings), do: settings |> github_repos() |> Enum.map(& &1.repo)
