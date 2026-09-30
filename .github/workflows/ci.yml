@@ -195,14 +195,31 @@ jobs:
           fi
           echo "Hex $hex"
       # The audit stops on a lock that does not match mix.exs, so fetch first.
-      - run: mix deps.get
+      # --check-locked fails when mix.lock is out of date instead of
+      # rewriting it, so the audit checks the lock that is committed.
+      - run: mix deps.get --check-locked
+      # Hex lets mix.exs (or HEX_IGNORE_* variables) name advisories and
+      # retired packages to ignore, and passes when only those are found.
+      # Any ignored finding fails this step too, so a pull request cannot
+      # turn the check off; the same idea as Sobelow's --no-config above.
       - name: No known security holes or retired packages
-        run: mix hex.audit
+        run: |
+          if mix hex.audit > audit.log 2>&1; then status=0; else status=$?; fi
+          cat audit.log
+          if grep -q '^Ignored' audit.log; then
+            echo "::error::A security advisory or retired package is being ignored. Update the package instead."
+            exit 1
+          fi
+          exit "$status"
 
   # Sends the Elixir packages in mix.lock to GitHub's dependency graph, so
   # the Security tab raises a Dependabot alert when one of them gets a known
   # security hole, even with no new push. Only on a push to main: sending
-  # needs write access, which pull request code must not get.
+  # needs write access, which pull request code must not get. The action
+  # reads every package, indirect ones too, from mix.lock without fetching
+  # them, so no package's own code runs while the job holds write access.
+  # It checks the build attestation of the program it downloads, and that
+  # release is immutable on GitHub, so its files cannot be swapped.
   dependency-graph:
     name: Dependency graph
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -219,7 +236,8 @@ jobs:
   linux-download:
     name: Linux download (${{ matrix.arch }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    # A download never ships with a package that has a known security hole.
+    needs: [test, dependency-audit]
     strategy:
       matrix:
         include:
