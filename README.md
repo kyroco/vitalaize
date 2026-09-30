@@ -219,6 +219,15 @@ one, delete it from the release first.
   time. The hook keeps only the latest thing Codex sent it for each session
   and each helper agent, in `~/.codex/vitalaize`, and the board removes those
   after a week.
+
+  This is new and has not yet been seen working with a real Codex, so it may
+  mark a card wrongly or send a wrong alert. To help check it, turn on
+  recording with `touch ~/.codex/vitalaize/capture-on`. Every call Codex
+  makes to the hook is then added to `~/.codex/vitalaize/payloads.jsonl`.
+  Use Codex as usual (a run where it asks for your approval is the most
+  useful), then `rm ~/.codex/vitalaize/capture-on` and send that file to the
+  VitalAIze team. It holds what you typed and what Codex ran, so read it
+  first and leave out anything private.
 - **Production page.** Set `new_relic: %{enabled: false}` if you do not use
   New Relic. Otherwise set `api_key_ref` to where your New Relic User API key
   lives in 1Password (`"op://Vault/Item/field"`), `account_id`, and the
