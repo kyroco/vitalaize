@@ -69,6 +69,8 @@ struct Choices: Codable {
 struct Installed: Codable {
     var choices: Choices
     var hookedFolders: [String]
+    // Optional so records saved before Codex uploads still load.
+    var hookedCodex: String? = nil
     var installedAt: Date
 }
 
@@ -269,9 +271,13 @@ enum Setup {
 
     /// Installs everything the choices ask for. `say` reports each step.
     static func install(_ c: Choices, say: (String) -> Void) throws {
+        // Kept from an earlier setup, so Uninstall still finds Codex's hooks
+        // when this run could not reach them. The earlier record stays
+        // where Uninstall looks until this run has written its own: the
+        // remembered data folder moves only at the end.
+        var hookedCodex: String? = installed()?.hookedCodex
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
-        dataFolder = c.dataFolder
         var hooked: [String] = []
 
         if c.role.runsBoard {
@@ -309,15 +315,30 @@ enum Setup {
                 try hookUp(folder: folder, script: script)
                 hooked.append(folder)
             }
+            if Detect.usesCodex() {
+                let folder = home.appendingPathComponent(".codex").path
+                say("Connecting \(folder) to the hub")
+                // Codex is extra: a problem here is reported, and the Claude
+                // folders stay connected.
+                do {
+                    let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh")
+                    try hookUp(folder: folder, script: script, file: "hooks.json")
+                    hookedCodex = folder
+                    say("Codex skips a new hook until you trust it: type /hooks in Codex and trust the two wallboard-upload.sh hooks")
+                } catch {
+                    say("Codex was not connected. \(error.localizedDescription)")
+                }
+            }
         }
 
-        let record = Installed(choices: c, hookedFolders: hooked, installedAt: Date())
+        let record = Installed(choices: c, hookedFolders: hooked, hookedCodex: hookedCodex, installedAt: Date())
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = .prettyPrinted
         var saved = record
         saved.choices.hubKey = ""   // the key lives in the upload script, not here
         try enc.encode(saved).write(to: data.appendingPathComponent("install.json"))
+        dataFolder = c.dataFolder
         say("Done")
     }
 
@@ -375,37 +396,41 @@ enum Setup {
 
     /// The hub's upload script. A wrong address or key fails here, before
     /// anything on this Mac changes.
-    static func fetchUploadScript(hub: String, key: String) throws -> String {
+    static func fetchUploadScript(hub: String, key: String, name: String = "upload.sh") throws -> String {
         let base = hub.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         let r = Shell.run("/usr/bin/curl", ["-sS", "-w", "\n%{http_code}", "--max-time", "15",
-                                           "-H", "Authorization: Bearer \(key)", "\(base)/ingest/upload.sh"], timeout: 20)
+                                           "-H", "Authorization: Bearer \(key)", "\(base)/ingest/\(name)"], timeout: 20)
         let lines = r.output.components(separatedBy: "\n")
         let code = lines.last ?? ""
         let body = lines.dropLast().joined(separator: "\n")
         switch code {
         case "200": return body + "\n"
         case "401": throw Failure.step("The hub turned down that key. Copy it again from the hub's settings page.")
+        // Only the Codex script is fetched after the Claude one worked, so
+        // there a 404 means a hub from before Codex uploads.
+        case "404" where name != "upload.sh": throw Failure.step("The hub is too old to take Codex sessions. Update it, then run this setup again.")
         case "404": throw Failure.step("That board has its archive turned off, so it cannot take sessions.")
         default: throw Failure.step("Could not reach a hub at \(base). Is the board running there?")
         }
     }
 
     /// Saves the upload script in a Claude folder and adds the two hooks to
-    /// that folder's settings.json, after backing it up.
-    static func hookUp(folder: String, script: String) throws {
+    /// that folder's settings.json, after backing it up. For ~/.codex the
+    /// file is hooks.json, which has the same shape.
+    static func hookUp(folder: String, script: String, file: String = "settings.json") throws {
         let dir = URL(fileURLWithPath: folder)
         let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
 
-        let settingsURL = dir.appendingPathComponent("settings.json")
+        let settingsURL = dir.appendingPathComponent(file)
         var settings: [String: Any] = [:]
         if let data = try? Data(contentsOf: settingsURL), !data.isEmpty {
             guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw Failure.step("\(settingsURL.path) is not a settings object, so it was left alone.")
             }
             settings = obj
-            let backup = dir.appendingPathComponent("settings.json.before-wallboard")
+            let backup = dir.appendingPathComponent("\(file).before-wallboard")
             if !fm.fileExists(atPath: backup.path) { try data.write(to: backup) }
         }
 
@@ -422,11 +447,11 @@ enum Setup {
         try out.write(to: settingsURL, options: .atomic)
     }
 
-    /// Takes the hooks back out; everything else in settings.json stays.
-    static func unhook(folder: String) {
+    /// Takes the hooks back out; everything else in the file stays.
+    static func unhook(folder: String, file: String = "settings.json") {
         let dir = URL(fileURLWithPath: folder)
         let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
-        let settingsURL = dir.appendingPathComponent("settings.json")
+        let settingsURL = dir.appendingPathComponent(file)
         if let data = try? Data(contentsOf: settingsURL),
            var settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            var hooks = settings["hooks"] as? [String: Any] {
@@ -454,6 +479,10 @@ enum Setup {
         for folder in record?.hookedFolders ?? [] {
             say("Disconnecting \(folder)")
             unhook(folder: folder)
+        }
+        if let folder = record?.hookedCodex {
+            say("Disconnecting \(folder)")
+            unhook(folder: folder, file: "hooks.json")
         }
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")
