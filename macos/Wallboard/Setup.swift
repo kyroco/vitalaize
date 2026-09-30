@@ -417,9 +417,10 @@ enum Setup {
         defer { try? fm.removeItem(at: tmp) }
         let bodyFile = tmp.appendingPathComponent("body").path
         let headerFile = tmp.appendingPathComponent("headers").path
-        let r = Shell.run("/usr/bin/curl", ["-sS", "-o", bodyFile, "-D", headerFile, "-w", "%{http_code}",
+        let r = Shell.run("/usr/bin/curl", ["-sS", "-o", bodyFile, "-D", headerFile, "-w", "\n%{http_code}",
                                            "--max-time", "15", "\(base)/ingest/\(name)"], timeout: 20)
-        let code = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Shell.run keeps curl's warnings in its output: the code is the last line.
+        let code = r.output.components(separatedBy: "\n").last?.trimmingCharacters(in: .whitespaces) ?? ""
         switch code {
         case "200":
             guard let data = fm.contents(atPath: bodyFile), let body = String(data: data, encoding: .utf8) else {
@@ -433,7 +434,7 @@ enum Setup {
             guard let sent = sent else {
                 throw Failure.step("The hub is too old for this version of VitalAIze. Update it, then run this setup again.")
             }
-            guard sent == hmac(key: connectKey, message: "vitalaize script\n" + body) else {
+            guard sent == hmac(key: connectKey, message: "vitalaize script\n\(name)\n" + body) else {
                 throw Failure.step("The hub's script did not match the connect key. Copy the key again from the hub's Settings page. If it still fails, something on the network changed the script.")
             }
             return body

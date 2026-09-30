@@ -205,12 +205,14 @@ one, delete it from the release first.
   sends, or send an old request again. The connect command checks the
   script it downloads before running it, and asks for the connect key at a
   prompt that keeps it hidden and out of Terminal's history. The connect
-  key shows, and machines can be disconnected, only on the hub's own Mac.
-  Settings lists every connected machine, and Disconnect takes one
-  machine's key away without touching the others. Both clocks need to be
-  right to within five minutes, which they are when the machines set their
-  time automatically. The hub refuses an upload that would unpack to more
-  than 512 MB, and reads at most two uploads at once.
+  command and key show, machines can be disconnected, and the address
+  other machines use can be changed, only on the hub's own Mac. Settings
+  lists every connected machine, and Disconnect takes one machine's key
+  away without touching the others. Both clocks need to be right to within
+  five minutes, which they are when the machines set their time
+  automatically. The hub refuses an upload that would unpack to more than
+  512 MB, and keeps an upload on disk, not in memory, until its signature
+  checks out.
 
   What this does not cover. The hub is reached over plain http, so the
   session transcripts themselves cross your network unencrypted, where
@@ -219,8 +221,8 @@ one, delete it from the release first.
   iPad warns about, so the board does not use it.) And treat the connect
   key like a password: someone who has it, and who also records your
   network while a machine connects or sends, can work out that machine's
-  key. If it may have been seen, make a new connect key, disconnect each
-  machine and connect it again.
+  key. If it may have been seen, make a new connect key on the Settings
+  page: that disconnects every machine, and you connect each one again.
 - **Alerts.** Once each time a session starts waiting on you, the board sends
   an alert on every channel you set up, in `alerts` or on the Settings page:
   - Messages (Mac only): set `phone` to your number. The Mac sends an iMessage

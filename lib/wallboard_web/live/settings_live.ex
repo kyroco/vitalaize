@@ -75,15 +75,16 @@ defmodule WallboardWeb.SettingsLive do
   @doc false
   def load(socket) do
     settings = Settings.get()
+    hub_url = IngestController.hub_url(settings)
 
     assign(socket,
       settings: settings,
       values: values(settings),
-      hub_url: IngestController.hub_url(settings),
+      hub_url: hub_url,
       key: if(settings.archive.enabled, do: MachineKeys.connect_key()),
       install_sha:
         if(settings.archive.enabled,
-          do: sha256(Ingest.install_script(IngestController.hub_url(settings)))
+          do: MachineKeys.sha256(Ingest.install_script(hub_url))
         ),
       keys: if(settings.archive.enabled, do: MachineKeys.list(), else: []),
       old_tries: if(settings.archive.enabled, do: MachineKeys.old_tries(), else: []),
@@ -149,6 +150,13 @@ defmodule WallboardWeb.SettingsLive do
   def handle_event("save", %{"s" => values}, socket) do
     before = Settings.get()
 
+    # The address other machines use goes into the scripts the board signs,
+    # so only this Mac may change it.
+    values =
+      if socket.assigns.local?,
+        do: values,
+        else: Map.put(values, "archive.hub_url", to_text(:string, before.archive[:hub_url]))
+
     case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
       {:ok, overrides} ->
         after_ = Settings.save_overrides(overrides)
@@ -190,8 +198,12 @@ defmodule WallboardWeb.SettingsLive do
   def handle_event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
     do: {:noreply, assign(socket, confirm_new_key?: true)}
 
+  # A new connect key is for when the old one may have been seen, and
+  # whoever saw it may have worked out the keys of machines connected with
+  # it. So every machine is disconnected too, to connect again.
   def handle_event("new_key", _params, socket) do
     MachineKeys.new_connect_key()
+    Enum.each(MachineKeys.list(), &MachineKeys.revoke(&1.key_id))
 
     {:noreply,
      socket
@@ -199,7 +211,7 @@ defmodule WallboardWeb.SettingsLive do
      |> assign(
        confirm_new_key?: false,
        show_key?: true,
-       notice: "New connect key made. Machines already connected keep sending."
+       notice: "New connect key made, and every machine disconnected. Connect each one again."
      )}
   end
 
@@ -311,9 +323,10 @@ defmodule WallboardWeb.SettingsLive do
           hooks.json. Codex runs a new hook only once you trust it, so type /hooks in Codex there
           afterwards and trust the two wallboard-upload.sh hooks.
         </p>
-        <pre class="settings-code">{install_command(@hub_url, @install_sha)}</pre>
+        <pre :if={@local?} class="settings-code">{install_command(@hub_url, @install_sha)}</pre>
         <p :if={!@local?} class="detail-note">
-          Open this page on the Mac that runs the board to see the connect key or disconnect a machine.
+          Open this page on the Mac that runs the board to copy the connect command and key, or to
+          disconnect a machine. Copied here, the command could have been changed on the way.
         </p>
         <pre :if={@local?} class="settings-code">Connect key: {if @show_key?, do: @key, else: "••••••••"}</pre>
         <div :if={@local?} class="row">
@@ -322,7 +335,7 @@ defmodule WallboardWeb.SettingsLive do
           </button>
           <button class="link-button" phx-click="new_key">
             {if @confirm_new_key?,
-              do: "Tap again: machines already connected keep sending",
+              do: "Tap again: every machine is disconnected, to connect again",
               else: "Make a new connect key"}
           </button>
         </div>
@@ -471,8 +484,6 @@ defmodule WallboardWeb.SettingsLive do
       ~s[if test "$( (sha256sum || shasum -a 256) < "$f" 2>/dev/null | cut -c1-64)" = #{sha}; ] <>
       ~s[then sh "$f"; else echo "That is not the hub's connect script." >&2; fi; rm -f "$f"]
   end
-
-  defp sha256(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
 
   defp day(unix), do: Calendar.strftime(DateTime.from_unix!(unix), "%b %-d")
 end

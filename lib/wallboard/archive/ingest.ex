@@ -43,23 +43,6 @@ defmodule Wallboard.Archive.Ingest do
   def max_unpacked, do: Application.get_env(:wallboard, :max_unpacked, @max_unpacked)
 
   @doc """
-  A counter of the uploads being read right now, made on first use. Two
-  first uses at once may each make one; the one that loses is dropped,
-  which at worst lets one extra upload in, once.
-  """
-  def upload_slots do
-    case :persistent_term.get({__MODULE__, :slots}, nil) do
-      nil ->
-        ref = :atomics.new(1, signed: true)
-        :persistent_term.put({__MODULE__, :slots}, ref)
-        ref
-
-      ref ->
-        ref
-    end
-  end
-
-  @doc """
   True for a machine or account name safe to use in a folder name. A name
   of only dots is not one: "." and ".." would reach outside the inbox.
   Nothing may follow the name, not even a newline.
@@ -359,7 +342,7 @@ defmodule Wallboard.Archive.Ingest do
     # Claude Code runs this from its hooks in the background, so it never
     # blocks Claude, and a hub it cannot reach costs at most a few seconds
     # of this script's own time. A failed send is tried again next time.
-    HUB="#{hub_url}"
+    HUB='#{hub_url}'
     #{signing()}
     # Without this machine's key there is nothing to send with. The hook's
     # JSON is still read, so Claude never writes to a closed pipe.
@@ -629,7 +612,7 @@ defmodule Wallboard.Archive.Ingest do
     # wallboard at #{hub_url}. Codex runs this from a Stop and a SessionEnd
     # hook. It answers Codex at once and sends from the background, so
     # Codex never waits on it.
-    HUB="#{hub_url}"
+    HUB='#{hub_url}'
     # How long a turn that ends within a minute of the last send waits
     # before it is sent. Tests shorten it.
     WAIT="${WALLBOARD_WAIT_SECONDS:-60}"
@@ -806,14 +789,17 @@ defmodule Wallboard.Archive.Ingest do
     #!/bin/sh
     # Connects this machine's Claude Code and Codex to the wallboard at #{hub_url}.
     set -e
-    HUB="#{hub_url}"
+    HUB='#{hub_url}'
     #{signing()}
     CONNECT_KEY="${WALLBOARD_KEY:-}"
     if [ -z "$CONNECT_KEY" ] && (: < /dev/tty) 2>/dev/null; then
       printf "Paste the connect key from the hub's Settings page (it stays hidden): " > /dev/tty
+      # Ctrl-C at the prompt must not leave the terminal hiding what is typed.
+      trap 'stty echo < /dev/tty 2>/dev/null; exit 130' INT TERM
       stty -echo < /dev/tty 2>/dev/null || true
       read -r CONNECT_KEY < /dev/tty || CONNECT_KEY=""
       stty echo < /dev/tty 2>/dev/null || true
+      trap - INT TERM
       printf '\\n' > /dev/tty
     fi
     # Spaces or a line end pasted with the key are not part of it.
@@ -923,7 +909,7 @@ defmodule Wallboard.Archive.Ingest do
     #{upload_script(hub_url)}WALLBOARD_UPLOAD
     chmod 700 "$SCRIPT"
     add_hooks "$CONF/settings.json" "$SCRIPT" '#{hooks}'
-    echo "Connected as $machine. Claude sessions on this machine now go to #{hub_url}."
+    echo "Connected as $machine. Claude sessions on this machine now go to $HUB."
     echo "Your previous Claude settings are in $CONF/settings.json.before-wallboard."
 
     if [ -d "$CODEX" ]; then

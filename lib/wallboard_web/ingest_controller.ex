@@ -13,16 +13,9 @@ defmodule WallboardWeb.IngestController do
 
   alias Wallboard.Archive.{Ingest, MachineKeys}
 
-  # A compressed session is far smaller than what it unpacks to (JSON lines
-  # shrink about tenfold), so this leaves room for the largest one the
-  # unpacking limit lets through.
-  @max_upload 128_000_000
-
-  # How many uploads the hub reads at once. Key ids are not secret, so
-  # anyone on the network can start one, and each holds its body in memory
-  # until its signature is checked. Collectors send again on their next
-  # turn, so one turned away here is not lost.
-  @upload_slots 2
+  # How long one upload may take to arrive, all told. A slow network gets
+  # ten minutes; a sender that trickles gets turned away.
+  @upload_deadline_ms 600_000
 
   def transcript(conn, _params) do
     settings = Wallboard.Settings.get()
@@ -30,34 +23,48 @@ defmodule WallboardWeb.IngestController do
     with :ok <- enabled(settings),
          {:ok, params} <- query_only(conn),
          {:ok, parts} <- signed(conn, params, :machine) do
-      in_a_slot(conn, fn -> receive_upload(conn, params, parts, settings) end)
+      receive_upload(conn, params, parts, settings)
     else
       {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
     end
   end
 
+  # Key ids are not secret, so anyone on the network can start an upload.
+  # Until its signature is checked, its body goes to a file only this user
+  # can read, hashed on the way, and only a checked upload is read into
+  # memory. So unchecked uploads cost disk for a while, never memory.
   defp receive_upload(conn, params, parts, settings) do
-    with {:ok, body, conn} <- read_all(conn, []),
-         {:ok, machine} <- MachineKeys.verify(conn, parts, body),
-         :ok <- own_machine(machine, params["machine"]) do
-      case save(params["tool"] || "claude", body, params, settings) do
-        {:ok, _} ->
-          Phoenix.PubSub.broadcast(
-            Wallboard.PubSub,
-            Wallboard.Poller.topic(),
-            {:archive, :upload}
-          )
+    file = Path.join(System.tmp_dir!(), "wallboard-upload-#{System.unique_integer([:positive])}")
 
-          send_resp(conn, 200, "saved\n")
-
-        {:error, :too_big} ->
-          send_resp(conn, 413, "the upload unpacks to more than the hub takes\n")
-
-        {:error, reason} ->
-          send_resp(conn, 422, reason <> "\n")
+    try do
+      with {:ok, hash, conn} <- read_to_file(conn, file),
+           {:ok, machine} <- MachineKeys.verify(conn, parts, {:sha256, hash}),
+           :ok <- own_machine(machine, params["machine"]) do
+        conn |> save_upload(File.read!(file), params, settings)
+      else
+        {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
       end
-    else
-      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+    after
+      File.rm(file)
+    end
+  end
+
+  defp save_upload(conn, body, params, settings) do
+    case save(params["tool"] || "claude", body, params, settings) do
+      {:ok, _} ->
+        Phoenix.PubSub.broadcast(
+          Wallboard.PubSub,
+          Wallboard.Poller.topic(),
+          {:archive, :upload}
+        )
+
+        send_resp(conn, 200, "saved\n")
+
+      {:error, :too_big} ->
+        send_resp(conn, 413, "the upload unpacks to more than the hub takes\n")
+
+      {:error, reason} ->
+        send_resp(conn, 422, reason <> "\n")
     end
   end
 
@@ -99,7 +106,7 @@ defmodule WallboardWeb.IngestController do
     with :ok <- enabled(settings),
          {:ok, params} <- query_only(conn),
          {:ok, parts} <- signed(conn, params, :connect),
-         {:ok, body, conn} <- read_small(conn),
+         {:ok, body, conn} <- read_empty(conn),
          {:ok, nil} <- MachineKeys.verify(conn, parts, body),
          machine = params["machine"],
          true <- Ingest.valid_name?(machine) || {:error, 422, "bad machine name"},
@@ -154,25 +161,6 @@ defmodule WallboardWeb.IngestController do
     end
   end
 
-  # Runs `fun` when fewer than @upload_slots uploads are being read, and
-  # turns the upload away otherwise.
-  defp in_a_slot(conn, fun) do
-    slots = Ingest.upload_slots()
-
-    try do
-      if :atomics.add_get(slots, 1, 1) > @upload_slots,
-        do:
-          send_resp(
-            conn,
-            503,
-            "the hub is busy with other uploads: this one goes again next time\n"
-          ),
-        else: fun.()
-    after
-      :atomics.sub(slots, 1, 1)
-    end
-  end
-
   defp own_machine(machine, machine), do: :ok
   defp own_machine(_, _), do: {:error, 403, "this key belongs to another machine"}
 
@@ -180,6 +168,15 @@ defmodule WallboardWeb.IngestController do
     if settings.archive.enabled,
       do: :ok,
       else: {:error, 404, "the archive is turned off on this board"}
+  end
+
+  # A connect request has no body, and anyone may send one.
+  defp read_empty(conn) do
+    case read_body(conn, length: 1, read_timeout: 15_000) do
+      {:ok, "", conn} -> {:ok, "", conn}
+      {:error, _} -> {:error, 400, "could not read the request"}
+      _ -> {:error, 413, "a connect request has no body"}
+    end
   end
 
   defp read_small(conn) do
@@ -239,19 +236,24 @@ defmodule WallboardWeb.IngestController do
   @doc "Just the Codex upload script, for the Wallboard app to save and hook up itself."
   def codex_upload(conn, _params), do: script(conn, &Ingest.codex_upload_script/1)
 
-  # Each script comes with an HMAC of itself made with the connect key, so
-  # the Mac app, which holds that key, can check nobody on the network
-  # changed it before it runs it on every turn.
+  # Each script comes with an HMAC of its name and itself made with the
+  # connect key, so the Mac app, which holds that key, can check nobody on
+  # the network changed it, or sent one script for another, before it runs
+  # it on every turn.
   defp script(conn, make) do
     settings = Wallboard.Settings.get()
 
     case enabled(settings) do
       :ok ->
         body = make.(hub_url(settings))
+        name = Path.basename(conn.request_path)
 
         conn
         |> put_resp_content_type("text/x-shellscript")
-        |> put_resp_header("x-vitalaize-script-signature", MachineKeys.script_signature(body))
+        |> put_resp_header(
+          "x-vitalaize-script-signature",
+          MachineKeys.script_signature(name, body)
+        )
         |> send_resp(200, body)
 
       {:error, status, reason} ->
@@ -259,31 +261,62 @@ defmodule WallboardWeb.IngestController do
     end
   end
 
-  @doc "The address other Macs reach this board at."
+  @doc """
+  The address other machines reach this board at. It goes into the scripts
+  the board signs, so only a plain address (Settings.hub_url?/1) is used.
+  """
   def hub_url(settings) do
-    case settings.archive[:hub_url] do
-      url when is_binary(url) and url != "" ->
-        String.trim_trailing(url, "/")
+    url = settings.archive[:hub_url]
+    url = is_binary(url) && String.trim_trailing(url, "/")
 
-      _ ->
-        host = List.first(Wallboard.Network.lan_addresses()) || "localhost"
-        "http://#{host}:#{settings.port}"
+    if url && Wallboard.Settings.hub_url?(url) do
+      url
+    else
+      host = List.first(Wallboard.Network.lan_addresses()) || "localhost"
+      "http://#{host}:#{settings.port}"
     end
   end
 
-  defp read_all(conn, acc) do
-    case read_body(conn, length: 8_000_000, read_timeout: 60_000) do
-      {:ok, chunk, conn} -> check_size([chunk | acc], conn, &finish/2)
-      {:more, chunk, conn} -> check_size([chunk | acc], conn, &read_all(&2, &1))
-      {:error, _} -> {:error, 400, "could not read the upload"}
+  # Writes the body to `file` (made new, readable only by this user) and
+  # returns its SHA-256. A compressed upload is never much larger than what
+  # it unpacks to, so the unpacking limit caps it too.
+  defp read_to_file(conn, file) do
+    {:ok, io} = File.open(file, [:write, :binary, :exclusive])
+    File.chmod!(file, 0o600)
+    deadline = System.monotonic_time(:millisecond) + @upload_deadline_ms
+
+    try do
+      read_chunks(conn, io, :crypto.hash_init(:sha256), 0, deadline)
+    after
+      File.close(io)
     end
   end
 
-  defp check_size(acc, conn, next) do
-    if IO.iodata_length(acc) > min(@max_upload, Ingest.max_unpacked()),
-      do: {:error, 413, "upload too large"},
-      else: next.(acc, conn)
-  end
+  defp read_chunks(conn, io, hash, size, deadline) do
+    left = deadline - System.monotonic_time(:millisecond)
 
-  defp finish(acc, conn), do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary(), conn}
+    result =
+      if left > 0,
+        do: read_body(conn, length: 8_000_000, read_timeout: min(left, 60_000)),
+        else: {:error, :deadline}
+
+    case result do
+      {status, chunk, conn} when status in [:ok, :more] ->
+        size = size + byte_size(chunk)
+
+        if size > Ingest.max_unpacked() do
+          {:error, 413, "upload too large"}
+        else
+          IO.binwrite(io, chunk)
+          hash = :crypto.hash_update(hash, chunk)
+
+          if status == :ok,
+            do: {:ok, :crypto.hash_final(hash) |> Base.encode16(case: :lower), conn},
+            else: read_chunks(conn, io, hash, size, deadline)
+        end
+
+      {:error, _} ->
+        {:error, 400, "could not read the upload in time"}
+    end
+  end
 end

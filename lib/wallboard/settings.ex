@@ -407,6 +407,16 @@ defmodule Wallboard.Settings do
     end
   end
 
+  @doc """
+  True for a plain hub address: http or https, a host name or address, an
+  optional port, and nothing else. It goes into scripts other machines
+  run, so nothing that could end a quote or start a command may pass.
+  """
+  def hub_url?(url) when is_binary(url),
+    do: url =~ ~r"\Ahttps?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?/?\z"
+
+  def hub_url?(_), do: false
+
   @doc "A field's value as the settings page shows it: the repositories by name."
   def current(settings, [:github, :repos], :repos), do: repo_names(settings)
   def current(settings, path, _type), do: get_in(settings, path)
@@ -449,7 +459,7 @@ defmodule Wallboard.Settings do
           not (value =~ ~r/^[\w.-]+$/) ->
         {:error, "use a profile name from ~/.aws/config"}
 
-      path == [:archive, :hub_url] and not (value =~ ~r{^https?://[^\s/]+}) ->
+      path == [:archive, :hub_url] and not hub_url?(value) ->
         {:error, "use an address like http://192.168.1.20:4747"}
 
       path == [:alerts, :slack_webhook] and not (value =~ ~r{^https://\S+$}) ->

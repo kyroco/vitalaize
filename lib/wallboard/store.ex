@@ -273,11 +273,14 @@ defmodule Wallboard.Store do
   def write(sql, params), do: GenServer.call(__MODULE__, {:write, sql, params}, 30_000)
 
   @doc """
-  Records a signed request's nonce, first forgetting any older than
-  `oldest`. :ok the first time, :seen when that key already sent it.
+  Records a signed request's nonce, sent at `at`: :ok the first time, :seen
+  when that key already sent it, :stale when `at` is more than `window`
+  seconds from now. Nonces older than the window are forgotten first. The
+  time is read here, inside this one process, so a nonce is only ever
+  forgotten once every request that could carry it is stale.
   """
-  def claim_nonce(key_id, nonce, at, oldest),
-    do: GenServer.call(__MODULE__, {:claim_nonce, key_id, nonce, at, oldest}, 30_000)
+  def claim_nonce(key_id, nonce, at, window),
+    do: GenServer.call(__MODULE__, {:claim_nonce, key_id, nonce, at, window}, 30_000)
 
   # ---------------------------------------------------------------------------
   # Reading
@@ -421,22 +424,33 @@ defmodule Wallboard.Store do
     {:reply, :ok, state}
   end
 
-  def handle_call({:claim_nonce, key_id, nonce, at, oldest}, _from, %{conn: c} = state) do
-    run(c, "DELETE FROM seen_requests WHERE at < ?1", [oldest])
+  def handle_call({:claim_nonce, key_id, nonce, at, window}, _from, %{conn: c} = state) do
+    now = System.os_time(:second)
 
-    seen? =
-      rows(c, "SELECT 1 AS x FROM seen_requests WHERE key_id = ?1 AND nonce = ?2", [key_id, nonce]) !=
-        []
+    reply =
+      if abs(at - now) > window do
+        :stale
+      else
+        run(c, "DELETE FROM seen_requests WHERE at < ?1", [now - window])
 
-    unless seen?,
-      do:
-        run(c, "INSERT INTO seen_requests (key_id, nonce, at) VALUES (?1, ?2, ?3)", [
-          key_id,
-          nonce,
-          at
-        ])
+        seen =
+          "SELECT 1 AS x FROM seen_requests WHERE key_id = ?1 AND nonce = ?2"
+          |> then(&rows(c, &1, [key_id, nonce]))
 
-    {:reply, if(seen?, do: :seen, else: :ok), state}
+        if seen == [] do
+          run(c, "INSERT INTO seen_requests (key_id, nonce, at) VALUES (?1, ?2, ?3)", [
+            key_id,
+            nonce,
+            at
+          ])
+
+          :ok
+        else
+          :seen
+        end
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:query, sql, params}, _from, %{conn: c} = state),

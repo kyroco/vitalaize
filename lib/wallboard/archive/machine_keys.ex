@@ -72,24 +72,25 @@ defmodule Wallboard.Archive.MachineKeys do
   @doc "A machine's key, worked out from the connect key and its key id."
   def derive(connect_key, key_id), do: hmac(connect_key, "vitalaize machine key\n" <> key_id)
 
-  @doc "The HMAC of a script the hub serves, made with the connect key."
-  def script_signature(body), do: hmac(connect_key(), "vitalaize script\n" <> body)
+  @doc """
+  The HMAC of a script the hub serves, over its name and itself, made with
+  the connect key.
+  """
+  def script_signature(name, body),
+    do: hmac(connect_key(), "vitalaize script\n" <> name <> "\n" <> body)
 
-  @doc "What a request's signature is made over."
-  def message(method, path, query, time, nonce, body) do
-    Enum.join(
-      [
-        "vitalaize-v1",
-        method,
-        path,
-        query,
-        time,
-        nonce,
-        :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
-      ],
-      "\n"
-    )
-  end
+  @doc """
+  What a request's signature is made over. `body` is the body itself, or
+  {:sha256, hex} when it was hashed as it was read.
+  """
+  def message(method, path, query, time, nonce, {:sha256, hash}),
+    do: Enum.join(["vitalaize-v1", method, path, query, time, nonce, hash], "\n")
+
+  def message(method, path, query, time, nonce, body),
+    do: message(method, path, query, time, nonce, {:sha256, sha256(body)})
+
+  @doc "The SHA-256 of `data`, in lower-case hex."
+  def sha256(data), do: :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
 
   @doc "The HMAC-SHA256 of `message` with `key`, in lower-case hex."
   def hmac(key, message),
@@ -97,22 +98,37 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc """
   The signed parts of a request, before its body is read: {:ok, parts} when
-  the headers are there, well formed and recent, and the key is known;
-  {:error, :unsigned} when there are none; otherwise {:error, status,
-  reason}. Key ids are not secret, so this alone does not stop a stranger
-  from sending a large body: the upload endpoint also caps its size and
-  how many are read at once.
+  the headers are there, well formed and recent, the key is known, and the
+  nonce is new; {:error, :unsigned} when there are none; otherwise
+  {:error, status, reason}.
+
+  The nonce is claimed here, before the body comes, in one step with the
+  time check (Store.claim_nonce/4, on the database's own clock). So a copy
+  of a request is refused however slowly either one sends its body, and a
+  slow upload is never refused for being slow. Key ids are not secret, so
+  this does not stop a stranger sending a large body: the upload endpoint
+  keeps an unchecked body on disk, not in memory.
   """
   def precheck(conn, now \\ System.os_time(:second)) do
     with {:ok, parts} <- headers(conn),
          :ok <- fresh(parts.time, now),
-         {:ok, secret, machine} <- secret(parts.key_id) do
+         {:ok, secret, machine} <- secret(parts.key_id),
+         :ok <- claim(parts) do
       {:ok, Map.merge(parts, %{secret: secret, machine: machine})}
     end
   end
 
+  defp claim(parts) do
+    case Store.claim_nonce(parts.key_id, parts.nonce, String.to_integer(parts.time), @window) do
+      :ok -> :ok
+      :seen -> {:error, 401, "this request was already sent once"}
+      :stale -> stale()
+    end
+  end
+
   @doc """
-  Checks a request's signature over its body, then claims its nonce.
+  Checks a request's signature over its body (or {:sha256, hex}, see
+  message/6), and that its key was not taken away while the body came.
   Returns {:ok, machine} (nil for the connect key) or {:error, status,
   reason}.
   """
@@ -127,20 +143,10 @@ defmodule Wallboard.Archive.MachineKeys do
       not Plug.Crypto.secure_compare(expected, parts.signature) ->
         {:error, 401, "wrong signature"}
 
-      # Checked again now the body is in, with the same clock the nonces
-      # are kept by: a request whose body came slowly is otherwise older
-      # than the nonces kept, and could be sent a second time.
-      (stale = fresh(parts.time, now)) != :ok ->
-        stale
-
       # Disconnected, or given a new connect key, while its body was on
       # the way.
       secret(parts.key_id) != {:ok, parts.secret, parts.machine} ->
         {:error, 401, "this machine's key was taken away"}
-
-      Store.claim_nonce(parts.key_id, parts.nonce, String.to_integer(parts.time), now - @window) ==
-          :seen ->
-        {:error, 401, "this request was already sent once"}
 
       true ->
         if parts.machine,
@@ -180,12 +186,13 @@ defmodule Wallboard.Archive.MachineKeys do
   end
 
   defp fresh(time, now) do
-    if abs(String.to_integer(time) - now) <= @window,
-      do: :ok,
-      else:
-        {:error, 401,
-         "request time is more than #{div(@window, 60)} minutes from the hub's clock: check both clocks"}
+    if abs(String.to_integer(time) - now) <= @window, do: :ok, else: stale()
   end
+
+  defp stale,
+    do:
+      {:error, 401,
+       "request time is more than #{div(@window, 60)} minutes from the hub's clock: check both clocks"}
 
   defp secret("connect"), do: {:ok, connect_key(), nil}
 
