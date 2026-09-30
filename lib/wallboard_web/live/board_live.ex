@@ -72,6 +72,7 @@ defmodule WallboardWeb.BoardLive do
       |> assign(settings: settings, now: now(), product: @product, tabs: tabs(settings))
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
+      |> assign(remote: Wallboard.Remote.sessions())
       |> assign(github: github.facts, github_meta: github.meta)
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
@@ -103,6 +104,10 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_info({:source, :codex, facts, _meta}, socket),
     do: {:noreply, socket |> assign(codex: facts) |> derive_sessions()}
+
+  # A collector's session started or stopped waiting on you.
+  def handle_info({:remote, sessions}, socket),
+    do: {:noreply, socket |> assign(remote: sessions) |> derive_sessions()}
 
   def handle_info({:source, :github, facts, meta}, socket),
     do:
@@ -252,7 +257,11 @@ defmodule WallboardWeb.BoardLive do
     %{settings: settings, now: now} = socket.assigns
     claude = (socket.assigns.claude && socket.assigns.claude.sessions) || []
     codex = (socket.assigns[:codex] && socket.assigns.codex.sessions) || []
-    sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex
+    # Sessions on other machines show only while they wait on you, and never
+    # twice when this machine's own check already has one.
+    local_ids = MapSet.new(claude, & &1.session_id)
+    remote = Enum.reject(socket.assigns[:remote] || [], &MapSet.member?(local_ids, &1.session_id))
+    sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex ++ remote
     long = settings.claude.long_running_minutes
 
     sessions = Enum.map(sessions, &Map.put(&1, :long?, Claude.long_running?(&1, now, long)))
@@ -941,7 +950,7 @@ defmodule WallboardWeb.BoardLive do
             :for={s <- @needs ++ @working ++ @idle}
             s={s}
             d={s[:detail] || @details[Map.get(s, :session_id)]}
-            machine={@archive_on? && @machine}
+            machine={@archive_on? && (s[:machine] || @machine)}
           />
         </div>
         <div :if={@count == 0} class="empty-box">No Claude sessions running.</div>
