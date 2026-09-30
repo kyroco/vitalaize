@@ -303,25 +303,35 @@ defmodule Wallboard.RemoteTest do
   # still there after five seconds is killed outright, and one that
   # survives even that fails the test rather than being left running.
   defp stop_loops(ctx) do
-    with :running <- stop_loops(ctx, "-TERM"),
-         :running <- stop_loops(ctx, "-KILL") do
-      flunk("upload loops still running: #{inspect(loop_roots(ctx))}")
+    groups = loop_roots(ctx)
+
+    with false <- stopped?(ctx, groups, "-TERM"),
+         false <- stopped?(ctx, groups, "-KILL") do
+      flunk("upload loops still running in process groups #{inspect(groups)}")
     end
   end
 
-  defp stop_loops(ctx, signal) do
-    case loop_roots(ctx) do
+  # Signals the groups still alive, then waits up to five seconds for no
+  # loop to match and every group to be empty.
+  defp stopped?(ctx, groups, signal) do
+    case Enum.filter(groups, &group_alive?/1) do
       [] ->
         :ok
 
-      roots ->
-        groups = Enum.map(roots, &("-" <> &1))
-        System.cmd("kill", [signal, "--" | groups ++ roots], stderr_to_stdout: true)
-
-        Enum.reduce_while(1..50, :running, fn _, _ ->
-          if loops(ctx) == 0, do: {:halt, :ok}, else: {:cont, Process.sleep(100)}
-        end)
+      alive ->
+        System.cmd("kill", [signal, "--" | Enum.map(alive, &("-" <> &1))], stderr_to_stdout: true)
     end
+
+    Enum.any?(1..50, fn _ ->
+      gone = loops(ctx) == 0 and not Enum.any?(groups, &group_alive?/1)
+      unless gone, do: Process.sleep(100)
+      gone
+    end)
+  end
+
+  defp group_alive?(group) do
+    {_, code} = System.cmd("kill", ["-0", "--", "-" <> group], stderr_to_stdout: true)
+    code == 0
   end
 
   defp this_machine do
