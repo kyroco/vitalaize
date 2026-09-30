@@ -1,7 +1,7 @@
 defmodule Wallboard.HubTest do
   use ExUnit.Case, async: false
 
-  alias Wallboard.Archive.Ingest
+  alias Wallboard.Archive.{Ingest, MachineKeys}
   alias Wallboard.{Settings, Store}
 
   @sid "9f8651f6-634b-47b7-a4db-b27994e624eb"
@@ -84,13 +84,18 @@ defmodule Wallboard.HubTest do
     refute Ingest.valid_name?(nil)
   end
 
-  test "the ingest key is made once and checked exactly" do
+  test "the connect key is made once, and a board from before gets a new one" do
     start_supervised!({Store, path: ":memory:"})
-    key = Ingest.token()
-    assert key == Ingest.token()
-    assert Ingest.valid_token?(key)
-    refute Ingest.valid_token?(key <> "x")
-    refute Ingest.valid_token?(nil)
+    Store.put_meta("ingest_token", "the-old-shared-key")
+
+    key = MachineKeys.connect_key()
+    assert key == MachineKeys.connect_key()
+    assert key != "the-old-shared-key"
+    assert MachineKeys.old_shared_key?("the-old-shared-key")
+    refute MachineKeys.old_shared_key?(key)
+    refute MachineKeys.old_shared_key?(nil)
+
+    assert MachineKeys.new_connect_key() != key
   end
 
   test "the database goes where the setting says, or in this system's usual place" do
@@ -106,7 +111,7 @@ defmodule Wallboard.HubTest do
   end
 
   test "the connect script's Linux part is valid Python" do
-    script = Ingest.install_script("http://192.168.1.20:4747", "abc")
+    script = Ingest.install_script("http://192.168.1.20:4747")
     [_, rest] = String.split(script, "<<'WALLBOARD_PY'\n", parts: 2)
     [python, _] = String.split(rest, "\nWALLBOARD_PY", parts: 2)
     path = Path.join(System.tmp_dir!(), "wallboard-connect-test.py")
@@ -120,7 +125,7 @@ defmodule Wallboard.HubTest do
   end
 
   test "the upload script is valid shell" do
-    script = Ingest.install_script("http://192.168.1.20:4747", "abc")
+    script = Ingest.install_script("http://192.168.1.20:4747")
     path = Path.join(System.tmp_dir!(), "wallboard-install-test.sh")
     File.write!(path, script)
     assert {_, 0} = System.cmd("sh", ["-n", path])

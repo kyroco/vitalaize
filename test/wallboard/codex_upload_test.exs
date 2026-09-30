@@ -1,8 +1,8 @@
 defmodule Wallboard.CodexUploadTest do
   use ExUnit.Case, async: false
 
-  alias Wallboard.Archive.Ingest
-  alias Wallboard.Store
+  alias Wallboard.Archive.{Ingest, MachineKeys}
+  alias Wallboard.{Fixtures, Settings, Store, TestHub}
 
   @main "01a0c9db-3044-75f0-99fe-345bf658a60b"
   @helper "01a0c9e3-b1ca-7bc3-807a-7505e0b45634"
@@ -182,7 +182,8 @@ defmodule Wallboard.CodexUploadTest do
 
       File.chmod!(Path.join(bin, "curl"), 0o755)
       script = Path.join(dir, "upload.sh")
-      File.write!(script, Ingest.codex_upload_script("http://hub.test:4747", "k3y"))
+      File.write!(script, Ingest.codex_upload_script("http://hub.test:4747"))
+      Fixtures.write_key(dir, String.duplicate("a", 32), "laptop", String.duplicate("b", 64))
 
       %{dir: dir, home: home, bin: bin, out: out, script: script, main: main, helper: helper}
     end
@@ -387,18 +388,30 @@ defmodule Wallboard.CodexUploadTest do
 
   describe "the connect command" do
     setup do
+      old = Settings.get()
+      on_exit(fn -> :persistent_term.put({Wallboard.Settings, :settings}, old) end)
       dir = tmp_dir()
+      start_supervised!({Store, path: ":memory:"})
+      Settings.put(%{archive: %{enabled: true, path: Path.join(dir, "wallboard.db")}})
+      hub = TestHub.serve()
       claude = Path.join(dir, ".claude")
       codex = Path.join(dir, ".codex")
       File.mkdir_p!(claude)
       script = Path.join(dir, "connect.sh")
-      File.write!(script, Ingest.install_script("http://hub.test:4747", "k3y"))
-      %{dir: dir, claude: claude, codex: codex, script: script}
+      File.write!(script, Ingest.install_script(hub))
+      %{dir: dir, claude: claude, codex: codex, script: script, hub: hub}
     end
 
-    defp connect(ctx) do
+    # Throwaway Claude and Codex folders and home, never the real ones.
+    defp connect(ctx, key \\ MachineKeys.connect_key()) do
       System.cmd("sh", [ctx.script],
-        env: [{"CLAUDE_CONFIG_DIR", ctx.claude}, {"CODEX_HOME", ctx.codex}],
+        env: [
+          {"HOME", ctx.dir},
+          {"TMPDIR", ctx.dir},
+          {"CLAUDE_CONFIG_DIR", ctx.claude},
+          {"CODEX_HOME", ctx.codex},
+          {"WALLBOARD_KEY", key}
+        ],
         stderr_to_stdout: true
       )
     end
@@ -424,7 +437,7 @@ defmodule Wallboard.CodexUploadTest do
       hooks = Path.join(ctx.codex, "hooks.json")
       assert commands(hooks, "Stop") == ["python3 mine.py", upload]
       assert commands(hooks, "SessionEnd") == [upload]
-      assert File.read!(upload) == Ingest.codex_upload_script("http://hub.test:4747", "k3y")
+      assert File.read!(upload) == Ingest.codex_upload_script(ctx.hub)
       assert File.exists?(hooks <> ".before-wallboard")
 
       claude_upload = Path.join(ctx.claude, "wallboard-upload.sh")

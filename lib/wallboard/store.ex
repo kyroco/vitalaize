@@ -157,7 +157,31 @@ defmodule Wallboard.Store do
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)",
     # Which tool ran the session: "claude" or "codex". Rows saved before
     # Codex was read are all Claude.
-    "ALTER TABLE sessions ADD COLUMN tool TEXT DEFAULT 'claude'"
+    "ALTER TABLE sessions ADD COLUMN tool TEXT DEFAULT 'claude'",
+    # Each connected machine's own key (see Wallboard.Archive.MachineKeys).
+    # The secret is kept as it is, since checking a signature needs it.
+    """
+    CREATE TABLE machine_keys (
+      key_id TEXT PRIMARY KEY,
+      machine TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    )
+    """,
+    # Signed requests already taken, so one cannot be sent again. Kept only
+    # as long as a request's time would still be accepted.
+    """
+    CREATE TABLE seen_requests (
+      key_id TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (key_id, nonce)
+    )
+    """,
+    # Machines that still send with the shared key from before, so Settings
+    # can say which ones to connect again.
+    "CREATE TABLE old_key_tries (machine TEXT PRIMARY KEY, at INTEGER NOT NULL)"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -242,6 +266,16 @@ defmodule Wallboard.Store do
   end
 
   def put_meta(key, value), do: GenServer.call(__MODULE__, {:put_meta, key, value}, 30_000)
+
+  @doc "Runs one write statement."
+  def write(sql, params), do: GenServer.call(__MODULE__, {:write, sql, params}, 30_000)
+
+  @doc """
+  Records a signed request's nonce, first forgetting any older than
+  `oldest`. :ok the first time, :seen when that key already sent it.
+  """
+  def claim_nonce(key_id, nonce, at, oldest),
+    do: GenServer.call(__MODULE__, {:claim_nonce, key_id, nonce, at, oldest}, 30_000)
 
   # ---------------------------------------------------------------------------
   # Reading
@@ -378,6 +412,29 @@ defmodule Wallboard.Store do
   def handle_call({:put_meta, key, value}, _from, %{conn: c} = state) do
     run(c, "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value])
     {:reply, :ok, state}
+  end
+
+  def handle_call({:write, sql, params}, _from, %{conn: c} = state) do
+    run(c, sql, params)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:claim_nonce, key_id, nonce, at, oldest}, _from, %{conn: c} = state) do
+    run(c, "DELETE FROM seen_requests WHERE at < ?1", [oldest])
+
+    seen? =
+      rows(c, "SELECT 1 AS x FROM seen_requests WHERE key_id = ?1 AND nonce = ?2", [key_id, nonce]) !=
+        []
+
+    unless seen?,
+      do:
+        run(c, "INSERT INTO seen_requests (key_id, nonce, at) VALUES (?1, ?2, ?3)", [
+          key_id,
+          nonce,
+          at
+        ])
+
+    {:reply, if(seen?, do: :seen, else: :ok), state}
   end
 
   def handle_call({:query, sql, params}, _from, %{conn: c} = state),

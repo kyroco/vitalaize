@@ -65,7 +65,7 @@ tap Pin to stay on it.
    - **Hub only**: it runs the board and keeps what other Macs send it.
    - **Collector only**, for your other Macs: it sends this Mac's Claude and
      Codex sessions to a hub. It finds hubs on your network by itself; you
-     paste the hub's key from the hub's Settings page (Connect another Mac).
+     paste the connect key from the hub's Settings page (Connect another machine).
      Codex runs a new hook only once you trust it, so afterwards type
      `/hooks` in Codex and trust the two `wallboard-upload.sh` hooks.
 4. It fills in what it can find (your Claude and Codex folders, every GitHub
@@ -109,8 +109,9 @@ instead (see Alerts below); and the database lives in
 `~/.local/share/vitalaize`. To have other machines find the hub on the
 network by themselves, install `avahi-utils` on the hub; without it,
 collectors type the hub's address. A Linux machine can be a collector too:
-run the command from the hub's Settings page (Connect another Mac) there. It
-needs `python3` and `curl`. Like the app, the command hooks up Codex too when
+run the command from the hub's Settings page (Connect another machine)
+there. It needs `python3`, `curl`, and `perl` or `openssl` to sign what it
+sends. Like the app, the command hooks up Codex too when
 the machine has it, and says to trust the new hooks with `/hooks` in Codex.
 
 ## What you need
@@ -196,6 +197,21 @@ one, delete it from the release first.
   your sessions ask you. Set `token` in `settings.exs` (or a board password on
   the Settings page); the first visit from each device then needs
   `/?token=<your token>` at the end of the address.
+- **Connected machines.** Each machine you connect gets a key of its own,
+  made on that machine from the connect key on the hub's Settings page. No
+  key is ever sent over the network: each upload and each "waiting" message
+  is signed with the machine's key and stamped with the time, so nobody on
+  the network can read a key, send as one of your machines, or send an old
+  request again. Settings lists every connected machine, and Disconnect
+  takes one machine's key away without touching the others. Making a new
+  connect key leaves connected machines as they are. Both clocks need to be
+  right to within five minutes, which they are when the machines set their
+  time automatically. The hub refuses an upload that would unpack to more
+  than 512 MB. One limit remains: the hub is reached over plain http, so
+  the session transcripts themselves cross your network unencrypted, where
+  anyone on it could read them. Connect machines only on a network you
+  trust. (https would mean self-signed certificates that Safari on the iPad
+  warns about, so the board does not use it.)
 - **Alerts.** Once each time a session starts waiting on you, the board sends
   an alert on every channel you set up, in `alerts` or on the Settings page:
   - Messages (Mac only): set `phone` to your number. The Mac sends an iMessage
@@ -222,7 +238,7 @@ one, delete it from the release first.
   without them the card clears at the session's next step instead. If the
   hub cannot be reached, the session carries on as usual. A machine
   connected by version 0.2.0 or earlier needs connecting once more
-  (Connect another Mac on the hub's Settings page) to add these hooks.
+  (Connect another machine on the hub's Settings page) to add these hooks.
   Codex sessions on other machines do not alert yet.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
   rather than per-token prices, so its cards show tokens and plan use. Set
@@ -315,6 +331,12 @@ say "Loading…" beside a section while its history is still coming in.
   Firewall; on Linux with ufw, `sudo ufw allow 4747/tcp`.
 - **"Add ?token= ..." on the page.** You set a `token`, and the address is
   missing it or has a different one.
+- **A connected machine's sessions stop arriving after an update.** A
+  machine connected by version 0.2.0 or earlier sends with the old shared
+  key, which the hub no longer takes. The hub's Settings page lists such
+  machines under "Machines to connect again". On each, run the connect
+  command from that page again (or run VitalAIze's setup again there).
+  A machine whose clock is more than five minutes off is turned away too.
 - **A panel shows "stale" in red.** It says why. Usually `gh` or `claude` is
   signed out, or the Mac lost its connection.
 - **No alerts.** The board's log says which channel failed and why. For

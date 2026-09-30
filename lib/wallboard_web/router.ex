@@ -11,9 +11,10 @@ defmodule WallboardWeb.Router do
     plug :put_secure_browser_headers
   end
 
-  # Other Macs sending Claude sessions. No cookies or forms here: each
-  # request carries the ingest key itself.
+  # Other machines connecting and sending sessions. No cookies or forms
+  # here: each request is signed (see Wallboard.Archive.MachineKeys).
   scope "/ingest", WallboardWeb do
+    post "/connect", IngestController, :connect
     post "/transcript", IngestController, :transcript
     post "/status", IngestController, :status
     get "/install.sh", IngestController, :install

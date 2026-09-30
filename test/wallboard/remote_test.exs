@@ -1,8 +1,8 @@
 defmodule Wallboard.RemoteTest do
   use ExUnit.Case, async: false
 
-  alias Wallboard.{Remote, Settings, Store}
-  alias Wallboard.Archive.Ingest
+  alias Wallboard.{Fixtures, Remote, Settings, Store, TestHub}
+  alias Wallboard.Archive.{Ingest, MachineKeys}
 
   @sid "9f8651f6-634b-47b7-a4db-b27994e624eb"
   @permission "Claude needs your permission to use Bash"
@@ -203,20 +203,6 @@ defmodule Wallboard.RemoteTest do
     end
   end
 
-  # The endpoint's own parsing in front of the real router, without the
-  # rest of the endpoint (sessions, static files), which needs a server.
-  defmodule Hub do
-    use Plug.Builder
-    plug Plug.Parsers, parsers: [:urlencoded], pass: ["*/*"]
-    plug WallboardWeb.Router
-  end
-
-  defp serve(plug) do
-    {:ok, pid} = Bandit.start_link(plug: plug, ip: :loopback, port: 0, startup_log: false)
-    {:ok, {_, port}} = ThousandIsland.listener_info(pid)
-    "http://127.0.0.1:#{port}"
-  end
-
   defp tmp_dir do
     dir = Path.join(System.tmp_dir!(), "wallboard-remote-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -309,8 +295,8 @@ defmodule Wallboard.RemoteTest do
       start_supervised!({Store, path: ":memory:"})
       start_supervised!(Remote)
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Poller.topic())
-      hub = serve(Hub)
-      ntfy = serve({Catcher, %{test: self()}})
+      hub = TestHub.serve()
+      ntfy = TestHub.serve({Catcher, %{test: self()}})
 
       settings = fn machine ->
         Settings.put(%{
@@ -322,8 +308,10 @@ defmodule Wallboard.RemoteTest do
       end
 
       script = Path.join(dir, "wallboard-upload.sh")
-      File.write!(script, Ingest.upload_script(hub, Ingest.token()))
-      %{dir: dir, script: script, settings: settings, hub: hub}
+      File.write!(script, Ingest.upload_script(hub))
+      # Connected under this machine's name, as the connect command would.
+      {key_id, key} = Fixtures.connect_machine(dir, this_machine())
+      %{dir: dir, script: script, settings: settings, hub: hub, key_id: key_id, key: key}
     end
 
     defp marker(ctx), do: Path.join(ctx.dir, "wallboard-waiting-#{@sid}")
@@ -522,7 +510,7 @@ defmodule Wallboard.RemoteTest do
     test "a done waiting the hub did not take is sent again by the next hook", ctx do
       ctx.settings.("the-hub")
       down = Path.join(ctx.dir, "down.sh")
-      File.write!(down, Ingest.upload_script("http://127.0.0.1:1", "abc"))
+      File.write!(down, Ingest.upload_script("http://127.0.0.1:1"))
 
       assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"))
       assert_receive {:remote, [_]}, 5_000
@@ -539,27 +527,13 @@ defmodule Wallboard.RemoteTest do
     test "a status the hub cannot read is refused, never a crash", ctx do
       ctx.settings.("the-hub")
 
-      post = fn body, query ->
-        {out, 0} =
-          System.cmd("curl", [
-            "-s",
-            "-g",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            "-H",
-            "Content-Type: application/json",
-            "-X",
-            "POST",
-            "-H",
-            "Authorization: Bearer #{Ingest.token()}",
-            "--data-binary",
-            body,
-            "#{ctx.hub}/ingest/status?machine=laptop#{query}"
-          ])
+      {id, key} = Fixtures.connect_machine(Path.join(ctx.dir, "laptop"), "laptop")
 
-        out
+      post = fn body, query ->
+        {code, _} =
+          Fixtures.signed_post(ctx.hub, "/ingest/status?machine=laptop#{query}", body, id, key)
+
+        code
       end
 
       assert post.(~s({"session_id":123,"hook_event_name":"Notification"}), "") == "422"
@@ -625,20 +599,121 @@ defmodule Wallboard.RemoteTest do
 
     test "a wrong key is turned away", ctx do
       ctx.settings.("the-hub")
-      hub = ctx.script |> File.read!() |> then(&Regex.run(~r/HUB="([^"]+)"/, &1)) |> List.last()
-      bad = Path.join(ctx.dir, "bad.sh")
-      File.write!(bad, Ingest.upload_script(hub, "not-the-key"))
+      # The right key id and machine, with a key that is not the one the
+      # hub worked out for them.
+      bad = Path.join([ctx.dir, "bad", "wallboard-upload.sh"])
+      Fixtures.write_key(Path.dirname(bad), ctx.key_id, this_machine(), String.duplicate("0", 64))
+      File.write!(bad, Ingest.upload_script(ctx.hub))
 
       assert {"", 0} = run_hook(bad, ctx.dir, notice("permission_prompt"))
       refute_receive {:alert, _, _}, 1_000
       assert Remote.sessions() == []
+    end
+
+    test "a machine's key sends only for that machine", ctx do
+      ctx.settings.("the-hub")
+      # Another machine's key, in a script that says it is this machine.
+      {other_id, key} = Fixtures.connect_machine(Path.join(ctx.dir, "other"), "other-mac")
+      posing = Path.join([ctx.dir, "posing", "wallboard-upload.sh"])
+      Fixtures.write_key(Path.dirname(posing), other_id, this_machine(), key)
+      File.write!(posing, Ingest.upload_script(ctx.hub))
+
+      assert {"", 0} = run_hook(posing, ctx.dir, notice("permission_prompt"))
+      refute_receive {:alert, _, _}, 1_000
+      assert Remote.sessions() == []
+
+      {code, reply} =
+        Fixtures.signed_post(
+          ctx.hub,
+          "/ingest/status?machine=#{this_machine()}",
+          Jason.encode!(notice("permission_prompt")),
+          other_id,
+          key
+        )
+
+      assert {code, reply} == {"403", "this key belongs to another machine"}
+    end
+
+    test "a disconnected machine is turned away, and the others still send", ctx do
+      ctx.settings.("the-hub")
+      other = Path.join([ctx.dir, "other", "wallboard-upload.sh"])
+      Fixtures.connect_machine(Path.dirname(other), "other-mac")
+      File.write!(other, Ingest.upload_script(ctx.hub))
+
+      MachineKeys.revoke(ctx.key_id)
+      assert [%{machine: "other-mac"}] = MachineKeys.list()
+
+      assert {"", 0} = run_hook(ctx.script, ctx.dir, notice("permission_prompt"))
+      refute_receive {:remote, _}, 1_000
+
+      assert {"", 0} = run_hook(other, ctx.dir, notice("permission_prompt"))
+      assert_receive {:remote, [%{machine: "other-mac"}]}, 5_000
+    end
+
+    test "a request sent again, too old, unsigned or changed on the way is refused", ctx do
+      ctx.settings.("the-hub")
+      target = "/ingest/status?machine=#{this_machine()}"
+      body = Jason.encode!(notice("permission_prompt"))
+      post = &Fixtures.signed_post(ctx.hub, target, body, ctx.key_id, ctx.key, &1)
+
+      assert {"200", _} = post.(nonce: "0123456789abcdef")
+      assert_receive {:remote, [_]}, 5_000
+      assert post.(nonce: "0123456789abcdef") == {"401", "this request was already sent once"}
+
+      old = to_string(System.os_time(:second) - MachineKeys.window() - 5)
+      assert {"401", "request time is more than 5 minutes" <> _} = post.(time: old)
+
+      assert post.(headers: []) == {"401", "unsigned request"}
+
+      # Signed for one body, sent with another.
+      sig =
+        MachineKeys.hmac(
+          ctx.key,
+          MachineKeys.message(
+            "POST",
+            "/ingest/status",
+            "machine=#{this_machine()}",
+            "1",
+            "aa",
+            "{}"
+          )
+        )
+
+      assert post.(signature: sig) == {"401", "wrong signature"}
+
+      # The connect key signs nothing but a connect.
+      assert {"401", "sign with this machine's key"} =
+               Fixtures.signed_post(ctx.hub, target, body, "connect", MachineKeys.connect_key())
+    end
+
+    test "a machine still on the old shared key is turned away and listed to connect again",
+         ctx do
+      ctx.settings.("the-hub")
+      Store.put_meta("old_shared_key", "the-old-shared-key")
+
+      bearer = fn key ->
+        Fixtures.signed_post(ctx.hub, "/ingest/status?machine=old-mac", "{}", nil, nil,
+          headers: ["Authorization: Bearer #{key}"]
+        )
+      end
+
+      assert {"401", "unsigned request"} = bearer.("some-other-key")
+      assert MachineKeys.old_tries() == []
+
+      assert {"401", "this machine uses the old shared key" <> _} = bearer.("the-old-shared-key")
+      assert [%{machine: "old-mac"}] = MachineKeys.old_tries()
+
+      # Connecting it again takes it off the list.
+      Fixtures.connect_machine(Path.join(ctx.dir, "old"), "old-mac")
+      assert MachineKeys.old_tries() == []
     end
   end
 
   test "a hub that cannot be reached costs the hook a moment and no error" do
     dir = tmp_dir()
     script = Path.join(dir, "wallboard-upload.sh")
-    File.write!(script, Ingest.upload_script("http://127.0.0.1:1", "abc"))
+    File.write!(script, Ingest.upload_script("http://127.0.0.1:1"))
+    Fixtures.write_key(dir, String.duplicate("a", 32), "laptop", String.duplicate("b", 64))
 
     {micros, {out, code}} =
       :timer.tc(fn -> run_hook(script, dir, notice("permission_prompt")) end)
@@ -652,7 +727,7 @@ defmodule Wallboard.RemoteTest do
 
   describe "connecting a machine" do
     defp settings_after_connect(kind, settings_file, script) do
-      install = Ingest.install_script("http://192.168.1.20:4747", "abc")
+      install = Ingest.install_script("http://192.168.1.20:4747")
 
       {tag, cmd} =
         case kind do
@@ -710,19 +785,25 @@ defmodule Wallboard.RemoteTest do
     end
 
     test "the whole connect script gives Claude every hook and Codex only its two" do
+      old = Settings.get()
+      on_exit(fn -> :persistent_term.put({Wallboard.Settings, :settings}, old) end)
       dir = tmp_dir()
+      start_supervised!({Store, path: ":memory:"})
+      Settings.put(%{archive: %{enabled: true, path: Path.join(dir, "wallboard.db")}})
+      hub = TestHub.serve()
       claude = Path.join(dir, ".claude")
       codex = Path.join(dir, ".codex")
       File.mkdir_p!(codex)
       install = Path.join(dir, "install.sh")
-      File.write!(install, Ingest.install_script("http://192.168.1.20:4747", "abc"))
+      File.write!(install, Ingest.install_script(hub))
 
       assert {_, 0} =
                System.cmd("sh", [install],
                  env: [
                    {"HOME", dir},
                    {"CLAUDE_CONFIG_DIR", claude},
-                   {"CODEX_HOME", codex}
+                   {"CODEX_HOME", codex},
+                   {"WALLBOARD_KEY", MachineKeys.connect_key()}
                  ],
                  stderr_to_stdout: true
                )

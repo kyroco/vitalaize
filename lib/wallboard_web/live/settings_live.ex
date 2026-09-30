@@ -12,7 +12,7 @@ defmodule WallboardWeb.SettingsLive do
   use WallboardWeb, :live_view
 
   alias Wallboard.{Settings, Store}
-  alias Wallboard.Archive.{Collector, Ingest}
+  alias Wallboard.Archive.{Collector, MachineKeys}
   alias WallboardWeb.IngestController
 
   @impl true
@@ -27,7 +27,8 @@ defmodule WallboardWeb.SettingsLive do
         notice: nil,
         restart?: false,
         show_key?: false,
-        confirm_new_key?: false
+        confirm_new_key?: false,
+        confirm_disconnect: nil
       )
 
     {:ok, if(allowed?, do: load(socket), else: socket)}
@@ -71,14 +72,17 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
-  defp load(socket) do
+  @doc false
+  def load(socket) do
     settings = Settings.get()
 
     assign(socket,
       settings: settings,
       values: values(settings),
       hub_url: IngestController.hub_url(settings),
-      key: if(settings.archive.enabled, do: Ingest.token()),
+      key: if(settings.archive.enabled, do: MachineKeys.connect_key()),
+      keys: if(settings.archive.enabled, do: MachineKeys.list(), else: []),
+      old_tries: if(settings.archive.enabled, do: MachineKeys.old_tries(), else: []),
       machines: machines(settings),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
@@ -179,10 +183,7 @@ defmodule WallboardWeb.SettingsLive do
     do: {:noreply, assign(socket, confirm_new_key?: true)}
 
   def handle_event("new_key", _params, socket) do
-    Store.put_meta(
-      "ingest_token",
-      24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-    )
+    MachineKeys.new_connect_key()
 
     {:noreply,
      socket
@@ -190,8 +191,26 @@ defmodule WallboardWeb.SettingsLive do
      |> assign(
        confirm_new_key?: false,
        show_key?: true,
-       notice: "New key made. Run the connect command again on each other Mac."
+       notice: "New connect key made. Machines already connected keep sending."
      )}
+  end
+
+  # Takes one machine's key away, after a second tap on the same button.
+  def handle_event("disconnect", %{"key" => key_id}, socket) do
+    if socket.assigns.confirm_disconnect == key_id do
+      machine = Enum.find_value(socket.assigns.keys, &(&1.key_id == key_id && &1.machine))
+      MachineKeys.revoke(key_id)
+
+      {:noreply,
+       socket
+       |> load()
+       |> assign(
+         confirm_disconnect: nil,
+         notice: "#{machine} is disconnected. It sends nothing until it is connected again."
+       )}
+    else
+      {:noreply, assign(socket, confirm_disconnect: key_id)}
+    end
   end
 
   def handle_event("refresh_archive", _params, socket) do
@@ -266,11 +285,17 @@ defmodule WallboardWeb.SettingsLive do
       </form>
 
       <section :if={@key} class="settings-section">
-        <h2 class="kicker">Connect another Mac</h2>
+        <h2 class="kicker">Connect another machine</h2>
         <p class="detail-note">
-          Run this once in Terminal on the other Mac. It saves a small script and adds two hooks to
-          that Mac's Claude settings (backing them up first). After that, each session is sent here
-          when a turn ends and when it closes, in the background, so Claude never waits on it.
+          Run this once in Terminal on the other Mac or Linux machine. It gives that machine a key of
+          its own, saves a small script, and adds hooks to its Claude settings (backing them up
+          first). After that, each session is sent here when a turn ends and when it closes, in the
+          background, so Claude never waits on it.
+        </p>
+        <p class="detail-note">
+          The connect key below never leaves the machine you paste it on. Each request that machine
+          sends is signed with its own key instead, so nobody on the network can read a key or send
+          as that machine. The sessions themselves still cross the network as they are.
         </p>
         <p class="detail-note">
           When that Mac has Codex, its Codex sessions come too, through two hooks in Codex's
@@ -284,8 +309,8 @@ defmodule WallboardWeb.SettingsLive do
           </button>
           <button class="link-button" phx-click="new_key">
             {if @confirm_new_key?,
-              do: "Tap again: other Macs stop sending until reconnected",
-              else: "Make a new key"}
+              do: "Tap again: machines already connected keep sending",
+              else: "Make a new connect key"}
           </button>
         </div>
         <p class="stat-note">
@@ -293,8 +318,58 @@ defmodule WallboardWeb.SettingsLive do
         </p>
       </section>
 
+      <section :if={@key && @old_tries != []} class="settings-section">
+        <h2 class="kicker">Machines to connect again</h2>
+        <p class="detail-note">
+          These machines were connected by VitalAIze 0.2.0 or earlier. They still send with the old
+          shared key, which this hub no longer takes, so nothing from them arrives. On each one, run
+          the connect command above in Terminal (or run VitalAIze's setup again there and pick
+          Collector only).
+        </p>
+        <table class="dtable settings-table">
+          <tr>
+            <th></th>
+            <th>Last tried</th>
+          </tr>
+          <tr :for={t <- @old_tries}>
+            <td>{t.machine}</td>
+            <td>{day(t.at)}</td>
+          </tr>
+        </table>
+      </section>
+
       <section :if={@key} class="settings-section">
-        <h2 class="kicker">Saved sessions by Mac</h2>
+        <h2 class="kicker">Connected machines</h2>
+        <p :if={@keys == []} class="detail-note">
+          No machine is connected yet.
+        </p>
+        <table :if={@keys != []} class="dtable settings-table">
+          <tr>
+            <th></th>
+            <th>Connected</th>
+            <th>Last sent</th>
+            <th></th>
+          </tr>
+          <tr :for={k <- @keys}>
+            <td>{k.machine}</td>
+            <td>{day(k.created_at)}</td>
+            <td>{if k.last_used_at, do: day(k.last_used_at), else: "not yet"}</td>
+            <td>
+              <button class="link-button" phx-click="disconnect" phx-value-key={k.key_id}>
+                {if @confirm_disconnect == k.key_id,
+                  do: "Tap again to disconnect",
+                  else: "Disconnect"}
+              </button>
+            </td>
+          </tr>
+        </table>
+        <p class="stat-note">
+          Disconnecting a machine takes its key away and leaves the others as they are.
+        </p>
+      </section>
+
+      <section :if={@key} class="settings-section">
+        <h2 class="kicker">Saved sessions by machine</h2>
         <table class="dtable settings-table">
           <tr>
             <th></th>
@@ -304,7 +379,7 @@ defmodule WallboardWeb.SettingsLive do
           <tr :for={m <- @machines}>
             <td>{m.machine}</td>
             <td>{m.sessions}</td>
-            <td>{m.last && Calendar.strftime(DateTime.from_unix!(m.last), "%b %-d")}</td>
+            <td>{m.last && day(m.last)}</td>
           </tr>
         </table>
         <button class="link-button" phx-click="refresh_archive">Save this Mac's sessions again</button>
@@ -367,6 +442,12 @@ defmodule WallboardWeb.SettingsLive do
     """
   end
 
-  defp install_command(hub, key),
-    do: ~s(curl -fsS -H "Authorization: Bearer #{key}" #{hub}/ingest/install.sh | sh)
+  @doc """
+  The command another machine runs to connect. The key goes to the script
+  on that machine, never over the network: the script only signs with it.
+  """
+  def install_command(hub, key),
+    do: ~s(curl -fsS #{hub}/ingest/install.sh | WALLBOARD_KEY="#{key}" sh)
+
+  defp day(unix), do: Calendar.strftime(DateTime.from_unix!(unix), "%b %-d")
 end

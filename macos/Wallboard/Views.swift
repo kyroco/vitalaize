@@ -357,7 +357,7 @@ struct HubPage: View {
         }
         Form {
             TextField("Hub address", text: $state.choices.hubURL, prompt: Text("http://192.168.1.20:4747"))
-            SecureField("Hub key", text: $state.choices.hubKey)
+            SecureField("Connect key", text: $state.choices.hubKey)
         }
         .formStyle(.grouped)
     }

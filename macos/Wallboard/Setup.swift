@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import Security
 
 /// What this Mac does.
 enum Role: String, Codable, CaseIterable, Identifiable {
@@ -308,10 +310,15 @@ enum Setup {
         }
 
         if c.role == .collector {
-            say("Checking the hub and its key")
-            let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey)
+            say("Checking the hub")
+            let script = try fetchUploadScript(hub: c.hubURL)
+            say("Connecting this Mac to the hub with the connect key")
+            let key = try connectToHub(hub: c.hubURL, connectKey: c.hubKey,
+                                       replaces: (c.claudeFolders + [home.appendingPathComponent(".codex").path])
+                                           .lazy.compactMap(keyID(in:)).first)
             for folder in c.claudeFolders {
                 say("Connecting \(folder) to the hub")
+                try saveKey(key, in: folder)
                 try hookUp(folder: folder, script: script)
                 hooked.append(folder)
             }
@@ -321,7 +328,8 @@ enum Setup {
                 // Codex is extra: a problem here is reported, and the Claude
                 // folders stay connected.
                 do {
-                    let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh")
+                    let script = try fetchUploadScript(hub: c.hubURL, name: "codex-upload.sh")
+                    try saveKey(key, in: folder)
                     try hookUp(folder: folder, script: script, file: "hooks.json", wanted: codexHooks)
                     hookedCodex = folder
                     say("Codex skips a new hook until you trust it: type /hooks in Codex and trust the two wallboard-upload.sh hooks")
@@ -336,7 +344,7 @@ enum Setup {
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = .prettyPrinted
         var saved = record
-        saved.choices.hubKey = ""   // the key lives in the upload script, not here
+        saved.choices.hubKey = ""   // only this Mac's own key is kept, in wallboard-key
         try enc.encode(saved).write(to: data.appendingPathComponent("install.json"))
         dataFolder = c.dataFolder
         say("Done")
@@ -394,23 +402,118 @@ enum Setup {
 
     // MARK: Collector
 
-    /// The hub's upload script. A wrong address or key fails here, before
-    /// anything on this Mac changes.
-    static func fetchUploadScript(hub: String, key: String, name: String = "upload.sh") throws -> String {
+    /// The hub's upload script. It holds no key. A wrong address fails here,
+    /// before anything on this Mac changes.
+    static func fetchUploadScript(hub: String, name: String = "upload.sh") throws -> String {
         let base = hub.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         let r = Shell.run("/usr/bin/curl", ["-sS", "-w", "\n%{http_code}", "--max-time", "15",
-                                           "-H", "Authorization: Bearer \(key)", "\(base)/ingest/\(name)"], timeout: 20)
+                                           "\(base)/ingest/\(name)"], timeout: 20)
         let lines = r.output.components(separatedBy: "\n")
         let code = lines.last ?? ""
         let body = lines.dropLast().joined(separator: "\n")
         switch code {
         case "200": return body + "\n"
-        case "401": throw Failure.step("The hub turned down that key. Copy it again from the hub's settings page.")
         // Only the Codex script is fetched after the Claude one worked, so
         // there a 404 means a hub from before Codex uploads.
         case "404" where name != "upload.sh": throw Failure.step("The hub is too old to take Codex sessions. Update it, then run this setup again.")
         case "404": throw Failure.step("That board has its archive turned off, so it cannot take sessions.")
         default: throw Failure.step("Could not reach a hub at \(base). Is the board running there?")
+        }
+    }
+
+    /// This Mac's own key for the hub: a key id, the name it was made for,
+    /// and the key (see Wallboard.Archive.MachineKeys on the board).
+    struct MachineKey {
+        let id: String
+        let machine: String
+        let key: String
+    }
+
+    /// Connects this Mac, the same way the hub's connect script does: a
+    /// random key id, sent in a request signed with the connect key, and on
+    /// the hub's yes, this Mac's key worked out from the two. Neither key is
+    /// ever sent. A wrong key fails here, before anything on this Mac
+    /// changes. `replaces` is the key id an earlier connect left, which the
+    /// hub then drops.
+    static func connectToHub(hub: String, connectKey: String, replaces: String?) throws -> MachineKey {
+        let base = hub.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        let machine = machineName()
+        var bytes = [UInt8](repeating: 0, count: 16)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw Failure.step("Could not make a key for this Mac.")
+        }
+        let id = hex(bytes)
+        var target = "/ingest/connect?machine=\(machine)&key=\(id)"
+        if let old = replaces, old != id { target += "&replaces=\(old)" }
+
+        let (code, reply) = signedPost(base: base, target: target, keyID: "connect", key: connectKey)
+        switch code {
+        case "200":
+            return MachineKey(id: id, machine: machine,
+                              key: hmac(key: connectKey, message: "vitalaize machine key\n" + id))
+        case "401": throw Failure.step("The hub turned down that key (\(reply)). Copy it again from the hub's Settings page, and check both Macs' clocks are right.")
+        case "404": throw Failure.step("The hub is too old for this version of VitalAIze. Update it, then run this setup again.")
+        default: throw Failure.step("The hub did not connect this Mac (\(code) \(reply)).")
+        }
+    }
+
+    /// Posts an empty body to the hub, signed as the board checks it.
+    /// Returns the status code and the hub's reply.
+    static func signedPost(base: String, target: String, keyID: String, key: String) -> (String, String) {
+        let path = target.components(separatedBy: "?")[0]
+        let query = target.dropFirst(path.count + 1)
+        let time = String(Int(Date().timeIntervalSince1970))
+        var nonceBytes = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, nonceBytes.count, &nonceBytes)
+        let nonce = hex(nonceBytes)
+        let bodyHash = hex(Array(SHA256.hash(data: Data())))
+        let message = ["vitalaize-v1", "POST", path, String(query), time, nonce, bodyHash].joined(separator: "\n")
+        let r = Shell.run("/usr/bin/curl", ["-sS", "-w", "\n%{http_code}", "--max-time", "15", "-X", "POST",
+                                           "-H", "Content-Type: text/plain",
+                                           "-H", "X-Vitalaize-Key: \(keyID)",
+                                           "-H", "X-Vitalaize-Time: \(time)",
+                                           "-H", "X-Vitalaize-Nonce: \(nonce)",
+                                           "-H", "X-Vitalaize-Signature: \(hmac(key: key, message: message))",
+                                           "--data-binary", "", base + target], timeout: 20)
+        let lines = r.output.components(separatedBy: "\n")
+        let reply = lines.dropLast().joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return (lines.last ?? "", reply)
+    }
+
+    static func hmac(key: String, message: String) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: SymmetricKey(data: Data(key.utf8)))
+        return hex(Array(mac))
+    }
+
+    static func hex(_ bytes: [UInt8]) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
+
+    /// This Mac's name as the upload scripts gave it before: its local host
+    /// name, with anything but letters, digits, dots, dashes and underscores
+    /// made a dash, at most 64 characters.
+    static func machineName() -> String {
+        var name = Shell.run("/usr/sbin/scutil", ["--get", "LocalHostName"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { name = ProcessInfo.processInfo.hostName.components(separatedBy: ".")[0] }
+        let ok = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-".utf8)
+        let bytes = name.utf8.map { ok.contains($0) ? $0 : UInt8(ascii: "-") }
+        return String(decoding: bytes.prefix(64), as: UTF8.self)
+    }
+
+    /// The key id an earlier connect left in `folder`, if any.
+    static func keyID(in folder: String) -> String? {
+        guard let text = try? String(contentsOfFile: folder + "/wallboard-key", encoding: .utf8),
+              let id = text.components(separatedBy: "\n").first,
+              id.count == 32, id.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        return id
+    }
+
+    /// Saves this Mac's key beside the upload script, readable only by you.
+    static func saveKey(_ k: MachineKey, in folder: String) throws {
+        let path = folder + "/wallboard-key"
+        try? fm.removeItem(atPath: path)
+        let text = "\(k.id)\n\(k.machine)\n\(k.key)\n"
+        guard fm.createFile(atPath: path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw Failure.step("Could not save this Mac's key in \(folder).")
         }
     }
 
@@ -489,6 +592,7 @@ enum Setup {
             }
         }
         try? fm.removeItem(at: scriptURL)
+        try? fm.removeItem(at: dir.appendingPathComponent("wallboard-key"))
     }
 
     // MARK: Uninstalling

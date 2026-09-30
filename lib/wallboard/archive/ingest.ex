@@ -11,8 +11,9 @@ defmodule Wallboard.Archive.Ingest do
   nothing at all when tried (2026-09-29). Hooks worked, and a transcript
   holds everything.
 
-  Every upload needs this board's ingest key (made on first use, kept in
-  the database, shown on the settings page). Uploaded files are checked by
+  Every upload is signed with the sending machine's own key (see
+  Wallboard.Archive.MachineKeys), and is refused when it would unpack to
+  more than `max_unpacked/0`, before it takes that memory. Uploaded files are checked by
   name before anything is written: one `<session id>.jsonl` and its
   `<session id>/subagents/` files, nothing else. They are kept under the
   database's folder, in inbox/<machine>/<account>/, so Refresh can read
@@ -27,29 +28,19 @@ defmodule Wallboard.Archive.Ingest do
 
   alias Wallboard.Archive.{CodexTranscript, Collector}
   alias Wallboard.Sources.Claude
-  alias Wallboard.Store
 
   @session ~r/\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl\z/
   @sub ~r/\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/subagents\/([A-Za-z0-9._-]+\.(?:jsonl|meta\.json))\z/
   @rollout ~r/\Arollout-[0-9A-Za-z-]{1,40}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl\z/
   @name ~r/\A[A-Za-z0-9._-]{1,64}\z/
 
-  @doc "The key other Macs send with each upload. Made once, then kept."
-  def token do
-    case Store.get_meta("ingest_token") do
-      t when is_binary(t) ->
-        t
+  # The largest session this Mac holds is about 75 MB (2026-09-30), so this
+  # leaves room for a long session and its subagents, while a small upload
+  # that would unpack to gigabytes is stopped here.
+  @max_unpacked 512_000_000
 
-      _ ->
-        t = 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-        Store.put_meta("ingest_token", t)
-        t
-    end
-  end
-
-  @doc "True when `given` is this board's ingest key."
-  def valid_token?(given) when is_binary(given), do: Plug.Crypto.secure_compare(given, token())
-  def valid_token?(_), do: false
+  @doc "The most an upload may unpack to, in bytes."
+  def max_unpacked, do: Application.get_env(:wallboard, :max_unpacked, @max_unpacked)
 
   @doc """
   True for a machine or account name safe to use in a folder name. A name
@@ -99,9 +90,48 @@ defmodule Wallboard.Archive.Ingest do
   end
 
   # Reads the whole archive in memory, so no uploaded path ever touches disk
-  # before it is checked.
-  defp unpack(bin) do
-    case :erl_tar.extract({:binary, bin}, [:compressed, :memory]) do
+  # before it is checked. It is unpacked a piece at a time, and stops as
+  # soon as it passes the limit.
+  @doc false
+  def unpack(bin) do
+    with {:ok, tar} <- gunzip(bin, max_unpacked()) do
+      untar(tar)
+    end
+  end
+
+  defp gunzip(bin, limit) do
+    z = :zlib.open()
+
+    try do
+      # 31: a gzip header, as tar -z writes.
+      :ok = :zlib.inflateInit(z, 31)
+      inflate(z, :zlib.safeInflate(z, bin), [], 0, limit)
+    rescue
+      _ -> {:error, "not a .tar.gz"}
+    catch
+      _, _ -> {:error, "not a .tar.gz"}
+    after
+      :zlib.close(z)
+    end
+  end
+
+  defp inflate(z, {status, out}, acc, size, limit) when status in [:continue, :finished] do
+    got = IO.iodata_length(out)
+    size = size + got
+
+    cond do
+      size > limit -> {:error, :too_big}
+      status == :finished -> {:ok, IO.iodata_to_binary(Enum.reverse([out | acc]))}
+      # All the input is in and nothing more comes out: it was cut short.
+      got == 0 -> {:error, "not a .tar.gz"}
+      true -> inflate(z, :zlib.safeInflate(z, []), [out | acc], size, limit)
+    end
+  end
+
+  defp inflate(_z, _other, _acc, _size, _limit), do: {:error, "not a .tar.gz"}
+
+  defp untar(tar) do
+    case :erl_tar.extract({:binary, tar}, [:memory]) do
       {:ok, files} ->
         # macOS tar can add a "._" companion file holding each file's
         # extended attributes; those are not part of the session.
@@ -299,8 +329,12 @@ defmodule Wallboard.Archive.Ingest do
 
   When a turn ends and when a session ends it sends the transcript: at most
   once a minute per session while the session runs, and always at the end.
+
+  Every request is signed with this machine's key, from the wallboard-key
+  file the connect command leaves beside the script (see `signing/0`).
+  Without that file it sends nothing.
   """
-  def upload_script(hub_url, token) do
+  def upload_script(hub_url) do
     """
     #!/bin/sh
     # Sends this Claude session's transcript to the wallboard at #{hub_url},
@@ -309,7 +343,13 @@ defmodule Wallboard.Archive.Ingest do
     # blocks Claude, and a hub it cannot reach costs at most a few seconds
     # of this script's own time. A failed send is tried again next time.
     HUB="#{hub_url}"
-    KEY="#{token}"
+    #{signing()}
+    # This machine's key id, the machine name it was made for, and the key,
+    # from connecting. Without them there is nothing to send with.
+    KEYFILE="$(dirname "$0")/wallboard-key"
+    [ -r "$KEYFILE" ] || exit 0
+    { read -r KEY_ID; read -r machine; read -r KEY; } < "$KEYFILE"
+    [ -n "$KEY" ] || exit 0
 
     # Milliseconds, so the hub can put "waiting" and "done waiting" back in
     # order when they arrive the other way round.
@@ -320,17 +360,18 @@ defmodule Wallboard.Archive.Ingest do
       printf '%s' "$t"
     }
     names() {
-      machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
-      machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
       account=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
       account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
     }
+    # Posts the JSON on stdin as a status.
     send_status() {
-      curl -fsS --connect-timeout 3 --max-time 10 -X POST \\
-        -H "Authorization: Bearer $KEY" \\
-        -H "Content-Type: application/json" \\
-        --data-binary @- \\
-        "$HUB/ingest/status?machine=$machine&account=$account&at=$at" >/dev/null 2>&1
+      body=$(mktemp "${TMPDIR:-/tmp}/wallboard-status.XXXXXX") || return 1
+      cat > "$body"
+      signed_post "/ingest/status?machine=$machine&account=$account&at=$at" application/json "$body" \\
+        -fsS --connect-timeout 3 --max-time 10 >/dev/null 2>&1
+      sent=$?
+      rm -f "$body"
+      return $sent
     }
     # Claims the marker and sends "done waiting". Given the marker's words,
     # it ends only that wait: a newer one is put back untouched. When the
@@ -533,11 +574,8 @@ defmodule Wallboard.Archive.Ingest do
     else
       COPYFILE_DISABLE=1 tar -czf "$tmp" -C "$dir" "$session.jsonl"
     fi
-    curl -fsS --max-time 120 -X POST \\
-      -H "Authorization: Bearer $KEY" \\
-      -H "Content-Type: application/gzip" \\
-      --data-binary @"$tmp" \\
-      "$HUB/ingest/transcript?machine=$machine&account=$account" >/dev/null 2>&1
+    signed_post "/ingest/transcript?machine=$machine&account=$account" application/gzip "$tmp" \\
+      -fsS --max-time 120 >/dev/null 2>&1
     rm -f "$tmp"
     exit 0
     """
@@ -563,8 +601,11 @@ defmodule Wallboard.Archive.Ingest do
     * A helper agent's thread has its own rollout file whose first line
       names its parent, and the parent's file names each helper as
       `"agent_thread_id"`. Archived threads move to archived_sessions/.
+
+  Like the Claude script, it signs each upload with this machine's key from
+  the wallboard-key file beside it, and sends nothing without one.
   """
-  def codex_upload_script(hub_url, token) do
+  def codex_upload_script(hub_url) do
     """
     #!/bin/sh
     # Sends this Codex session, with the helper agents it started, to the
@@ -572,13 +613,19 @@ defmodule Wallboard.Archive.Ingest do
     # hook. It answers Codex at once and sends from the background, so
     # Codex never waits on it.
     HUB="#{hub_url}"
-    KEY="#{token}"
     # How long a turn that ends within a minute of the last send waits
     # before it is sent. Tests shorten it.
     WAIT="${WALLBOARD_WAIT_SECONDS:-60}"
-
+    #{signing()}
     # Codex reads a Stop hook's output as JSON.
     echo '{}'
+
+    # This machine's key id, the machine name it was made for, and the key,
+    # from connecting. Without them there is nothing to send with.
+    KEYFILE="$(dirname "$0")/wallboard-key"
+    [ -r "$KEYFILE" ] || exit 0
+    { read -r KEY_ID; read -r machine; read -r KEY; } < "$KEYFILE"
+    [ -n "$KEY" ] || exit 0
 
     input=$(cat)
     path=$(printf '%s' "$input" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
@@ -611,8 +658,6 @@ defmodule Wallboard.Archive.Ingest do
         [ -f "$path" ] || return
       fi
       touch "$marker"
-      machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
-      machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
       account=$(basename "$home")
       account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
 
@@ -636,11 +681,8 @@ defmodule Wallboard.Archive.Ingest do
       # still hold the session's own file.
       COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@"
       if [ $? -le 1 ] && tar -tzf "$stage/up.tgz" 2>/dev/null | grep -qxF "$(basename "$path")"; then
-        curl -fsS --max-time 120 -X POST \\
-          -H "Authorization: Bearer $KEY" \\
-          -H "Content-Type: application/gzip" \\
-          --data-binary @"$stage/up.tgz" \\
-          "$HUB/ingest/transcript?tool=codex&machine=$machine&account=$account"
+        signed_post "/ingest/transcript?tool=codex&machine=$machine&account=$account" \\
+          application/gzip "$stage/up.tgz" -fsS --max-time 120
       fi
       rm -rf "$stage"
     }
@@ -665,6 +707,53 @@ defmodule Wallboard.Archive.Ingest do
   end
 
   @doc """
+  The shell functions that sign a request to the hub, shared by the
+  scripts: `signed_post <path?query> <type> <body file> [curl options]`
+  posts the file signed with $KEY_ID and $KEY, as MachineKeys.verify/4
+  checks it. perl's Digest::SHA does the hashing, with openssl where perl
+  lacks it. perl is handed the key in its environment, which other users
+  of the machine cannot see; openssl only takes it as an argument, which
+  they can, for as long as it runs.
+  """
+  def signing do
+    ~S"""
+    # The HMAC-SHA256 of $2 with the key $1, in hex.
+    hmac() {
+      _h=$(printf '%s' "$2" | WALLBOARD_HMAC_KEY="$1" perl -MDigest::SHA=hmac_sha256_hex \
+        -e 'local $/; print hmac_sha256_hex(scalar(<STDIN>), $ENV{WALLBOARD_HMAC_KEY})' 2>/dev/null) || _h=""
+      case "$_h" in ''|*[!0-9a-f]*)
+        _h=$(printf '%s' "$2" | openssl dgst -sha256 -hmac "$1" 2>/dev/null | sed 's/^.*= *//') ;;
+      esac
+      printf '%s' "$_h"
+    }
+    # The SHA-256 of the file $1, in hex.
+    sha256_of() {
+      _h=$(perl -MDigest::SHA -e 'print Digest::SHA->new(256)->addfile($ARGV[0])->hexdigest' "$1" 2>/dev/null) || _h=""
+      case "$_h" in ''|*[!0-9a-f]*)
+        _h=$(openssl dgst -sha256 -r "$1" 2>/dev/null | cut -d' ' -f1) ;;
+      esac
+      printf '%s' "$_h"
+    }
+    # Posts the file $3, of type $2, to $1 on the hub, signed. The key itself
+    # is never sent: the hub checks the signature with its own copy.
+    signed_post() {
+      _target=$1 _type=$2 _file=$3
+      shift 3
+      _path=${_target%%\?*}
+      _query=${_target#"$_path"}
+      _query=${_query#\?}
+      _time=$(date +%s)
+      _nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+      _sig=$(hmac "$KEY" "$(printf 'vitalaize-v1\nPOST\n%s\n%s\n%s\n%s\n%s' \
+        "$_path" "$_query" "$_time" "$_nonce" "$(sha256_of "$_file")")")
+      curl "$@" -X POST -H "Content-Type: $_type" -H "X-Vitalaize-Key: $KEY_ID" \
+        -H "X-Vitalaize-Time: $_time" -H "X-Vitalaize-Nonce: $_nonce" \
+        -H "X-Vitalaize-Signature: $_sig" --data-binary @"$_file" "$HUB$_target"
+    }
+    """
+  end
+
+  @doc """
   What another machine runs once to connect: saves the Claude upload script
   and adds its hooks (`hooks/0`) to Claude's settings, and when Codex is
   there, saves the Codex one and adds its two (`codex_hooks/0`) to Codex's
@@ -673,8 +762,16 @@ defmodule Wallboard.Archive.Ingest do
 
   Codex skips a new hook until the person trusts it with /hooks in Codex,
   so the script says to do that. It never marks the hooks trusted itself.
+
+  The script holds no key. The connect command hands it the connect key in
+  WALLBOARD_KEY, and it connects before it changes anything: it makes a
+  random key id, sends the hub a request naming this machine and that id,
+  signed with the connect key, and on the hub's yes works out this
+  machine's own key from the two (MachineKeys.derive/2) and saves it in
+  wallboard-key beside each upload script, readable only by this user. Run
+  again, it replaces the key it made before.
   """
-  def install_script(hub_url, token) do
+  def install_script(hub_url) do
     hooks = Jason.encode!(hooks())
     codex_hooks = Jason.encode!(codex_hooks())
 
@@ -682,6 +779,46 @@ defmodule Wallboard.Archive.Ingest do
     #!/bin/sh
     # Connects this machine's Claude Code and Codex to the wallboard at #{hub_url}.
     set -e
+    HUB="#{hub_url}"
+    #{signing()}
+    CONNECT_KEY="${WALLBOARD_KEY:-}"
+    if [ -z "$CONNECT_KEY" ]; then
+      echo "Copy the whole connect command from the hub's Settings page: it gives this script the hub's key." >&2
+      exit 1
+    fi
+    command -v curl >/dev/null 2>&1 || { echo "Needs curl." >&2; exit 1; }
+    # A known answer, to check this machine can sign at all.
+    if [ "$(hmac k msg)" != bf1a0c1242929b6464a6c0a9ac6298a67e09bd1cd4ef1f182ce0141691fc17a0 ]; then
+      echo "Needs perl (with Digest::SHA) or openssl, to sign what it sends to the hub." >&2
+      exit 1
+    fi
+
+    CONF="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    CODEX="${CODEX_HOME:-$HOME/.codex}"
+    machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
+    machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+
+    # Connect first, so a wrong key or a hub out of reach changes nothing here.
+    new_id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')
+    old_id=""
+    [ -r "$CONF/wallboard-key" ] && old_id=$(head -n 1 "$CONF/wallboard-key")
+    case "$old_id" in *[!0-9a-f]*) old_id="" ;; esac
+    work=$(mktemp -d "${TMPDIR:-/tmp}/wallboard-connect.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    : > "$work/empty"
+    KEY_ID=connect
+    KEY="$CONNECT_KEY"
+    code=$(signed_post "/ingest/connect?machine=$machine&key=$new_id${old_id:+&replaces=$old_id}" \\
+      text/plain "$work/empty" -sS -o "$work/reply" -w '%{http_code}' --connect-timeout 5 --max-time 20) || code=000
+    if [ "$code" != 200 ]; then
+      echo "The hub at $HUB did not connect this machine ($code): $(cat "$work/reply" 2>/dev/null)" >&2
+      exit 1
+    fi
+    KEY=$(hmac "$CONNECT_KEY" "$(printf 'vitalaize machine key\\n%s' "$new_id")")
+    # Readable only by this user. One line each: key id, machine, key.
+    save_key() {
+      (umask 077 && printf '%s\\n%s\\n%s\\n' "$new_id" "$machine" "$KEY" > "$1.new") && mv -f "$1.new" "$1"
+    }
 
     # Adds the hooks listed in $3 (JSON), each running $2, to the hooks file
     # $1 (Claude's settings.json or Codex's hooks.json), after backing it
@@ -737,21 +874,21 @@ defmodule Wallboard.Archive.Ingest do
     WALLBOARD_JS
     }
 
-    CONF="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     mkdir -p "$CONF"
+    save_key "$CONF/wallboard-key"
     SCRIPT="$CONF/wallboard-upload.sh"
     cat > "$SCRIPT" <<'WALLBOARD_UPLOAD'
-    #{upload_script(hub_url, token)}WALLBOARD_UPLOAD
+    #{upload_script(hub_url)}WALLBOARD_UPLOAD
     chmod 700 "$SCRIPT"
     add_hooks "$CONF/settings.json" "$SCRIPT" '#{hooks}'
-    echo "Connected. Claude sessions on this machine now go to #{hub_url}."
+    echo "Connected as $machine. Claude sessions on this machine now go to #{hub_url}."
     echo "Your previous Claude settings are in $CONF/settings.json.before-wallboard."
 
-    CODEX="${CODEX_HOME:-$HOME/.codex}"
     if [ -d "$CODEX" ]; then
+      save_key "$CODEX/wallboard-key"
       CODEX_SCRIPT="$CODEX/wallboard-upload.sh"
       cat > "$CODEX_SCRIPT" <<'WALLBOARD_CODEX_UPLOAD'
-    #{codex_upload_script(hub_url, token)}WALLBOARD_CODEX_UPLOAD
+    #{codex_upload_script(hub_url)}WALLBOARD_CODEX_UPLOAD
       chmod 700 "$CODEX_SCRIPT"
       add_hooks "$CODEX/hooks.json" "$CODEX_SCRIPT" '#{codex_hooks}'
       echo "Codex sessions on this machine go there too, once you trust the new hooks:"
