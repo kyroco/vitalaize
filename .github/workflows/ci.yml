@@ -5,6 +5,9 @@
 #
 # The Mac installer is not built here: signing and notarizing it needs the
 # Developer ID, so it stays a local build (macos/build.sh).
+#
+# Actions are pinned to a commit, with the version beside it, so a moved tag
+# cannot change what builds the downloads.
 name: CI
 
 on:
@@ -16,10 +19,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request replaces the run still going.
+# A newer push to the same pull request replaces the run still going. Every
+# push to main and every tag gets a run of its own.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 env:
   OTP_VERSION: "29"
@@ -34,15 +38,18 @@ jobs:
         # Ubuntu 22.04 is the oldest Linux the downloads promise to run on.
         os: [ubuntu-22.04, macos-15]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@v7
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ env.OTP_VERSION }}
           elixir-version: ${{ env.ELIXIR_VERSION }}
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             deps
@@ -66,35 +73,40 @@ jobs:
           - runner: ubuntu-22.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     env:
       MIX_ENV: prod
     steps:
-      - uses: actions/checkout@v7
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          otp-version: ${{ env.OTP_VERSION }}
-          elixir-version: ${{ env.ELIXIR_VERSION }}
+          persist-credentials: false
+      # First, so a mistyped tag fails before anything is installed.
       - name: Check the tag matches the version in mix.exs
-        id: version
         run: |
-          version=$(sed -n 's/^ *version: "\(.*\)",$/\1/p' mix.exs)
-          if [ -z "$version" ] || [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          version=$(sed -n 's/^ *version: "\(.*\)",$/\1/p' mix.exs | head -1)
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::mix.exs has no version like 1.2.3 (found \"$version\")."
+            exit 1
+          fi
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match version $version in mix.exs."
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "NAME=vitalaize-$version-linux-${{ matrix.arch }}.tar.gz" >> "$GITHUB_ENV"
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
       - run: mix deps.get --only prod
       - run: mix release --overwrite
       - name: Package
         run: |
-          name="vitalaize-${{ steps.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz"
           mkdir dist
           cp -R _build/prod/rel/wallboard dist/vitalaize
-          tar -czf "$name" -C dist vitalaize
-          echo "NAME=$name" >> "$GITHUB_ENV"
+          tar -czf "$NAME" -C dist vitalaize
       - name: Check the download starts
         run: scripts/check-release.sh "$NAME"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: linux-${{ matrix.arch }}
           path: ${{ env.NAME }}
@@ -102,25 +114,35 @@ jobs:
 
   release:
     name: Attach to the release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: linux-download
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
+          pattern: linux-*
           path: downloads
           merge-multiple: true
-      # If the release for this tag already exists, the downloads are added
-      # to it (replacing any of the same name). If not, a draft is made, so
-      # nothing is public until someone adds the notes and the Mac installer
-      # and publishes it.
+      # With no release for this tag yet, a draft is made, so nothing is
+      # public until someone adds the notes and the Mac installer and
+      # publishes it. A draft's downloads are replaced when the tag builds
+      # again. A published release only gets downloads it does not have yet:
+      # replacing one that people already fetch takes a person deleting it
+      # first.
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           tag="$GITHUB_REF_NAME"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          if ! draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
             gh release create "$tag" --draft --verify-tag --title "VitalAIze ${tag#v}" --notes ""
+            draft=true
           fi
-          gh release upload "$tag" downloads/*.tar.gz --clobber
+          if [ "$draft" = true ]; then
+            gh release upload "$tag" downloads/*.tar.gz --clobber
+          else
+            gh release upload "$tag" downloads/*.tar.gz
+          fi
