@@ -50,10 +50,14 @@ defmodule Wallboard.Application do
          source: Wallboard.Sources.Codex,
          interval_ms: settings.claude.poll_seconds * 1000,
          timeout_ms: 120_000},
-        {Wallboard.Poller,
-         name: :github,
-         source: Wallboard.Sources.GitHub,
-         interval_ms: settings.github.poll_seconds * 1000},
+        {
+          Wallboard.Poller,
+          # Several repositories are read four at a time.
+          name: :github,
+          source: Wallboard.Sources.GitHub,
+          interval_ms: settings.github.poll_seconds * 1000,
+          timeout_ms: 180_000
+        },
         # The first read of the transcripts can take a minute or two.
         {Wallboard.Poller,
          name: :usage,

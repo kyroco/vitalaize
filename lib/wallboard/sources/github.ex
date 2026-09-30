@@ -1,8 +1,9 @@
 defmodule Wallboard.Sources.GitHub do
   @moduledoc """
-  GitHub Actions for one repository, through the signed-in `gh` CLI.
+  GitHub Actions for each repository in settings, through the signed-in `gh`
+  CLI. Up to four repositories are read at once.
 
-  Each poll makes:
+  Each poll makes, per repository:
     * one REST call for every run created in the last 24 hours
     * one GraphQL call for the merge queue and the open pull requests
     * one REST call per run in progress, for its jobs (the step it is on)
@@ -10,10 +11,14 @@ defmodule Wallboard.Sources.GitHub do
       last dev and prod deploys show even when they are days old
 
   At the default 30 seconds with two runs going that is about 600 calls an
-  hour, well inside GitHub's 5,000 an hour.
+  hour for each repository, so six repositories stay inside GitHub's 5,000.
+
+  The facts are `%{repos: [%{repo: "owner/name", facts: ..., error: ...}]}`
+  in settings order. A repository whose read fails keeps its last facts with
+  the reason; only when every one fails is the whole poll an error.
   """
 
-  alias Wallboard.Cmd
+  alias Wallboard.{Cmd, Settings}
 
   @gql """
   query($owner: String!, $name: String!, $branch: String!) {
@@ -39,25 +44,46 @@ defmodule Wallboard.Sources.GitHub do
   # Poller hooks (see Wallboard.Poller)
 
   def poll(settings, prev, memory, now) do
-    case fetch(settings, prev, now) do
-      {:ok, facts} -> {:ok, facts, memory}
-      {:error, reason} -> {:error, reason, memory}
-    end
+    before = Map.new((prev && prev[:repos]) || [], &{&1.repo, &1.facts})
+
+    entries =
+      settings
+      |> Settings.github_repos()
+      |> Task.async_stream(fn gh -> {gh.repo, fetch(gh, before[gh.repo], now)} end,
+        max_concurrency: 4,
+        timeout: :infinity
+      )
+      |> Enum.map(fn {:ok, {repo, result}} ->
+        case result do
+          {:ok, facts} -> %{repo: repo, facts: facts, error: nil}
+          {:error, reason} -> %{repo: repo, facts: before[repo], error: reason}
+        end
+      end)
+
+    if entries != [] and Enum.all?(entries, & &1.error),
+      do: {:error, errors_text(entries), memory},
+      else: {:ok, %{repos: entries}, memory}
   end
 
+  defp errors_text([one]), do: one.error
+  defp errors_text(entries), do: Enum.map_join(entries, "; ", &"#{&1.repo}: #{&1.error}")
+
   # When the deploys were last checked is bookkeeping, not news.
-  def fingerprint(facts), do: Map.delete(facts, :deploys_checked_at)
+  def fingerprint(%{repos: entries}) do
+    Enum.map(entries, fn e ->
+      %{e | facts: e.facts && Map.delete(e.facts, :deploys_checked_at)}
+    end)
+  end
 
   # ---------------------------------------------------------------------------
   # Fetching
 
   @doc """
-  Returns {:ok, facts, deploy_checked_at} or {:error, reason}. `prev` is the
-  previous facts, used to skip the slower deploy calls between their turns.
+  One repository's facts: {:ok, facts} or {:error, reason}. `gh` is that
+  repository's settings (see Settings.github_repos/1); `prev` is its previous
+  facts, used to skip the slower deploy calls between their turns.
   """
-  def fetch(settings, prev, now) do
-    gh = settings.github
-
+  def fetch(gh, prev, now) do
     since =
       now
       |> DateTime.add(-24 * 3600, :second)
@@ -300,8 +326,8 @@ defmodule Wallboard.Sources.GitHub do
   # Summary for the board (pure). Everything here depends on `now`, so the
   # page recomputes it on its own clock; the poller only compares the facts.
 
-  def summary(facts, settings, now) do
-    gh = settings.github
+  @doc "One repository's summary. `gh` is its settings (see Settings.github_repos/1)."
+  def summary(facts, gh, now) do
     all = Enum.uniq_by(facts.runs ++ facts.deploys, & &1.id)
     typical = typical_durations(all)
 
@@ -342,6 +368,106 @@ defmodule Wallboard.Sources.GitHub do
       prs: facts.prs,
       lanes: lanes(all, gh.lanes, now)
     }
+  end
+
+  @doc """
+  Every repository in settings order, as the board shows it:
+  `%{repo, name, error, s, hot?, last_at}`, where `s` is its summary (nil
+  until its first read) and `name` is the short name, like "api", unless
+  two repositories share it.
+  """
+  def repos(facts, settings, now) do
+    got = Map.new((facts && facts[:repos]) || [], &{&1.repo, &1})
+    configs = Settings.github_repos(settings)
+    short = configs |> Enum.map(&short_repo/1) |> Enum.frequencies()
+
+    Enum.map(configs, fn gh ->
+      entry = got[gh.repo] || %{facts: nil, error: nil}
+      s = entry.facts && summary(entry.facts, gh, now)
+      name = short_repo(gh)
+
+      %{
+        repo: gh.repo,
+        name: if(short[name] > 1, do: gh.repo, else: name),
+        error: entry.error,
+        s: s,
+        hot?: hot?(s, now),
+        last_at: s && last_activity(s)
+      }
+    end)
+  end
+
+  defp short_repo(%{repo: repo}), do: repo |> String.split("/") |> List.last()
+
+  # Busy enough for a column: something running, main red, or a build
+  # failure in the last 6 hours (the span of the column's timeline).
+  defp hot?(nil, _now), do: false
+
+  defp hot?(s, now) do
+    six_hours_ago = DateTime.add(now, -6 * 3600, :second)
+
+    s.running != [] or red?(s.main) or
+      Enum.any?(s.failures, &(DateTime.compare(&1.updated_at, six_hours_ago) == :gt))
+  end
+
+  defp red?(%{conclusion: "failure"}), do: true
+  defp red?(_), do: false
+
+  defp last_activity(s) do
+    (Enum.map(s.running, & &1.started_at) ++ Enum.map(s.recent, & &1.updated_at))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(DateTime, fn -> nil end)
+  end
+
+  @doc """
+  Splits the repositories into the ones that get a column and the quiet
+  rest. The `max` busiest get columns: anything running or failed first,
+  then the most recent run, then settings order. Both lists keep settings
+  order, so a column moves only when another repository takes its place.
+  """
+  def arrange(repos, max \\ 4) do
+    chosen =
+      repos
+      |> Enum.with_index()
+      |> Enum.sort_by(fn {r, i} -> {if(r.hot?, do: 0, else: 1), -unix(r.last_at), i} end)
+      |> Enum.take(max)
+      |> MapSet.new(fn {r, _} -> r.repo end)
+
+    Enum.split_with(repos, &MapSet.member?(chosen, &1.repo))
+  end
+
+  @doc """
+  The status line's numbers across every repository: how many have a green
+  main and which are red, the merge queues, what is running and what failed.
+  """
+  def totals(repos) do
+    loaded = Enum.filter(repos, & &1.s)
+
+    %{
+      count: length(repos),
+      green: Enum.filter(loaded, &match?(%{s: %{main: %{conclusion: "success"}}}, &1)),
+      red: Enum.filter(loaded, &red?(&1.s.main)),
+      unknown: Enum.filter(repos, &(is_nil(&1.s) or is_nil(&1.s.main))),
+      queued: Enum.filter(loaded, &(&1.s.queue != [])),
+      running: Enum.filter(loaded, &(&1.s.running != [])),
+      failures:
+        loaded
+        |> Enum.flat_map(fn r -> Enum.map(r.s.failures, &Map.put(&1, :repo_name, r.name)) end)
+        |> Enum.sort_by(&unix(&1.updated_at), :desc)
+    }
+  end
+
+  @doc "Each workflow's runs from the last day and the deploy history, newest first."
+  def by_workflow(facts) do
+    (facts.runs ++ facts.deploys)
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.group_by(& &1.name)
+    |> Enum.map(fn {name, runs} ->
+      {name,
+       Enum.sort_by(runs, &unix(&1.updated_at || &1.started_at), :desc)
+       |> Enum.map(&Map.merge(&1, %{what: what(&1), took: duration(&1)}))}
+    end)
+    |> Enum.sort_by(fn {_, [latest | _]} -> -unix(latest.updated_at || latest.started_at) end)
   end
 
   defp main_state(completed, gh) do

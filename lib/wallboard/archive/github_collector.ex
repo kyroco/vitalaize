@@ -82,9 +82,38 @@ defmodule Wallboard.Archive.GitHubCollector do
   # ---------------------------------------------------------------------------
   # One round
 
-  @doc "Runs one round. Returns {:ok, runs_saved, runs_with_jobs_saved} or {:error, reason}."
+  @doc """
+  Runs one round for every repository, sharing `github_jobs_per_round`
+  between them. Returns {:ok, runs_saved, runs_with_jobs_saved} or
+  {:error, reason} when every repository failed.
+  """
   def round(settings, now) do
-    repo = settings.github.repo
+    repos = Wallboard.Settings.repo_names(settings)
+    jobs_each = max(div(settings.archive.github_jobs_per_round, max(length(repos), 1)), 1)
+
+    {ok, failed} =
+      repos
+      |> Enum.map(fn repo ->
+        case round(repo, jobs_each, settings, now) do
+          {:error, why} -> {:error, "#{repo}: #{why}"}
+          done -> done
+        end
+      end)
+      |> Enum.split_with(&match?({:ok, _, _}, &1))
+
+    errors = Enum.map_join(failed, "; ", &elem(&1, 1))
+
+    if ok == [] and failed != [] do
+      {:error, errors}
+    else
+      if failed != [], do: Logger.warning("GitHub archive: " <> errors)
+
+      {:ok, ok |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
+       ok |> Enum.map(&elem(&1, 2)) |> Enum.sum()}
+    end
+  end
+
+  defp round(repo, jobs_per_round, settings, now) do
     a = settings.archive
     today = DateTime.to_date(now)
     key = "github_backfill:" <> repo
@@ -100,7 +129,7 @@ defmodule Wallboard.Archive.GitHubCollector do
 
       jobs =
         repo
-        |> Store.runs_missing_jobs(a.github_jobs_per_round)
+        |> Store.runs_missing_jobs(jobs_per_round)
         |> Enum.count(fn run_id ->
           case api("repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=100") do
             {:ok, json} -> Store.put_jobs(repo, run_id, parse_jobs(json, repo, run_id)) == :ok

@@ -139,7 +139,7 @@ defmodule Wallboard.HubTest do
       "rotate_seconds" => "30",
       "alerts.phone" => "",
       "alerts.via" => "SMS",
-      "github.repo" => "acme/shop",
+      "github.repos" => "acme/shop",
       "claude.config_dirs" => "/Users/r/.claude\n",
       "claude.long_running_minutes" => "45",
       "archive.backfill_days" => "14",
@@ -152,8 +152,10 @@ defmodule Wallboard.HubTest do
     refute Map.has_key?(over, :rotate_seconds)
     refute Map.has_key?(over, :github)
 
-    assert {:error, errors} = Settings.check(%{values | "github.repo" => "not a repo"}, base)
-    assert errors["github.repo"] =~ "owner/name"
+    assert {:error, errors} =
+             Settings.check(%{values | "github.repos" => "acme/shop\nnot-a-repo"}, base)
+
+    assert errors["github.repos"] =~ "not-a-repo is not owner/name"
 
     assert {:error, errors} = Settings.check(%{values | "rotate_seconds" => "soon"}, base)
     assert errors["rotate_seconds"] =~ "whole number"

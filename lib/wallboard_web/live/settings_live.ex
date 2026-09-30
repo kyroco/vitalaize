@@ -86,12 +86,12 @@ defmodule WallboardWeb.SettingsLive do
 
   defp values(settings) do
     for {_, fs} <- Settings.editable(), {path, _, type, _, _} <- fs, into: %{} do
-      {Enum.join(path, "."), to_text(type, get_in(settings, path))}
+      {Enum.join(path, "."), to_text(type, Settings.current(settings, path, type))}
     end
   end
 
   defp to_text(_, nil), do: ""
-  defp to_text(:lines, list), do: Enum.join(List.wrap(list), "\n")
+  defp to_text(type, list) when type in [:lines, :repos], do: Enum.join(List.wrap(list), "\n")
   defp to_text(_, v), do: to_string(v)
 
   defp machines(%{archive: %{enabled: true}}) do
@@ -311,9 +311,9 @@ defmodule WallboardWeb.SettingsLive do
     """
   end
 
-  defp field(%{type: :lines} = assigns) do
+  defp field(%{type: type} = assigns) when type in [:lines, :repos] do
     ~H"""
-    <textarea name={@name} class="settings-input" rows="3">{@value}</textarea>
+    <textarea name={@name} class="settings-input" rows={if @type == :repos, do: 6, else: 3}>{@value}</textarea>
     """
   end
 
