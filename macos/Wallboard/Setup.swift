@@ -247,13 +247,14 @@ enum Setup {
 
     /// Installs everything the choices ask for. `say` reports each step.
     static func install(_ c: Choices, say: (String) -> Void) throws {
+        // Kept from an earlier setup, so Uninstall still finds Codex's hooks
+        // when this run could not reach them. Read before the data folder
+        // changes, since the record lives in the earlier one.
+        var hookedCodex: String? = installed()?.hookedCodex
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
         dataFolder = c.dataFolder
         var hooked: [String] = []
-        // Kept from an earlier setup, so Uninstall still finds Codex's hooks
-        // when this run could not reach them.
-        var hookedCodex: String? = installed()?.hookedCodex
 
         if c.role.runsBoard {
             if let imported = c.importedSettings {

@@ -347,6 +347,8 @@ defmodule Wallboard.Archive.Ingest do
     waiting="$marker.waiting"
 
     send() {
+      # The thread may have been archived while this waited.
+      [ -f "$path" ] || return
       touch "$marker"
       machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
       machine=$(printf '%s' "$machine" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
@@ -381,10 +383,14 @@ defmodule Wallboard.Archive.Ingest do
     }
 
     (
+      # Keep going if the terminal Codex ran in closes.
+      trap '' HUP
       if [ "$event" != "SessionEnd" ] && [ -n "$(find "$marker" -mmin -1 2>/dev/null)" ]; then
         # Sent less than a minute ago: send again once the minute is up.
-        # One waiting send per session is enough.
-        [ -e "$waiting" ] && exit 0
+        # One waiting send per session is enough. A waiting file older
+        # than two minutes was left by a send that was stopped, so it
+        # does not count.
+        [ -n "$(find "$waiting" -mmin -2 2>/dev/null)" ] && exit 0
         touch "$waiting"
         sleep "$WAIT"
         rm -f "$waiting"

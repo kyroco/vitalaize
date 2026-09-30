@@ -289,6 +289,31 @@ defmodule Wallboard.CodexUploadTest do
       assert wait_for(fn -> sends(ctx) == 3 end, 1_500)
     end
 
+    test "a waiting file left by a stopped send does not block later waits", ctx do
+      run(ctx, ctx.main, "Stop")
+      assert wait_for(fn -> sends(ctx) == 1 end)
+
+      waiting = Path.join(ctx.dir, "wallboard-sent-#{@main}.waiting")
+      File.touch!(waiting, {{2026, 9, 1}, {0, 0, 0}})
+
+      run(ctx, ctx.main, "Stop")
+      assert wait_for(fn -> sends(ctx) == 2 end)
+    end
+
+    test "a waiting send whose thread was archived meanwhile sends nothing", ctx do
+      run(ctx, ctx.main, "Stop")
+      assert wait_for(fn -> sends(ctx) == 1 end)
+
+      run(ctx, ctx.main, "Stop")
+      waiting = Path.join(ctx.dir, "wallboard-sent-#{@main}.waiting")
+      assert wait_for(fn -> File.exists?(waiting) end)
+      File.rm!(ctx.main)
+
+      assert wait_for(fn -> not File.exists?(waiting) end)
+      Process.sleep(500)
+      assert sends(ctx) == 1
+    end
+
     test "an archived session still goes with its helpers, from the right account", ctx do
       archive = Path.join(ctx.home, "archived_sessions")
       File.mkdir_p!(archive)
