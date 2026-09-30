@@ -13,7 +13,11 @@ defmodule Wallboard.Archive.Ingest do
 
   Every upload is signed with the sending machine's own key (see
   Wallboard.Archive.MachineKeys), and is refused when it would unpack to
-  more than `max_unpacked/0`, before it takes that memory. Uploaded files are checked by
+  more than `max_unpacked/0`, before it takes that memory. It is unpacked
+  into a file of its own in a folder only this user can open (`incoming/`
+  beside the database), so only the files it holds are ever in memory, once;
+  that file is removed straight after, and any left by a board that stopped
+  mid-upload are removed at start. Uploaded files are checked by
   name before anything is written: one `<session id>.jsonl` and its
   `<session id>/subagents/` files, nothing else. They are kept under the
   database's folder, in inbox/<machine>/<account>/, so Refresh can read
@@ -26,7 +30,7 @@ defmodule Wallboard.Archive.Ingest do
   this Mac's own Codex sessions.
   """
 
-  alias Wallboard.Archive.{CodexTranscript, Collector}
+  alias Wallboard.Archive.{CodexTranscript, Collector, MachineKeys, UploadGate}
   alias Wallboard.Sources.Claude
 
   @session ~r/\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl\z/
@@ -42,6 +46,13 @@ defmodule Wallboard.Archive.Ingest do
   @doc "The most an upload may unpack to, in bytes."
   def max_unpacked, do: Application.get_env(:wallboard, :max_unpacked, @max_unpacked)
 
+  # Transcripts pack about ten to one, so an upload this size already
+  # unpacks past the limit above; a larger one is refused before it is read.
+  @max_upload 128_000_000
+
+  @doc "The most an upload may be as sent (packed), in bytes."
+  def max_upload, do: Application.get_env(:wallboard, :max_upload, @max_upload)
+
   @doc """
   True for a machine or account name safe to use in a folder name. A name
   of only dots is not one: "." and ".." would reach outside the inbox.
@@ -53,12 +64,13 @@ defmodule Wallboard.Archive.Ingest do
   def valid_name?(_), do: false
 
   @doc """
-  Saves one uploaded session. Returns {:ok, session_id} or {:error, reason}.
+  Saves one uploaded session, given as a binary or as the pieces it was read
+  in. Returns {:ok, session_id} or {:error, reason}.
   """
   def receive(gzip_tar, machine, account, settings) do
     with true <- valid_name?(machine) || {:error, "bad machine name"},
          true <- valid_name?(account) || {:error, "bad account name"},
-         {:ok, files} <- unpack(gzip_tar),
+         {:ok, files} <- unpack(gzip_tar, incoming(settings)),
          {:ok, sid, main, subs} <- sort_files(files) do
       dir = Path.join([Path.dirname(settings.archive.path), "inbox", machine, account])
       main_path = Path.join(dir, sid <> ".jsonl")
@@ -76,7 +88,7 @@ defmodule Wallboard.Archive.Ingest do
         prices: settings.usage.prices,
         machine: machine,
         account: Claude.account_label(account),
-        size: byte_size(gzip_tar),
+        size: IO.iodata_length(gzip_tar),
         mtime: System.os_time(:second),
         now: System.os_time(:second)
       }
@@ -89,23 +101,77 @@ defmodule Wallboard.Archive.Ingest do
     end
   end
 
-  # Reads the whole archive in memory, so no uploaded path ever touches disk
-  # before it is checked. It is unpacked a piece at a time, and stops as
-  # soon as it passes the limit.
+  @doc """
+  The folder uploads are unpacked in: `incoming/` beside the database.
+  """
+  def incoming(settings), do: Path.join(Path.dirname(settings.archive.path), "incoming")
+
+  @doc """
+  Removes what uploads under way left in `folder` when the board stopped.
+  Run once at start, before any upload comes in (UploadGate).
+  """
+  def clear_incoming(folder) do
+    for file <- Path.wildcard(Path.join(folder, "up-*")), do: File.rm(file)
+    :ok
+  end
+
+  # Unpacks the upload (a binary, or the pieces it was read in) into a tar
+  # file of its own in `folder`, a piece at a time, and stops as soon as it
+  # passes the limit. The files are then read out of it into memory, where
+  # they are checked by name before any is written anywhere else. Unpacking
+  # to one binary instead takes twice the memory, and reading files out of
+  # it more again.
   @doc false
-  def unpack(bin) do
-    with {:ok, tar} <- gunzip(bin, max_unpacked()) do
-      untar(tar)
+  def unpack(body, folder \\ nil)
+
+  # Without a folder (tests), one of its own, removed after.
+  def unpack(body, nil) do
+    folder = Path.join(System.tmp_dir!(), "wallboard-unpack-#{token()}")
+
+    try do
+      unpack(body, folder)
+    after
+      File.rm_rf(folder)
     end
   end
 
-  defp gunzip(bin, limit) do
+  def unpack(body, folder) do
+    with {:ok, tar} <- private_file(folder) do
+      try do
+        with :ok <- gunzip(body, tar, max_unpacked()), do: untar(tar)
+      after
+        File.rm(tar)
+      end
+    end
+  end
+
+  defp token, do: 12 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+
+  # A new file, made here and nowhere else, in a folder only this user can
+  # open: the folder is made if need be, and must be a real folder.
+  defp private_file(folder) do
+    with :ok <- File.mkdir_p(folder),
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(folder),
+         :ok <- File.chmod(folder, 0o700) do
+      {:ok, Path.join(folder, "up-#{token()}")}
+    else
+      _ -> {:error, "the hub could not unpack the upload"}
+    end
+  end
+
+  defp gunzip(body, path, limit) do
     z = :zlib.open()
 
     try do
-      # 31: a gzip header, as tar -z writes.
-      :ok = :zlib.inflateInit(z, 31)
-      inflate(z, :zlib.safeInflate(z, bin), [], 0, limit)
+      {:ok, file} = :file.open(path, [:write, :exclusive, :raw, :binary])
+
+      try do
+        # 31: a gzip header, as tar -z writes.
+        :ok = :zlib.inflateInit(z, 31)
+        inflate(z, file, :zlib.safeInflate(z, body), 0, limit)
+      after
+        :file.close(file)
+      end
     rescue
       _ -> {:error, "not a .tar.gz"}
     catch
@@ -115,23 +181,30 @@ defmodule Wallboard.Archive.Ingest do
     end
   end
 
-  defp inflate(z, {status, out}, acc, size, limit) when status in [:continue, :finished] do
+  defp inflate(z, file, {status, out}, size, limit) when status in [:continue, :finished] do
     got = IO.iodata_length(out)
     size = size + got
 
     cond do
-      size > limit -> {:error, :too_big}
-      status == :finished -> {:ok, IO.iodata_to_binary(Enum.reverse([out | acc]))}
-      # All the input is in and nothing more comes out: it was cut short.
-      got == 0 -> {:error, "not a .tar.gz"}
-      true -> inflate(z, :zlib.safeInflate(z, []), [out | acc], size, limit)
+      size > limit ->
+        {:error, :too_big}
+
+      true ->
+        :ok = :file.write(file, out)
+
+        cond do
+          status == :finished -> :ok
+          # All the input is in and nothing more comes out: it was cut short.
+          got == 0 -> {:error, "not a .tar.gz"}
+          true -> inflate(z, file, :zlib.safeInflate(z, []), size, limit)
+        end
     end
   end
 
-  defp inflate(_z, _other, _acc, _size, _limit), do: {:error, "not a .tar.gz"}
+  defp inflate(_z, _file, _other, _size, _limit), do: {:error, "not a .tar.gz"}
 
   defp untar(tar) do
-    case :erl_tar.extract({:binary, tar}, [:memory]) do
+    case :erl_tar.extract(String.to_charlist(tar), [:memory]) do
       {:ok, files} ->
         # macOS tar can add a "._" companion file holding each file's
         # extended attributes; those are not part of the session.
@@ -180,7 +253,7 @@ defmodule Wallboard.Archive.Ingest do
   def receive_codex(gzip_tar, machine, account, settings) do
     with true <- valid_name?(machine) || {:error, "bad machine name"},
          true <- valid_name?(account) || {:error, "bad account name"},
-         {:ok, files} <- unpack(gzip_tar),
+         {:ok, files} <- unpack(gzip_tar, incoming(settings)),
          {:ok, up} <- sort_codex_files(files) do
       dir = Path.join([Path.dirname(settings.archive.path), "inbox", machine, account])
       File.mkdir_p!(dir)
@@ -202,7 +275,7 @@ defmodule Wallboard.Archive.Ingest do
         # The id checked above, whatever later lines of the file say.
         session_id: up.id,
         title: up.title,
-        size: byte_size(gzip_tar),
+        size: IO.iodata_length(gzip_tar),
         mtime: System.os_time(:second),
         now: System.os_time(:second)
       }
@@ -415,10 +488,27 @@ defmodule Wallboard.Archive.Ingest do
         print "gone";' "$session" 2>/dev/null || echo unknown
     }
 
-    # A transcript sent from its own run (see the end of this script).
+    # Packs the session's transcript and its subagents' into $1, as they
+    # are now. Packed again for each try, so a try that is late never
+    # carries less than one sent before it: transcripts only grow.
+    pack() {
+      [ -f "$dir/$session.jsonl" ] || return 1
+      # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
+      if [ -d "$dir/$session/subagents" ]; then
+        COPYFILE_DISABLE=1 tar -czf "$1" -C "$dir" "$session.jsonl" "$session/subagents"
+      else
+        COPYFILE_DISABLE=1 tar -czf "$1" -C "$dir" "$session.jsonl"
+      fi
+    }
+
+    # A transcript sent from its own run (see the end of this script):
+    # --send <folder> <session> <path?query>.
     if [ "$1" = --send ]; then
-      send_upload "$3" "$2"
-      rm -f "$2"
+      dir=$2 session=$3
+      case "$session" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
+      tmp=$(mktemp "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
+      send_upload "$4" pack "$tmp"
+      rm -f "$tmp"
       exit 0
     fi
 
@@ -574,21 +664,19 @@ defmodule Wallboard.Archive.Ingest do
     touch "$marker"
 
     dir=$(dirname "$path")
-    tmp=$(mktemp "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
-    # COPYFILE_DISABLE keeps macOS tar from adding "._" attribute files.
-    if [ -d "$dir/$session/subagents" ]; then
-      COPYFILE_DISABLE=1 tar -czf "$tmp" -C "$dir" "$session.jsonl" "$session/subagents"
-    else
-      COPYFILE_DISABLE=1 tar -czf "$tmp" -C "$dir" "$session.jsonl"
-    fi
     # Sent from a run of its own, detached like the loop, since trying again
-    # can take a few minutes and Claude stops a hook after two.
+    # can take a while and Claude stops a hook after two minutes.
     target="/ingest/transcript?machine=$machine&account=$account"
     if perl -MPOSIX -e 1 >/dev/null 2>&1; then
-      perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$0" --send "$tmp" "$target" \\
+      perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh "$0" --send "$dir" "$session" "$target" \\
         </dev/null >/dev/null 2>&1 &
     else
-      ( trap '' HUP; send_upload "$target" "$tmp"; rm -f "$tmp" ) </dev/null >/dev/null 2>&1 &
+      (
+        trap '' HUP
+        tmp=$(mktemp "${TMPDIR:-/tmp}/wallboard.XXXXXX") || exit 0
+        send_upload "$target" pack "$tmp"
+        rm -f "$tmp"
+      ) </dev/null >/dev/null 2>&1 &
     fi
     exit 0
     """
@@ -659,17 +747,20 @@ defmodule Wallboard.Archive.Ingest do
     marker="${TMPDIR:-/tmp}/wallboard-sent-$id"
     waiting="$marker.waiting"
 
-    send() {
+    account=$(basename "$home")
+    account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
+
+    # Packs the session, its helpers' files and its title into $stage/up.tgz,
+    # as they are now. Packed again for each try, so a try that is late
+    # never carries less than one sent before it.
+    pack() {
       # The thread may have been archived while this waited: Codex moves
       # its file, under the same name, to archived_sessions/.
       if [ ! -f "$path" ]; then
         path="$home/archived_sessions/$(basename "$path")"
         day=$(dirname "$path")
-        [ -f "$path" ] || return
+        [ -f "$path" ] || return 1
       fi
-      touch "$marker"
-      account=$(basename "$home")
-      account=$(printf '%s' "$account" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-64)
 
       set -- -C "$day" "$(basename "$path")"
       for kid in $(grep -o '"agent_thread_id":"[0-9a-f-]*"' "$path" | cut -d'"' -f4 | sort -u); do
@@ -680,7 +771,6 @@ defmodule Wallboard.Archive.Ingest do
         done
       done
 
-      stage=$(mktemp -d "${TMPDIR:-/tmp}/wallboard.XXXXXX") || return
       if grep '"id":"'"$id"'"' "$home/session_index.jsonl" > "$stage/session_index.jsonl" 2>/dev/null; then
         set -- "$@" -C "$stage" session_index.jsonl
       fi
@@ -690,9 +780,13 @@ defmodule Wallboard.Archive.Ingest do
       # also exits 1 for a file it could not read, so the archive must
       # still hold the session's own file.
       COPYFILE_DISABLE=1 tar -czf "$stage/up.tgz" "$@"
-      if [ $? -le 1 ] && tar -tzf "$stage/up.tgz" 2>/dev/null | grep -qxF "$(basename "$path")"; then
-        send_upload "/ingest/transcript?tool=codex&machine=$machine&account=$account" "$stage/up.tgz"
-      fi
+      [ $? -le 1 ] && tar -tzf "$stage/up.tgz" 2>/dev/null | grep -qxF "$(basename "$path")"
+    }
+
+    send() {
+      touch "$marker"
+      stage=$(mktemp -d "${TMPDIR:-/tmp}/wallboard.XXXXXX") || return
+      send_upload "/ingest/transcript?tool=codex&machine=$machine&account=$account" pack "$stage/up.tgz"
       rm -rf "$stage"
     }
 
@@ -721,14 +815,26 @@ defmodule Wallboard.Archive.Ingest do
   beside the script, `signed_post <path?query> <type> <body file> [curl
   options]` posts the file signed with $KEY_ID and $KEY, as
   MachineKeys.authenticate/1 checks it, and `send_upload <path?query>
-  <file>` posts an upload the same way, trying again a few times when the
-  hub is busy or out of reach. perl's Digest::SHA makes the signature,
+  <pack command> <file>` packs an upload into the file and posts it the
+  same way, packing it again for each of a few tries when the hub is busy,
+  out of reach, or fails. perl's Digest::SHA makes the signature,
   or python3 where perl lacks it (a Mac always has the first; Linux
   collectors need python3 anyway). Either is handed the key in its
   environment, which other users of the machine cannot see, never as an
   argument, which they can.
   """
   def signing do
+    String.replace(signing_text(), "MAX_TIME", to_string(curl_max_time()))
+  end
+
+  @doc """
+  How long a collector's curl waits for an upload's answer, in seconds:
+  longer than the hub's queue wait and read time together, with a minute
+  to spare for unpacking and saving, so the hub answers first.
+  """
+  def curl_max_time, do: UploadGate.wait_seconds() + MachineKeys.upload_deadline() + 60
+
+  defp signing_text do
     ~S"""
     # The HMAC-SHA256 of $2 with the key $1, in hex.
     hmac() {
@@ -776,15 +882,20 @@ defmodule Wallboard.Archive.Ingest do
         -H "X-Vitalaize-Content-SHA256: $_body" \
         -H "X-Vitalaize-Signature: $_sig" --data-binary @"$_file" "$HUB$_target"
     }
-    # Posts the upload $2 to $1, signed afresh each time, and tries again
-    # when the hub is busy (503) or out of reach: after 10, 30 and 90
-    # seconds, so a session's last send is not lost to a busy moment.
+    # Runs `$2 $3` to pack the upload into the file $3, and posts it to $1,
+    # packed and signed afresh each time. It tries again when the hub is
+    # busy (503), out of reach or too slow (000, 408), or failed (500, 502,
+    # 504): after 10, 30 and 90 seconds, so a session's last send is not
+    # lost to a busy moment. It stops when there is nothing to pack.
+    # curl gets longer than the hub's queue wait and read time together,
+    # so it is the hub, not curl, that gives up first.
     # WALLBOARD_RETRY_WAITS changes the waits (tests).
     send_upload() {
       for _wait in ${WALLBOARD_RETRY_WAITS:-10 30 90} last; do
-        _code=$(signed_post "$1" application/gzip "$2" -sS -o /dev/null -w '%{http_code}' \
-          --connect-timeout 5 --max-time 120 2>/dev/null) || _code=000
-        case "$_code" in 503|000) ;; *) return 0 ;; esac
+        "$2" "$3" || return 1
+        _code=$(signed_post "$1" application/gzip "$3" -sS -o /dev/null -w '%{http_code}' \
+          --connect-timeout 5 --max-time MAX_TIME 2>/dev/null) || _code=000
+        case "$_code" in 000|408|500|502|503|504) ;; *) return 0 ;; esac
         [ "$_wait" = last ] && return 1
         sleep "$_wait"
       done

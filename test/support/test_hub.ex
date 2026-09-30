@@ -6,8 +6,10 @@ defmodule Wallboard.TestHub do
   """
 
   use Plug.Builder
-  plug Plug.Parsers, parsers: [:urlencoded], pass: ["*/*"]
+  plug :parse_body
   plug WallboardWeb.Router
+
+  defp parse_body(conn, opts), do: WallboardWeb.Endpoint.parse_body(conn, opts)
 
   @doc """
   Serves `plug` on a free port on this machine only; returns its address.

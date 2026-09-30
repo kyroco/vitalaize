@@ -4,16 +4,25 @@ defmodule Wallboard.Archive.UploadGate do
   is checked before its body is read (see MachineKeys.authenticate/1), so
   only a connected machine ever gets here. Each one is read and unpacked
   in memory, up to the unpacking limit, so only two run at once; the rest
-  wait their turn rather than being turned away. One that waits too long
-  (longer than a collector waits for an answer) is told to come again.
+  wait their turn rather than being turned away. One that waits longer
+  than `wait_seconds/0` is told to come again (503), well before the
+  collector stops waiting for an answer (Ingest.curl_max_time/0).
 
   A place belongs to the process that took it and is let go when that
   process ends, however it ends.
+
+  Given `incoming:` (the board's own start does), it first removes what
+  uploads under way left there when the board last stopped
+  (Ingest.clear_incoming/1).
   """
 
   use GenServer
 
   @places 2
+  @wait_seconds 60
+
+  @doc "How long an upload waits for a place, in seconds."
+  def wait_seconds, do: @wait_seconds
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -21,7 +30,7 @@ defmodule Wallboard.Archive.UploadGate do
   Runs `fun` once one of the places is free, waiting up to `wait` ms for
   it. {:ok, result}, or {:error, :busy} when no place came free in time.
   """
-  def run(fun, wait \\ 100_000) do
+  def run(fun, wait \\ @wait_seconds * 1000) do
     case enter(wait) do
       :ok ->
         try do
@@ -46,7 +55,10 @@ defmodule Wallboard.Archive.UploadGate do
   end
 
   @impl true
-  def init(_opts), do: {:ok, %{inside: %{}, waiting: :queue.new()}}
+  def init(opts) do
+    if folder = opts[:incoming], do: Wallboard.Archive.Ingest.clear_incoming(folder)
+    {:ok, %{inside: %{}, waiting: :queue.new()}}
+  end
 
   @impl true
   def handle_call(:enter, {pid, _} = from, state) do

@@ -12,7 +12,7 @@ defmodule WallboardWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, session: @session_options]],
+    websocket: [connect_info: [:peer_data, :x_headers, session: @session_options]],
     longpoll: false
 
   # Files asked for without a ?v= fingerprint are checked with the server on
@@ -30,8 +30,18 @@ defmodule WallboardWeb.Endpoint do
     from: {:phoenix_live_view, "priv/static"},
     only: ~w(phoenix_live_view.min.js)
 
-  plug Plug.Parsers, parsers: [:urlencoded], pass: ["*/*"]
+  plug :parse_body
   plug Plug.Head
   plug Plug.Session, @session_options
   plug WallboardWeb.Router
+
+  @parsers Plug.Parsers.init(parsers: [:urlencoded], pass: ["*/*"])
+
+  @doc """
+  Reads a form body into the parameters, except on /ingest, where a
+  request's signature is checked before any of its body is read
+  (WallboardWeb.IngestController).
+  """
+  def parse_body(%Plug.Conn{path_info: ["ingest" | _]} = conn, _opts), do: conn
+  def parse_body(conn, _opts), do: Plug.Parsers.call(conn, @parsers)
 end

@@ -151,23 +151,26 @@ defmodule WallboardWeb.IngestController do
   end
 
   # What a signed request says comes from its query, which the signature
-  # covers. A body sent as a form would be parsed into the parameters
-  # before the controller reads it, and it would not be what was signed.
+  # covers. The endpoint leaves /ingest bodies unread (WallboardWeb.Endpoint),
+  # and a body sent as a form is refused by its type, unread.
   defp query_only(conn) do
-    case conn.body_params do
-      %Plug.Conn.Unfetched{} -> {:ok, conn.query_params}
-      empty when empty == %{} -> {:ok, conn.query_params}
-      _ -> {:error, 400, "send the body as data, not as a form"}
-    end
+    form? =
+      conn
+      |> get_req_header("content-type")
+      |> Enum.any?(&(&1 =~ ~r{\A\s*(application/x-www-form-urlencoded|multipart/)}i))
+
+    parsed? = not match?(%Plug.Conn.Unfetched{}, conn.body_params) and conn.body_params != %{}
+
+    if form? or parsed?,
+      do: {:error, 400, "send the body as data, not as a form"},
+      else: {:ok, Plug.Conn.fetch_query_params(conn).query_params}
   end
 
   # An upload says how long it is, and is read to that length and no more.
-  # A compressed upload is never much larger than what it unpacks to, so the
-  # unpacking limit caps it too.
   defp declared_length(conn) do
     with [value] <- get_req_header(conn, "content-length"),
          {n, ""} when n >= 0 <- Integer.parse(value) do
-      if n > Ingest.max_unpacked(), do: {:error, 413, "upload too large"}, else: {:ok, n}
+      if n > Ingest.max_upload(), do: {:error, 413, "upload too large"}, else: {:ok, n}
     else
       _ -> {:error, 411, "say how long the upload is"}
     end
@@ -182,11 +185,13 @@ defmodule WallboardWeb.IngestController do
       else: {:error, 404, "the archive is turned off on this board"}
   end
 
-  # A connect request has no body, and anyone may send one.
+  # A connect request has no body. (A read that stalls ends the request in
+  # Bandit itself, with a 408; the {:error, _} answers are for any other
+  # server.)
   defp read_empty(conn) do
     case read_body(conn, length: 1, read_timeout: 15_000) do
       {:ok, "", conn} -> {:ok, "", conn}
-      {:error, _} -> {:error, 400, "could not read the request"}
+      {:error, _} -> {:error, 408, "could not read the request"}
       _ -> {:error, 413, "a connect request has no body"}
     end
   end
@@ -195,7 +200,7 @@ defmodule WallboardWeb.IngestController do
     case read_body(conn, length: @max_status, read_timeout: 15_000) do
       {:ok, body, conn} -> {:ok, body, conn}
       {:more, _, _} -> {:error, 413, "request too large"}
-      {:error, _} -> {:error, 400, "could not read the request"}
+      {:error, _} -> {:error, 408, "could not read the request"}
     end
   end
 
@@ -274,9 +279,12 @@ defmodule WallboardWeb.IngestController do
   end
 
   # Plain text, so a browser never reads an error (or a reply naming what
-  # the request sent) as a page.
+  # the request sent) as a page. A refusal closes the connection: most come
+  # before the body is read, and on a connection kept open, the server
+  # would read the rest of the body to get to the next request.
   defp text(conn, status, reason) do
     conn
+    |> put_resp_header("connection", if(status >= 400, do: "close", else: "keep-alive"))
     |> put_resp_content_type("text/plain")
     |> send_resp(status, reason <> "\n")
   end
@@ -299,7 +307,10 @@ defmodule WallboardWeb.IngestController do
 
   # Reads the whole body, counting it against its declared length and
   # hashing it on the way, and stops at the upload deadline. Reads are a
-  # megabyte each, one socket read apiece, so none runs past the deadline.
+  # megabyte each, one socket read apiece, so none runs past the deadline;
+  # one that stalls for a minute ends the request in Bandit, with a 408,
+  # which the collector tries again. The body is kept as the pieces it
+  # came in, never copied into one binary.
   defp read_upload(conn, length) do
     deadline = System.monotonic_time(:millisecond) + MachineKeys.upload_deadline() * 1000
     read_chunks(conn, length, [], 0, :crypto.hash_init(:sha256), deadline)
@@ -329,12 +340,12 @@ defmodule WallboardWeb.IngestController do
             {:error, 400, "the upload is shorter than it said"}
 
           true ->
-            body = acc |> Enum.reverse([chunk]) |> IO.iodata_to_binary()
+            body = Enum.reverse(acc, [chunk])
             {:ok, body, :crypto.hash_final(hash) |> Base.encode16(case: :lower), conn}
         end
 
       {:error, _} ->
-        {:error, 400, "could not read the upload in time"}
+        {:error, 408, "could not read the upload in time"}
     end
   end
 end

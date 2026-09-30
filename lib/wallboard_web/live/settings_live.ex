@@ -15,6 +15,9 @@ defmodule WallboardWeb.SettingsLive do
   alias Wallboard.Archive.{Collector, Ingest, MachineKeys}
   alias WallboardWeb.IngestController
 
+  # What nginx, Caddy, Traefik and the like add to a request they pass on.
+  @proxy_headers ~w(x-forwarded-for x-forwarded-host x-forwarded-proto x-real-ip x-forwarded-server)
+
   @impl true
   def mount(_params, _session, socket) do
     local? = connected?(socket) and local?(socket)
@@ -44,12 +47,23 @@ defmodule WallboardWeb.SettingsLive do
   # The connect key, and taking a machine's key away, stay on this Mac: the
   # board's password travels over plain http, so another device that has
   # it may not be the owner's.
+  # A visit passed on by a proxy on this Mac comes from this Mac's own
+  # address too, whoever made it, so one that carries a proxy's headers
+  # never counts as this Mac.
   defp local?(socket) do
     case get_connect_info(socket, :peer_data) do
-      %{address: addr} -> this_mac?(addr)
+      %{address: addr} -> this_mac?(addr) and not proxied?(get_connect_info(socket, :x_headers))
       _ -> false
     end
   end
+
+  @doc """
+  True when a request's x- headers show a proxy passed it on.
+  """
+  def proxied?(headers) when is_list(headers),
+    do: Enum.any?(headers, fn {name, _} -> String.downcase(name) in @proxy_headers end)
+
+  def proxied?(_), do: false
 
   @doc """
   True when a connection comes from this Mac: from localhost, or from one of

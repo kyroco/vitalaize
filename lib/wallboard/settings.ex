@@ -411,7 +411,8 @@ defmodule Wallboard.Settings do
   @doc """
   True for a plain hub address: http or https, a host name or address, an
   optional port, and an optional path of letters, digits and . _ ~ - /
-  (for a board behind a proxy), and nothing else. It goes into scripts
+  (for a board reached through a proxy on another machine; the Settings
+  page does not show the connect key through one), and nothing else. It goes into scripts
   other machines run, so nothing that could end a quote or start a command
   may pass.
   """

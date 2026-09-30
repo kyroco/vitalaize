@@ -1,7 +1,7 @@
 defmodule Wallboard.MachineKeysTest do
   use ExUnit.Case, async: false
 
-  alias Wallboard.Archive.{Ingest, MachineKeys}
+  alias Wallboard.Archive.{Ingest, MachineKeys, UploadGate}
   alias Wallboard.{Fixtures, Settings, Store, TestHub}
   alias WallboardWeb.SettingsLive
 
@@ -504,8 +504,6 @@ defmodule Wallboard.MachineKeysTest do
   end
 
   describe "upload limits" do
-    alias Wallboard.Archive.UploadGate
-
     test "two signed uploads run at once, the rest wait their turn, and a dead one gives its place back" do
       start_supervised!(UploadGate)
       parent = self()
@@ -629,47 +627,199 @@ defmodule Wallboard.MachineKeysTest do
       assert out == "say how long the upload is\n\n411"
     end
 
-    # A hub that says it is busy the first `busy` times, then takes it.
-    defmodule Busy do
+    # A hub that gives the replies in `agent` in turn ({status, then}, `then`
+    # run before replying), then 200, and tells the test each body it got.
+    defmodule Replies do
       @behaviour Plug
       import Plug.Conn
 
       def init(opts), do: opts
 
-      def call(conn, %{counter: counter, busy: busy, test: test}) do
-        n = :counters.get(counter, 1) + 1
-        :counters.put(counter, 1, n)
-        {:ok, _, conn} = read_body(conn)
-        send(test, {:try, n, get_req_header(conn, "x-vitalaize-nonce")})
-        if n <= busy, do: send_resp(conn, 503, "busy\n"), else: send_resp(conn, 200, "saved\n")
+      def call(conn, %{agent: agent, test: test}) do
+        {:ok, body, conn} = read_body(conn, length: 10_000_000)
+
+        {status, then} =
+          Agent.get_and_update(agent, fn
+            [next | rest] -> {next, rest}
+            [] -> {{200, nil}, []}
+          end)
+
+        send(test, {:try, body, get_req_header(conn, "x-vitalaize-nonce")})
+        if then, do: then.()
+        send_resp(conn, status, "reply\n")
       end
     end
 
-    test "a collector tries a busy hub again, signing each try afresh" do
+    defp replies(list) do
+      {:ok, agent} = Agent.start_link(fn -> list end)
+      TestHub.serve({Replies, %{agent: agent, test: self()}})
+    end
+
+    test "a collector tries again when the hub is busy, slow or failing, signing each try afresh" do
       dir = tmp_dir()
-      counter = :counters.new(1, [])
-      hub = TestHub.serve({Busy, %{counter: counter, busy: 2, test: self()}})
+      hub = replies([{503, nil}, {408, nil}, {500, nil}, {502, nil}])
       script = Path.join(dir, "upload.sh")
       Fixtures.write_key(dir, String.duplicate("a", 32), "laptop", String.duplicate("b", 64))
 
-      # The helpers from the Claude script, run on their own.
+      # The helpers from the Claude script, run on their own, with a pack
+      # step that packs something new each time.
       File.write!(script, """
       #!/bin/sh
       HUB='#{hub}'
       #{Ingest.signing()}
       load_key || exit 3
-      printf 'x' > "#{dir}/up.tgz"
-      send_upload "/ingest/transcript?machine=laptop" "#{dir}/up.tgz"
+      n=0
+      pack() { n=$((n + 1)); printf 'try %s' "$n" > "$1"; }
+      send_upload "/ingest/transcript?machine=laptop" pack "#{dir}/up.tgz"
       """)
 
-      assert {_, 0} =
-               System.cmd("sh", [script], env: [{"WALLBOARD_RETRY_WAITS", "0 0 0"}])
+      # Four failures, and a fifth try would be past the three waits.
+      assert {_, 1} = System.cmd("sh", [script], env: [{"WALLBOARD_RETRY_WAITS", "0 0 0"}])
 
-      assert_receive {:try, 1, [n1]}
-      assert_receive {:try, 2, [n2]}
-      assert_receive {:try, 3, [n3]}
-      refute_receive {:try, 4, _}, 200
-      assert length(Enum.uniq([n1, n2, n3])) == 3
+      nonces =
+        for n <- 1..4 do
+          assert_receive {:try, body, [nonce]}
+          assert body == "try #{n}"
+          nonce
+        end
+
+      refute_receive {:try, _, _}, 200
+      assert length(Enum.uniq(nonces)) == 4
+
+      # A refusal that trying again cannot fix ends it.
+      hub = replies([{422, nil}])
+      File.write!(script, String.replace(File.read!(script), ~r/HUB='[^']*'/, "HUB='#{hub}'"))
+      assert {_, 0} = System.cmd("sh", [script], env: [{"WALLBOARD_RETRY_WAITS", "0 0 0"}])
+      assert_receive {:try, "try 1", _}
+      refute_receive {:try, _, _}, 200
+    end
+
+    test "a transcript sent again carries what was written meanwhile, never an older copy" do
+      dir = tmp_dir()
+      folder = Path.join(dir, "project")
+      File.mkdir_p!(folder)
+      transcript = Path.join(folder, "#{@sid}.jsonl")
+      File.write!(transcript, "{\"turn\":1}\n")
+
+      # The first try finds the hub busy, and the session goes on meanwhile.
+      hub = replies([{503, fn -> File.write!(transcript, "{\"turn\":2}\n", [:append]) end}])
+      script = Path.join(dir, "upload.sh")
+      File.write!(script, Ingest.upload_script(hub))
+      Fixtures.write_key(dir, String.duplicate("a", 32), "laptop", String.duplicate("b", 64))
+
+      assert {_, 0} =
+               System.cmd(
+                 "sh",
+                 [script, "--send", folder, @sid, "/ingest/transcript?machine=laptop"],
+                 env: [{"WALLBOARD_RETRY_WAITS", "0 0 0"}, {"TMPDIR", dir}]
+               )
+
+      assert_receive {:try, first, _}
+      assert_receive {:try, second, _}
+      assert {:ok, [{_, "{\"turn\":1}\n"}]} = Ingest.unpack(first)
+      assert {:ok, [{_, "{\"turn\":1}\n{\"turn\":2}\n"}]} = Ingest.unpack(second)
+      # Nothing left behind.
+      assert Path.wildcard(Path.join(dir, "wallboard.*")) == []
+    end
+
+    test "curl waits longer than the hub's queue and read time together" do
+      assert Ingest.curl_max_time() >
+               UploadGate.wait_seconds() + MachineKeys.upload_deadline()
+
+      for script <- [
+            Ingest.upload_script("http://h:4747"),
+            Ingest.codex_upload_script("http://h:4747")
+          ] do
+        assert script =~ "--max-time #{Ingest.curl_max_time()}"
+        refute script =~ "MAX_TIME"
+      end
+    end
+
+    test "a refused request closes the connection instead of reading the rest of its body" do
+      dir = tmp_dir()
+      "http://127.0.0.1:" <> port = hub(dir)
+
+      {:ok, s} =
+        :gen_tcp.connect(~c"127.0.0.1", String.to_integer(port), [:binary, active: false])
+
+      :ok =
+        :gen_tcp.send(
+          s,
+          "POST /ingest/transcript?machine=laptop HTTP/1.1\r\nHost: hub\r\n" <>
+            "Content-Type: application/gzip\r\nContent-Length: 8000000\r\n\r\n" <>
+            :binary.copy("x", 1000)
+        )
+
+      # Read to the end: a connection kept open would wait here.
+      reply = recv_all(s, "")
+      assert reply =~ "HTTP/1.1 401"
+      assert reply =~ ~r/connection: close/i
+      assert reply =~ "unsigned request"
+    end
+
+    test "the board reads no form out of an /ingest body, and refuses one" do
+      form = fn path ->
+        Plug.Test.conn(:post, path, "machine=victim")
+        |> Plug.Conn.put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> WallboardWeb.Endpoint.parse_body([])
+      end
+
+      assert %Plug.Conn.Unfetched{} = form.("/ingest/connect").body_params
+      assert form.("/settings").body_params == %{"machine" => "victim"}
+    end
+
+    test "an upload is unpacked in a folder only this user can open, and nothing stays there" do
+      dir = tmp_dir()
+      url = hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      incoming = Path.join(dir, "incoming")
+
+      # One left by a board that stopped mid-upload goes at the next start.
+      File.mkdir_p!(incoming)
+      File.write!(Path.join(incoming, "up-left"), "x")
+      stop_supervised!(UploadGate)
+      start_supervised!({UploadGate, incoming: incoming})
+      assert File.ls!(incoming) == []
+
+      files = [{~c"#{@sid}.jsonl", "{}\n"}]
+      tgz = Path.join(dir, "up.tgz")
+      :ok = :erl_tar.create(String.to_charlist(tgz), files, [:compressed])
+
+      assert {"200", "saved"} =
+               Fixtures.signed_post(
+                 url,
+                 "/ingest/transcript?machine=laptop",
+                 File.read!(tgz),
+                 id,
+                 key
+               )
+
+      assert Bitwise.band(File.stat!(incoming).mode, 0o777) == 0o700
+      assert File.ls!(incoming) == []
+    end
+
+    test "an upload larger as sent than the hub takes is refused before it is read" do
+      dir = tmp_dir()
+      url = hub(dir)
+      Application.put_env(:wallboard, :max_upload, 1000)
+      on_exit(fn -> Application.delete_env(:wallboard, :max_upload) end)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+
+      assert Fixtures.signed_post(
+               url,
+               "/ingest/transcript?machine=laptop",
+               :binary.copy("x", 2000),
+               id,
+               key
+             ) == {"413", "upload too large"}
+    end
+  end
+
+  defp recv_all(s, acc) do
+    case :gen_tcp.recv(s, 0, 3_000) do
+      {:ok, data} -> recv_all(s, acc <> data)
+      {:error, :closed} -> acc
+      {:error, :timeout} -> flunk("the connection stayed open after: #{inspect(acc)}")
     end
   end
 
@@ -835,6 +985,14 @@ defmodule Wallboard.MachineKeysTest do
       values = Map.put(socket.assigns.values, "token", "changed-here")
       {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
       assert saved.() =~ "changed-here"
+    end
+
+    test "a visit a proxy passed on never counts as this Mac" do
+      assert SettingsLive.proxied?([{"x-forwarded-for", "203.0.113.9"}])
+      assert SettingsLive.proxied?([{"X-Real-IP", "203.0.113.9"}])
+      refute SettingsLive.proxied?([{"x-requested-with", "XMLHttpRequest"}])
+      refute SettingsLive.proxied?([])
+      refute SettingsLive.proxied?(nil)
     end
 
     test "another device, even with the board's password, cannot see the key or disconnect" do
