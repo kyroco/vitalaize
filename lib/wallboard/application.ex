@@ -24,6 +24,7 @@ defmodule Wallboard.Application do
     [
       {Wallboard.Store, path: a.path},
       Wallboard.Archive.StatusRecorder,
+      Wallboard.Archive.UploadGate,
       Wallboard.Remote
     ] ++
       if(a.collect_local, do: [Wallboard.Archive.Collector], else: []) ++

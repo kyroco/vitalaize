@@ -14,7 +14,7 @@ defmodule Wallboard.Fixtures do
   """
   def connect_machine(dir, machine) do
     id = 16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
-    :ok = MachineKeys.connect(machine, id, nil)
+    :ok = MachineKeys.connect(machine, id, nil, MachineKeys.connect_key())
     key = MachineKeys.derive(MachineKeys.connect_key(), id)
     write_key(dir, id, machine, key)
     {id, key}

@@ -409,11 +409,15 @@ defmodule Wallboard.Settings do
 
   @doc """
   True for a plain hub address: http or https, a host name or address, an
-  optional port, and nothing else. It goes into scripts other machines
-  run, so nothing that could end a quote or start a command may pass.
+  optional port, and an optional path of letters, digits and . _ ~ - /
+  (for a board behind a proxy), and nothing else. It goes into scripts
+  other machines run, so nothing that could end a quote or start a command
+  may pass.
   """
   def hub_url?(url) when is_binary(url),
-    do: url =~ ~r"\Ahttps?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?/?\z"
+    do:
+      url =~
+        ~r"\Ahttps?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z"
 
   def hub_url?(_), do: false
 

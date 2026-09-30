@@ -9,8 +9,14 @@ defmodule Wallboard.TestHub do
   plug Plug.Parsers, parsers: [:urlencoded], pass: ["*/*"]
   plug WallboardWeb.Router
 
-  @doc "Serves `plug` on a free port on this machine only; returns its address."
+  @doc """
+  Serves `plug` on a free port on this machine only; returns its address.
+  Serving the hub starts its UploadGate too, for the test calling it.
+  """
   def serve(plug \\ __MODULE__) do
+    if plug == __MODULE__ and Process.whereis(Wallboard.Archive.UploadGate) == nil,
+      do: ExUnit.Callbacks.start_supervised!(Wallboard.Archive.UploadGate)
+
     {:ok, pid} = Bandit.start_link(plug: plug, ip: :loopback, port: 0, startup_log: false)
     {:ok, {_, port}} = ThousandIsland.listener_info(pid)
     "http://127.0.0.1:#{port}"

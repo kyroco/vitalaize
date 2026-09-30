@@ -32,12 +32,27 @@ defmodule Wallboard.Archive.MachineKeys do
   # How far a request's time may be from the board's clock, in seconds.
   @window 300
 
+  # The longest an upload's body may take to arrive, in seconds. The upload
+  # endpoint stops reading at this deadline.
+  @upload_deadline 600
+
+  # How long a nonce is kept: past the window, plus the slowest body, plus
+  # a margin. A copy of a request started inside the window finishes before
+  # its nonce is forgotten, so it is always refused.
+  @keep_nonces @window + @upload_deadline + 120
+
   @key_id ~r/\A[0-9a-f]{32}\z/
   @nonce ~r/\A[0-9a-f]{16,64}\z/
   @signature ~r/\A[0-9a-f]{64}\z/
 
   @doc "How far a request's time may be from this board's clock, in seconds."
   def window, do: @window
+
+  @doc "The longest an upload's body may take to arrive, in seconds."
+  def upload_deadline, do: @upload_deadline
+
+  @doc "How long a nonce is kept, in seconds."
+  def keep_nonces, do: @keep_nonces
 
   @doc """
   The connect key, made on first use and then kept. It is never the shared
@@ -52,10 +67,22 @@ defmodule Wallboard.Archive.MachineKeys do
     end
   end
 
-  @doc "Replaces the connect key. Machines already connected keep their own keys."
+  @doc "Makes the connect key. A board without one gets one on first use."
   def new_connect_key do
     k = 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
     Store.put_meta("connect_key", k)
+    k
+  end
+
+  @doc """
+  Replaces the connect key and disconnects every machine, in one step, for
+  when the old key may have been seen: whoever saw it could work out the
+  keys of machines connected with it. A connect already on its way with the
+  old key finds it gone (see connect/5).
+  """
+  def reset_connect_key do
+    k = 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    :ok = Store.reset_connect_key(k)
     k
   end
 
@@ -98,39 +125,30 @@ defmodule Wallboard.Archive.MachineKeys do
 
   @doc """
   The signed parts of a request, before its body is read: {:ok, parts} when
-  the headers are there, well formed and recent, the key is known, and the
-  nonce is new; {:error, :unsigned} when there are none; otherwise
-  {:error, status, reason}.
-
-  The nonce is claimed here, before the body comes, in one step with the
-  time check (Store.claim_nonce/4, on the database's own clock). So a copy
-  of a request is refused however slowly either one sends its body, and a
-  slow upload is never refused for being slow. Key ids are not secret, so
-  this does not stop a stranger sending a large body: the upload endpoint
-  keeps an unchecked body on disk, not in memory.
+  the headers are there, well formed and recent, and the key is known;
+  {:error, :unsigned} when there are none; otherwise {:error, status,
+  reason}. Nothing is written for a request this far: key ids are not
+  secret, so anyone may get here.
   """
-  def precheck(conn, now \\ System.os_time(:second)) do
+  def precheck(conn) do
     with {:ok, parts} <- headers(conn),
-         :ok <- fresh(parts.time, now),
-         {:ok, secret, machine} <- secret(parts.key_id),
-         :ok <- claim(parts) do
+         :ok <- fresh(parts.time, System.os_time(:second)),
+         {:ok, secret, machine} <- secret(parts.key_id) do
       {:ok, Map.merge(parts, %{secret: secret, machine: machine})}
-    end
-  end
-
-  defp claim(parts) do
-    case Store.claim_nonce(parts.key_id, parts.nonce, String.to_integer(parts.time), @window) do
-      :ok -> :ok
-      :seen -> {:error, 401, "this request was already sent once"}
-      :stale -> stale()
     end
   end
 
   @doc """
   Checks a request's signature over its body (or {:sha256, hex}, see
-  message/6), and that its key was not taken away while the body came.
-  Returns {:ok, machine} (nil for the connect key) or {:error, status,
-  reason}.
+  message/6), that its key was not taken away while the body came, and only
+  then claims its nonce. Returns {:ok, machine} (nil for the connect key)
+  or {:error, status, reason}.
+
+  The nonce is claimed on the database's own clock, in one step with its
+  time check (Store.claim_nonce/5), and kept for keep_nonces/0. A body may
+  take up to the upload deadline after a request passed precheck, so a
+  slow upload is never refused for being slow, and a copy of it is still
+  refused however slowly either comes.
   """
   def verify(conn, parts, body, now \\ System.os_time(:second)) do
     expected =
@@ -148,6 +166,9 @@ defmodule Wallboard.Archive.MachineKeys do
       secret(parts.key_id) != {:ok, parts.secret, parts.machine} ->
         {:error, 401, "this machine's key was taken away"}
 
+      (claimed = claim(parts)) != :ok ->
+        claimed
+
       true ->
         if parts.machine,
           do:
@@ -157,6 +178,20 @@ defmodule Wallboard.Archive.MachineKeys do
             ])
 
         {:ok, parts.machine}
+    end
+  end
+
+  defp claim(parts) do
+    case Store.claim_nonce(
+           parts.key_id,
+           parts.nonce,
+           String.to_integer(parts.time),
+           @window,
+           @keep_nonces
+         ) do
+      :ok -> :ok
+      :seen -> {:error, 401, "this request was already sent once"}
+      :stale -> stale()
     end
   end
 
@@ -211,33 +246,33 @@ defmodule Wallboard.Archive.MachineKeys do
   # Connected machines
 
   @doc """
-  Connects a machine: keeps the key worked out for `key_id` under
-  `machine`. When `replaces` names an earlier key of the same machine (the
-  connect command run there again), that one goes.
+  Connects a machine: keeps the key worked out for `key_id` from
+  `connect_key` (the one the request was signed with) under `machine`.
+  When `replaces` names an earlier key of the same machine (the connect
+  command run there again), that one goes. All in one database step, and
+  only while `connect_key` is still the connect key, so a new connect key
+  made meanwhile cannot leave behind a machine connected with the old one.
   """
-  def connect(machine, key_id, replaces, now \\ System.os_time(:second)) do
-    cond do
-      not (is_binary(key_id) and key_id =~ @key_id) ->
-        {:error, 422, "bad key id"}
+  def connect(machine, key_id, replaces, connect_key, now \\ System.os_time(:second)) do
+    replaces = if is_binary(replaces) and replaces =~ @key_id, do: replaces
 
-      Store.query("SELECT 1 AS x FROM machine_keys WHERE key_id = ?1", [key_id]) != [] ->
-        {:error, 409, "that key id is taken"}
-
-      true ->
-        Store.write(
-          "INSERT INTO machine_keys (key_id, machine, secret, created_at) VALUES (?1, ?2, ?3, ?4)",
-          [key_id, machine, derive(connect_key(), key_id), now]
-        )
-
-        if is_binary(replaces) and replaces != key_id,
-          do:
-            Store.write("DELETE FROM machine_keys WHERE key_id = ?1 AND machine = ?2", [
-              replaces,
-              machine
-            ])
-
-        Store.write("DELETE FROM old_key_tries WHERE machine = ?1", [machine])
-        :ok
+    if is_binary(key_id) and key_id =~ @key_id do
+      case Store.connect_machine(
+             %{
+               key_id: key_id,
+               machine: machine,
+               secret: derive(connect_key, key_id),
+               created_at: now,
+               replaces: replaces
+             },
+             connect_key
+           ) do
+        :ok -> :ok
+        :taken -> {:error, 409, "that key id is taken"}
+        :key_changed -> {:error, 401, "the connect key changed: copy the new one"}
+      end
+    else
+      {:error, 422, "bad key id"}
     end
   end
 

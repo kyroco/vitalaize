@@ -275,12 +275,25 @@ defmodule Wallboard.Store do
   @doc """
   Records a signed request's nonce, sent at `at`: :ok the first time, :seen
   when that key already sent it, :stale when `at` is more than `window`
-  seconds from now. Nonces older than the window are forgotten first. The
-  time is read here, inside this one process, so a nonce is only ever
-  forgotten once every request that could carry it is stale.
+  seconds ahead of now or more than `keep` seconds behind. Nonces older
+  than `keep` are forgotten first. The time is read here, inside this one
+  process, so a nonce is only ever forgotten once any request carrying it
+  would be refused as stale.
   """
-  def claim_nonce(key_id, nonce, at, window),
-    do: GenServer.call(__MODULE__, {:claim_nonce, key_id, nonce, at, window}, 30_000)
+  def claim_nonce(key_id, nonce, at, window, keep),
+    do: GenServer.call(__MODULE__, {:claim_nonce, key_id, nonce, at, window, keep}, 30_000)
+
+  @doc """
+  Saves a machine's key (see MachineKeys.connect/5) in one step: only while
+  `connect_key` is still the saved connect key, and dropping the key it
+  `replaces` for the same machine. :ok, :taken or :key_changed.
+  """
+  def connect_machine(key, connect_key),
+    do: GenServer.call(__MODULE__, {:connect_machine, key, connect_key}, 30_000)
+
+  @doc "Saves a new connect key and removes every machine key, in one step."
+  def reset_connect_key(connect_key),
+    do: GenServer.call(__MODULE__, {:reset_connect_key, connect_key}, 30_000)
 
   # ---------------------------------------------------------------------------
   # Reading
@@ -424,14 +437,14 @@ defmodule Wallboard.Store do
     {:reply, :ok, state}
   end
 
-  def handle_call({:claim_nonce, key_id, nonce, at, window}, _from, %{conn: c} = state) do
+  def handle_call({:claim_nonce, key_id, nonce, at, window, keep}, _from, %{conn: c} = state) do
     now = System.os_time(:second)
 
     reply =
-      if abs(at - now) > window do
+      if at > now + window or at < now - keep do
         :stale
       else
-        run(c, "DELETE FROM seen_requests WHERE at < ?1", [now - window])
+        run(c, "DELETE FROM seen_requests WHERE at < ?1", [now - keep])
 
         seen =
           "SELECT 1 AS x FROM seen_requests WHERE key_id = ?1 AND nonce = ?2"
@@ -449,6 +462,53 @@ defmodule Wallboard.Store do
           :seen
         end
       end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:connect_machine, key, connect_key}, _from, %{conn: c} = state) do
+    current = rows(c, "SELECT value FROM meta WHERE key = 'connect_key'", [])
+    taken = rows(c, "SELECT 1 AS x FROM machine_keys WHERE key_id = ?1", [key.key_id])
+
+    reply =
+      cond do
+        current != [%{value: connect_key}] ->
+          :key_changed
+
+        taken != [] ->
+          :taken
+
+        true ->
+          transaction(c, fn ->
+            run(
+              c,
+              "INSERT INTO machine_keys (key_id, machine, secret, created_at) VALUES (?1, ?2, ?3, ?4)",
+              [key.key_id, key.machine, key.secret, key.created_at]
+            )
+
+            if key.replaces,
+              do:
+                run(c, "DELETE FROM machine_keys WHERE key_id = ?1 AND machine = ?2", [
+                  key.replaces,
+                  key.machine
+                ])
+
+            run(c, "DELETE FROM old_key_tries WHERE machine = ?1", [key.machine])
+          end)
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:reset_connect_key, connect_key}, _from, %{conn: c} = state) do
+    reply =
+      transaction(c, fn ->
+        run(c, "INSERT OR REPLACE INTO meta (key, value) VALUES ('connect_key', ?1)", [
+          connect_key
+        ])
+
+        run(c, "DELETE FROM machine_keys", [])
+      end)
 
     {:reply, reply, state}
   end

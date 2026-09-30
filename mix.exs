@@ -4,7 +4,7 @@ defmodule Wallboard.MixProject do
   def project do
     [
       app: :wallboard,
-      version: "0.2.0",
+      version: "0.3.0",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -34,7 +34,10 @@ defmodule Wallboard.MixProject do
       {:phoenix_html, "~> 4.2"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
-      {:exqlite, "~> 0.41.0"}
+      {:exqlite, "~> 0.41.0"},
+      # Security scanner for Phoenix code. CI runs it; run it yourself with
+      # `mix sobelow`.
+      {:sobelow, "~> 0.16", only: [:dev, :test], runtime: false}
     ]
   end
 

@@ -18,12 +18,17 @@ defmodule WallboardWeb.SettingsLive do
   @impl true
   def mount(_params, _session, socket) do
     local? = connected?(socket) and local?(socket)
-    allowed? = connected?(socket) and (local? or Settings.get().token != nil)
+    password? = Settings.get().token != nil
+    allowed? = connected?(socket) and (local? or password?)
 
     socket =
       assign(socket,
         allowed?: allowed?,
         local?: local?,
+        # The connect key and the address other machines use: on this Mac,
+        # and only once the board has a password (which this visit gave).
+        # Without one, any account on this Mac could open the page.
+        keys?: local? and password?,
         connected?: connected?(socket),
         errors: %{},
         notice: nil,
@@ -143,7 +148,7 @@ defmodule WallboardWeb.SettingsLive do
   def handle_event(_event, _params, %{assigns: %{allowed?: false}} = socket),
     do: {:noreply, socket}
 
-  def handle_event(event, _params, %{assigns: %{local?: false}} = socket)
+  def handle_event(event, _params, %{assigns: %{keys?: false}} = socket)
       when event in ~w(toggle_key new_key disconnect),
       do: {:noreply, socket}
 
@@ -151,9 +156,9 @@ defmodule WallboardWeb.SettingsLive do
     before = Settings.get()
 
     # The address other machines use goes into the scripts the board signs,
-    # so only this Mac may change it.
+    # so it changes only where the connect key shows.
     values =
-      if socket.assigns.local?,
+      if socket.assigns.keys?,
         do: values,
         else: Map.put(values, "archive.hub_url", to_text(:string, before.archive[:hub_url]))
 
@@ -202,8 +207,7 @@ defmodule WallboardWeb.SettingsLive do
   # whoever saw it may have worked out the keys of machines connected with
   # it. So every machine is disconnected too, to connect again.
   def handle_event("new_key", _params, socket) do
-    MachineKeys.new_connect_key()
-    Enum.each(MachineKeys.list(), &MachineKeys.revoke(&1.key_id))
+    MachineKeys.reset_connect_key()
 
     {:noreply,
      socket
@@ -323,13 +327,18 @@ defmodule WallboardWeb.SettingsLive do
           hooks.json. Codex runs a new hook only once you trust it, so type /hooks in Codex there
           afterwards and trust the two wallboard-upload.sh hooks.
         </p>
-        <pre :if={@local?} class="settings-code">{install_command(@hub_url, @install_sha)}</pre>
+        <pre :if={@keys?} class="settings-code">{install_command(@hub_url, @install_sha)}</pre>
         <p :if={!@local?} class="detail-note">
           Open this page on the Mac that runs the board to copy the connect command and key, or to
           disconnect a machine. Copied here, the command could have been changed on the way.
         </p>
-        <pre :if={@local?} class="settings-code">Connect key: {if @show_key?, do: @key, else: "••••••••"}</pre>
-        <div :if={@local?} class="row">
+        <p :if={@local? and !@keys?} class="detail-note">
+          Give the board a password first (Board password, above, then restart). Until then any
+          account on this Mac could open this page, so it does not show the connect command or key,
+          and machines cannot be disconnected or the address above changed here.
+        </p>
+        <pre :if={@keys?} class="settings-code">Connect key: {if @show_key?, do: @key, else: "••••••••"}</pre>
+        <div :if={@keys?} class="row">
           <button class="link-button" phx-click="toggle_key">
             {if @show_key?, do: "Hide key", else: "Show key"}
           </button>
@@ -382,7 +391,7 @@ defmodule WallboardWeb.SettingsLive do
             <td>{if k.last_used_at, do: day(k.last_used_at), else: "not yet"}</td>
             <td>
               <button
-                :if={@local?}
+                :if={@keys?}
                 class="link-button"
                 phx-click="disconnect"
                 phx-value-key={k.key_id}

@@ -1,0 +1,21 @@
+# Sobelow's settings for running it yourself: `mix sobelow --config`. CI
+# does not read this file; it passes the same settings itself (the SOBELOW
+# line in .github/workflows/ci.yml), so a change to a skip goes in both.
+# `# sobelow_skip` comments in the code are not honored: a finding is skipped
+# only in `ignore` below, with the reason beside it.
+[
+  verbose: false,
+  private: true,
+  skip: false,
+  router: "",
+  exit: "medium",
+  format: "txt",
+  out: "",
+  threshold: "medium",
+  # Config.HTTPS: the board serves plain HTTP on purpose. It runs on a
+  # home or office network and the iPad and other Macs reach it by its local
+  # address, where there is no certificate to serve.
+  ignore: ["Config.HTTPS"],
+  ignore_files: [],
+  version: false
+]

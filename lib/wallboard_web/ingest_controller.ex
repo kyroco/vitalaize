@@ -11,40 +11,45 @@ defmodule WallboardWeb.IngestController do
 
   import Plug.Conn
 
-  alias Wallboard.Archive.{Ingest, MachineKeys}
+  alias Wallboard.Archive.{Ingest, MachineKeys, UploadGate}
 
-  # How long one upload may take to arrive, all told. A slow network gets
-  # ten minutes; a sender that trickles gets turned away.
-  @upload_deadline_ms 600_000
+  # Read a megabyte at a time, one socket read each (read_length equal to
+  # length), so every read ends by the upload's deadline.
+  @chunk 1_000_000
 
   def transcript(conn, _params) do
     settings = Wallboard.Settings.get()
 
     with :ok <- enabled(settings),
          {:ok, params} <- query_only(conn),
-         {:ok, parts} <- signed(conn, params, :machine) do
+         {:ok, parts} <- signed(conn, params, :machine),
+         {:ok, length} <- declared_length(conn),
+         :ok <- admit(parts.key_id, length) do
       receive_upload(conn, params, parts, settings)
     else
-      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+      {:error, status, reason} -> text(conn, status, reason)
     end
   end
 
   # Key ids are not secret, so anyone on the network can start an upload.
-  # Until its signature is checked, its body goes to a file only this user
-  # can read, hashed on the way, and only a checked upload is read into
-  # memory. So unchecked uploads cost disk for a while, never memory.
+  # Until its signature is checked, its body goes to a file in a folder only
+  # this user can open, hashed on the way, and UploadGate caps how many such
+  # files there are. Only a checked upload is read into memory, and only two
+  # unpack at once.
   defp receive_upload(conn, params, parts, settings) do
-    file = Path.join(System.tmp_dir!(), "wallboard-upload-#{System.unique_integer([:positive])}")
+    file = staging_file(settings)
 
     try do
       with {:ok, hash, conn} <- read_to_file(conn, file),
            {:ok, machine} <- MachineKeys.verify(conn, parts, {:sha256, hash}),
            :ok <- own_machine(machine, params["machine"]) do
-        conn |> save_upload(File.read!(file), params, settings)
+        UploadGate.checked()
+        UploadGate.unpack(fn -> save_upload(conn, File.read!(file), params, settings) end)
       else
-        {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+        {:error, status, reason} -> text(conn, status, reason)
       end
     after
+      UploadGate.checked()
       File.rm(file)
     end
   end
@@ -61,10 +66,10 @@ defmodule WallboardWeb.IngestController do
         send_resp(conn, 200, "saved\n")
 
       {:error, :too_big} ->
-        send_resp(conn, 413, "the upload unpacks to more than the hub takes\n")
+        text(conn, 413, "the upload unpacks to more than the hub takes")
 
       {:error, reason} ->
-        send_resp(conn, 422, reason <> "\n")
+        text(conn, 422, reason)
     end
   end
 
@@ -92,13 +97,13 @@ defmodule WallboardWeb.IngestController do
          :ok <- report(hook, machine, account, params["at"]) do
       send_resp(conn, 200, "ok\n")
     else
-      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+      {:error, status, reason} -> text(conn, status, reason)
     end
   end
 
   @doc """
   Connects a machine: a request signed with the connect key, naming the
-  machine and the key id it made (see MachineKeys.connect/3).
+  machine and the key id it made (see MachineKeys.connect/5).
   """
   def connect(conn, _params) do
     settings = Wallboard.Settings.get()
@@ -110,10 +115,10 @@ defmodule WallboardWeb.IngestController do
          {:ok, nil} <- MachineKeys.verify(conn, parts, body),
          machine = params["machine"],
          true <- Ingest.valid_name?(machine) || {:error, 422, "bad machine name"},
-         :ok <- MachineKeys.connect(machine, params["key"], params["replaces"]) do
-      send_resp(conn, 200, "connected as #{machine}\n")
+         :ok <- MachineKeys.connect(machine, params["key"], params["replaces"], parts.secret) do
+      text(conn, 200, "connected as #{machine}")
     else
-      {:error, status, reason} -> send_resp(conn, status, reason <> "\n")
+      {:error, status, reason} -> text(conn, status, reason)
     end
   end
 
@@ -158,6 +163,25 @@ defmodule WallboardWeb.IngestController do
       %Plug.Conn.Unfetched{} -> {:ok, conn.query_params}
       empty when empty == %{} -> {:ok, conn.query_params}
       _ -> {:error, 400, "send the body as data, not as a form"}
+    end
+  end
+
+  # An upload says how long it is, so it can be turned away before any of
+  # it is read. A compressed upload is never much larger than what it
+  # unpacks to, so the unpacking limit caps it too.
+  defp declared_length(conn) do
+    with [value] <- get_req_header(conn, "content-length"),
+         {n, ""} when n >= 0 <- Integer.parse(value) do
+      if n > Ingest.max_unpacked(), do: {:error, 413, "upload too large"}, else: {:ok, n}
+    else
+      _ -> {:error, 411, "say how long the upload is"}
+    end
+  end
+
+  defp admit(key_id, length) do
+    case UploadGate.admit(key_id, length) do
+      :ok -> :ok
+      {:error, reason} -> {:error, 503, reason}
     end
   end
 
@@ -257,8 +281,16 @@ defmodule WallboardWeb.IngestController do
         |> send_resp(200, body)
 
       {:error, status, reason} ->
-        send_resp(conn, status, reason <> "\n")
+        text(conn, status, reason)
     end
+  end
+
+  # Plain text, so a browser never reads an error (or a reply naming what
+  # the request sent) as a page.
+  defp text(conn, status, reason) do
+    conn
+    |> put_resp_content_type("text/plain")
+    |> send_resp(status, reason <> "\n")
   end
 
   @doc """
@@ -277,42 +309,63 @@ defmodule WallboardWeb.IngestController do
     end
   end
 
-  # Writes the body to `file` (made new, readable only by this user) and
-  # returns its SHA-256. A compressed upload is never much larger than what
-  # it unpacks to, so the unpacking limit caps it too.
-  defp read_to_file(conn, file) do
-    {:ok, io} = File.open(file, [:write, :binary, :exclusive])
-    File.chmod!(file, 0o600)
-    deadline = System.monotonic_time(:millisecond) + @upload_deadline_ms
+  # A new file with a random name, in a folder beside the database that
+  # only this user can open. Files older than the upload deadline are left
+  # over from a hub that stopped mid-upload, and are removed here.
+  defp staging_file(settings) do
+    dir = Path.join(Path.dirname(settings.archive.path), "incoming")
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
+    old = System.os_time(:second) - MachineKeys.upload_deadline() - 60
 
-    try do
-      read_chunks(conn, io, :crypto.hash_init(:sha256), 0, deadline)
-    after
-      File.close(io)
+    for f <- File.ls!(dir),
+        path = Path.join(dir, f),
+        match?({:ok, %{mtime: m}} when m < old, File.stat(path, time: :posix)),
+        do: File.rm(path)
+
+    name = 16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+    Path.join(dir, name)
+  end
+
+  # Writes the body to `file` and returns its SHA-256, stopping at the
+  # upload deadline.
+  defp read_to_file(conn, file) do
+    deadline = System.monotonic_time(:millisecond) + MachineKeys.upload_deadline() * 1000
+
+    case File.open(file, [:write, :binary, :exclusive]) do
+      {:ok, io} ->
+        try do
+          read_chunks(conn, io, :crypto.hash_init(:sha256), deadline)
+        after
+          File.close(io)
+        end
+
+      {:error, reason} ->
+        {:error, 500, "the hub could not store the upload (#{reason})"}
     end
   end
 
-  defp read_chunks(conn, io, hash, size, deadline) do
+  defp read_chunks(conn, io, hash, deadline) do
     left = deadline - System.monotonic_time(:millisecond)
 
     result =
       if left > 0,
-        do: read_body(conn, length: 8_000_000, read_timeout: min(left, 60_000)),
+        do: read_body(conn, length: @chunk, read_length: @chunk, read_timeout: min(left, 60_000)),
         else: {:error, :deadline}
 
     case result do
       {status, chunk, conn} when status in [:ok, :more] ->
-        size = size + byte_size(chunk)
+        # :file.write says when the disk is full; IO.binwrite does not.
+        case :file.write(io, chunk) do
+          :ok ->
+            hash = :crypto.hash_update(hash, chunk)
 
-        if size > Ingest.max_unpacked() do
-          {:error, 413, "upload too large"}
-        else
-          IO.binwrite(io, chunk)
-          hash = :crypto.hash_update(hash, chunk)
+            if status == :ok,
+              do: {:ok, :crypto.hash_final(hash) |> Base.encode16(case: :lower), conn},
+              else: read_chunks(conn, io, hash, deadline)
 
-          if status == :ok,
-            do: {:ok, :crypto.hash_final(hash) |> Base.encode16(case: :lower), conn},
-            else: read_chunks(conn, io, hash, size, deadline)
+          {:error, reason} ->
+            {:error, 507, "the hub could not store the upload (#{reason})"}
         end
 
       {:error, _} ->
