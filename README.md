@@ -89,7 +89,8 @@ or remove it.
    after you log out too, run `loginctl enable-linger $USER` once.
 
 What differs from a Mac: there is no setup app, so you edit `settings.exs`;
-text alerts need a Mac (they use Messages); and the database lives in
+text alerts by Messages need a Mac, so use Slack, ntfy or Pushover
+instead (see Alerts below); and the database lives in
 `~/.local/share/vitalaize`. To have other machines find the hub on the
 network by themselves, install `avahi-utils` on the hub; without it,
 collectors type the hub's address. A Linux machine can be a collector too:
@@ -109,7 +110,8 @@ needs `python3` and `curl`.
 - Optional: the AWS CLI (`aws`) with read-only profiles, to show whether dev
   is awake and whether prod runs the same build as dev.
 - Optional: New Relic and the 1Password CLI (`op`), for the production page.
-- Optional: the Messages app signed in, for text alerts.
+- Optional, for alerts: the Messages app signed in (Mac only), a Slack
+  incoming webhook, the ntfy app, or a Pushover account.
 
 ## Build from source
 
@@ -148,11 +150,19 @@ Run the tests with `mix test`.
   your sessions ask you. Set `token` in `settings.exs` (or a board password on
   the Settings page); the first visit from each device then needs
   `/?token=<your token>` at the end of the address.
-- **Text alerts.** Set `alerts.phone` to your number. The Mac running the
-  board sends an iMessage from the Apple ID signed in there, once each time a
-  session starts waiting on you. The first time, macOS asks whether the board
-  may control Messages. If the number is not on iMessage, set `alerts.via` to
-  `"SMS"` (needs Text Message Forwarding on your iPhone).
+- **Alerts.** Once each time a session starts waiting on you, the board sends
+  an alert on every channel you set up, in `alerts` or on the Settings page:
+  - Messages (Mac only): set `phone` to your number. The Mac sends an iMessage
+    from the Apple ID signed in there. The first time, macOS asks whether the
+    board may control Messages. If the number is not on iMessage, set `via`
+    to `"SMS"` (needs Text Message Forwarding on your iPhone).
+  - Slack: make an incoming webhook for a channel and set `slack_webhook` to
+    its address.
+  - ntfy (free, iPhone or Android): pick a topic name that is hard to guess,
+    subscribe to it in the ntfy app, and set `ntfy_topic`. Set `ntfy_server`
+    if you run your own.
+  - Pushover: set `pushover_user` to your user key, and `pushover_token` to
+    the API token of an app you make at pushover.net.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
   rather than per-token prices, so its cards show tokens and plan use. Codex
   writes nothing while it waits on you, so a Codex session never shows as
@@ -203,9 +213,11 @@ say "Loading…" beside a section while its history is still coming in.
   missing it or has a different one.
 - **A panel shows "stale" in red.** It says why. Usually `gh` or `claude` is
   signed out, or the Mac lost its connection.
-- **No texts.** Check `alerts.phone`, that Messages is signed in, and that
-  macOS allowed the board to control Messages (System Settings, Privacy &
-  Security, Automation).
+- **No alerts.** The board's log says which channel failed and why. For
+  Messages, check `alerts.phone`, that Messages is signed in, and that macOS
+  allowed the board to control Messages (System Settings, Privacy & Security,
+  Automation). For Slack, ntfy or Pushover, check the address, topic or keys,
+  and that the board's machine can reach the internet.
 
 ## License
 
