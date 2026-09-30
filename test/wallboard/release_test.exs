@@ -20,6 +20,10 @@ defmodule Wallboard.ReleaseTest do
       assert Release.newer(body("v0.1.0"), "0.2.0") == nil
     end
 
+    test "a test build is never offered" do
+      assert Release.newer(body("v0.3.0-rc.1"), "0.2.0") == nil
+    end
+
     test "compares versions as numbers, not text" do
       assert %{version: "0.10.0"} = Release.newer(body("v0.10.0"), "0.9.0")
     end
@@ -40,6 +44,22 @@ defmodule Wallboard.ReleaseTest do
       settings = Settings.merge(Settings.defaults(), %{updates: %{check: false}})
       memory = %{checked_at: @now, facts: %{version: "9.9.9", url: "x"}}
       assert Release.poll(settings, nil, memory, @now) == {:ok, nil, nil}
+    end
+
+    test "a settings file with anything but true for the check counts as off" do
+      for updates <- [false, %{check: nil}, %{check: "yes"}, %{}] do
+        settings = Map.put(Settings.defaults(), :updates, updates)
+        assert Release.poll(settings, nil, nil, @now) == {:ok, nil, nil}
+      end
+    end
+
+    test "a check counts as fresh for a day, and never when it looks from the future" do
+      at = fn secs -> %{checked_at: DateTime.add(@now, secs)} end
+      assert Release.fresh?(at.(0), @now)
+      assert Release.fresh?(at.(-86_399), @now)
+      refute Release.fresh?(at.(-86_400), @now)
+      refute Release.fresh?(at.(60), @now)
+      refute Release.fresh?(nil, @now)
     end
 
     test "within a day of the last check, it reuses the answer without asking GitHub" do

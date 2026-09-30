@@ -307,7 +307,7 @@ defmodule WallboardWeb.BoardLive do
                 trend_days={@trend_days}
                 usage={@usage}
                 usage_meta={@usage_meta}
-                release={if @settings.updates.check, do: @release}
+                release={@release}
               />
             </div>
           </div>

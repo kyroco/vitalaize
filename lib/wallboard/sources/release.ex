@@ -2,9 +2,10 @@ defmodule Wallboard.Sources.Release do
   @moduledoc """
   Whether a newer VitalAIze is out, from the latest release on GitHub.
 
-  The poller runs every hour, but GitHub is asked at most once a day; the
-  hours between reuse the last answer. With `updates.check` off, nothing is
-  asked and the note goes away.
+  The poller runs every minute, so the settings switch takes effect as fast
+  as the rest of the page, but GitHub is asked at most once a day, whether
+  that ask worked or not; the minutes between reuse the last answer. With
+  `updates.check` off, nothing is asked and the note goes away.
   """
 
   @repo "kyroco/vitalaize"
@@ -15,7 +16,7 @@ defmodule Wallboard.Sources.Release do
 
   def poll(settings, _prev, memory, now) do
     cond do
-      not settings.updates.check ->
+      not check?(settings) ->
         {:ok, nil, nil}
 
       fresh?(memory, now) ->
@@ -27,28 +28,38 @@ defmodule Wallboard.Sources.Release do
             facts = newer(body, current())
             {:ok, facts, %{checked_at: now, facts: facts}}
 
+          # Keep the last answer and wait a day, so a board with no internet
+          # or over GitHub's limit does not ask again every minute.
           {:error, reason} ->
-            {:error, reason, memory}
+            {:error, reason, %{checked_at: now, facts: memory && memory.facts}}
         end
     end
   end
 
   def fingerprint(facts), do: facts
 
-  defp fresh?(%{checked_at: at}, now), do: DateTime.diff(now, at) < @day_seconds
-  defp fresh?(_, _), do: false
+  # Anything but `true` in a hand-written settings file counts as off.
+  defp check?(%{updates: %{check: true}}), do: true
+  defp check?(_), do: false
+
+  # A clock that moved backward makes the last check look from the future;
+  # ask again rather than trust it.
+  @doc false
+  def fresh?(%{checked_at: at}, now), do: DateTime.diff(now, at) in 0..(@day_seconds - 1)
+  def fresh?(_, _), do: false
 
   @doc "The version this board runs, like \"0.2.0\"."
   def current, do: :wallboard |> Application.spec(:vsn) |> to_string()
 
   @doc """
   From GitHub's answer for the latest release: `%{version:, url:}` when it is
-  newer than `current`, otherwise nil. Tested directly.
+  newer than `current`, otherwise nil. A test build like v0.3.0-rc.1 never
+  counts. Tested directly.
   """
   def newer(body, current) do
     with {:ok, %{"tag_name" => tag, "html_url" => url}} when is_binary(tag) <- Jason.decode(body),
          true <- is_binary(url) and String.starts_with?(url, "https://github.com/"),
-         {:ok, latest} <- tag |> String.trim_leading("v") |> Version.parse(),
+         {:ok, %Version{pre: []} = latest} <- tag |> String.trim_leading("v") |> Version.parse(),
          {:ok, running} <- Version.parse(current),
          :gt <- Version.compare(latest, running) do
       %{version: to_string(latest), url: url}

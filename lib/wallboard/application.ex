@@ -60,10 +60,9 @@ defmodule Wallboard.Application do
          source: Wallboard.Sources.Usage,
          interval_ms: settings.usage.poll_seconds * 1000,
          timeout_ms: 600_000},
-        # Runs hourly so turning the check on or off shows within the hour;
-        # GitHub itself is asked once a day.
-        {Wallboard.Poller,
-         name: :release, source: Wallboard.Sources.Release, interval_ms: 60 * 60 * 1000}
+        # Runs every minute so turning the check on or off shows within the
+        # minute; GitHub itself is asked once a day.
+        {Wallboard.Poller, name: :release, source: Wallboard.Sources.Release, interval_ms: 60_000}
       ] ++
         if(Wallboard.Sources.DevPower.enabled?(settings),
           do: [
