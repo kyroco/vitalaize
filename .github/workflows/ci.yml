@@ -1,0 +1,160 @@
+# Runs the tests on Linux and macOS for every pull request and every push to
+# main. On a version tag (v0.3.0) it also builds the two Linux downloads on
+# real Intel and ARM machines, checks each one starts, and attaches them to
+# that tag's GitHub release.
+#
+# The Mac installer is not built here: signing and notarizing it needs the
+# Developer ID, so it stays a local build (macos/build.sh).
+#
+# Actions are pinned to a commit, with the version beside it, so a moved tag
+# cannot change what builds the downloads.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request or tag replaces the run still going,
+# so an older build of a tag can never land on its release after a newer
+# one. Every push to main gets a run of its own.
+concurrency:
+  group: ci-${{ github.ref_type == 'branch' && github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+env:
+  OTP_VERSION: "29"
+  ELIXIR_VERSION: "1.20"
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu 22.04 is the oldest Linux the downloads promise to run on.
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        id: beam
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      # Keyed on the exact versions installed, so a new Erlang or Elixir
+      # patch starts a fresh cache instead of recompiling on every run.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix test
+
+  linux-download:
+    name: Linux download (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    strategy:
+      matrix:
+        include:
+          # Built on Ubuntu 22.04 so the downloads keep working there: a
+          # build links against the system's C library and OpenSSL, and a
+          # newer system's would be too new for 22.04.
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # First, so a mistyped tag fails before anything is installed.
+      - name: Check the tag matches the version in mix.exs
+        run: |
+          version=$(sed -n 's/^ *version: "\(.*\)",$/\1/p' mix.exs | head -1)
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::mix.exs has no version like 1.2.3 (found \"$version\")."
+            exit 1
+          fi
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in mix.exs."
+            exit 1
+          fi
+          echo "NAME=vitalaize-$version-linux-${{ matrix.arch }}.tar.gz" >> "$GITHUB_ENV"
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      - run: mix deps.get --only prod
+      - run: mix release --overwrite
+      - name: Package
+        run: |
+          mkdir dist
+          cp -R _build/prod/rel/wallboard dist/vitalaize
+          tar -czf "$NAME" --owner=0 --group=0 --numeric-owner -C dist vitalaize
+      - name: Check the download starts
+        run: scripts/check-release.sh "$NAME"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ env.NAME }}
+          if-no-files-found: error
+
+  release:
+    name: Attach to the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: linux-download
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: linux-*
+          path: downloads
+          merge-multiple: true
+      # With no release for this tag yet, a draft is made, so nothing is
+      # public until someone adds the notes and the Mac installer and
+      # publishes it. A draft's downloads are replaced when the tag builds
+      # again. A published release only gets downloads it does not have yet:
+      # replacing one that people already fetch takes a person deleting it
+      # first.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if ! draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            gh release create "$tag" --draft --verify-tag --title "VitalAIze ${tag#v}" --notes ""
+            draft=true
+          fi
+          if [ "$draft" = true ]; then
+            gh release upload "$tag" downloads/*.tar.gz --clobber
+            exit 0
+          fi
+          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          for file in downloads/*.tar.gz; do
+            name=$(basename "$file")
+            if printf '%s\n' "$have" | grep -qxF "$name"; then
+              echo "::notice::$tag is published and already has $name, so it is left as it is."
+            else
+              gh release upload "$tag" "$file"
+            fi
+          done

@@ -21,6 +21,9 @@ else
   ROOT=$(cd "$HERE/.." && pwd)
   REL="$ROOT/_build/prod/rel/wallboard"
 fi
+# The board's process shows its folder with symlinks resolved, so resolve
+# them here too, or a board in a linked folder is never found to stop.
+[ -d "$REL" ] && REL=$(cd "$REL" && pwd -P)
 SETTINGS="$ROOT/settings.exs"
 NAME=vitalaize
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -32,8 +35,15 @@ case "$1" in
     [ -f "$SETTINGS" ] || { echo "No settings.exs in $ROOT. Copy settings.example.exs and fill it in."; exit 1; }
     command -v systemctl >/dev/null 2>&1 || { echo "This needs systemd (systemctl)."; exit 1; }
 
-    # A board started by hand holds the port, so stop it first.
-    "$REL/bin/wallboard" stop >/dev/null 2>&1 || true
+    # A board started by hand holds the port, so stop any board running from
+    # this folder first. It is found by its process, since boards run without
+    # Erlang remote connections and so cannot be asked to stop.
+    for pid in $(pgrep -f 'bin/beam' || true); do
+      case "$(ps -o args= -p "$pid")" in
+        "$REL"/erts-*/bin/beam*) kill "$pid" 2>/dev/null || true ;;
+      esac
+    done
+    sleep 2
 
     mkdir -p "$UNIT_DIR"
     cat > "$UNIT" <<EOF
@@ -55,7 +65,10 @@ WantedBy=default.target
 EOF
 
     systemctl --user daemon-reload
-    systemctl --user enable --now "$NAME.service"
+    # Restart rather than start: the loop above may have stopped this service's
+    # own board, which systemd does not bring back after a clean stop.
+    systemctl --user enable "$NAME.service"
+    systemctl --user restart "$NAME.service"
     echo "The board is on, and will start whenever you log in."
     echo "Its log: journalctl --user -u $NAME -f"
     ;;
