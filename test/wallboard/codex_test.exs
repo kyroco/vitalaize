@@ -133,6 +133,340 @@ defmodule Wallboard.CodexTest do
     assert t.running
   end
 
+  describe "needs you, from the hook" do
+    alias Wallboard.Sources.Codex
+
+    # A turn that started at 13:00:00 and is still running.
+    defp running_tally do
+      CodexTranscript.read_lines(
+        lines()
+        |> String.split("\n")
+        |> Enum.drop(-1)
+        |> Enum.join("\n")
+      )
+    end
+
+    defp at(time), do: DateTime.to_unix(~U[2026-09-29 13:00:00Z]) + time
+
+    # The fixture was started by Claude; these were started by a person.
+    defp by_person(t), do: %{t | originator: "Codex Desktop"}
+
+    test "a message that ends on a question is one" do
+      assert Codex.question("Done.\n\nWhich color do you like?") == "Which color do you like?"
+      assert Codex.question("Should I open the PR?**\n") == "Should I open the PR?**"
+      assert Codex.question(~s[Ship it now ("yes" or "no")?]) =~ "Ship it now"
+
+      assert Codex.question("Is this right?\nI think\nit is?") ==
+               "Is this right? I think it is?"
+
+      # A question earlier in the message, then a finished answer, is not.
+      assert Codex.question("Why did it fail?\n\nThe test had a typo; fixed.") == nil
+      assert Codex.question("All green.") == nil
+      assert Codex.question(nil) == nil
+    end
+
+    test "an approval request needs you, and says what it wants to run" do
+      t = running_tally()
+      mark = %{"hook_event_name" => "PermissionRequest", "at" => at(30)}
+
+      assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => "git push"}), t) ==
+               "Asks to run git"
+
+      assert Codex.waiting(
+               Map.put(mark, "tool_input", %{"command" => ["/bin/zsh", "-lc", "rm -r x"]}),
+               t
+             ) == "Asks to run rm"
+
+      assert Codex.waiting(Map.put(mark, "tool_name", "mcp__linear__save_issue"), t) ==
+               "Asks for your approval to use mcp__linear__save_issue"
+
+      assert Codex.waiting(mark, t) == "Asks for your approval"
+
+      # Odd arguments are left out rather than failing the whole poll.
+      assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => ["ls", %{"x" => 1}]}), t) ==
+               "Asks to run ls"
+
+      # Only the program shows: the rest of a command can hold a secret.
+      for {command, name} <- [
+            {~s[curl -H "Authorization: Bearer sk-live-1" https://x], "curl"},
+            {"TOKEN=abc ./bin/deploy.sh prod", "deploy.sh"},
+            {~s[PGPASSWORD="hunter2 horse" psql], "psql"},
+            {["bash", "-lc", ~s[API_KEY="a b" deploy]], "deploy"},
+            {["/bin/zsh", "-lc", "rm -r x"], "rm"},
+            {["bash", "-lc", "set\nAPI_KEY=sk-live-abc\ndeploy prod"], "set"},
+            {["bash", "-lc", "tee x <<'EOF'\nDon't stop\nEOF"], "tee"},
+            {~s[bash -c "psql postgres://u:pw@h"], "psql"},
+            {"grep -c x file", "grep"}
+          ] do
+        why = Codex.waiting(Map.put(mark, "tool_input", %{"command" => command}), t)
+        assert why == "Asks to run " <> name
+        refute why =~ "sk-live" or why =~ "pw@" or why =~ "horse" or why =~ " b"
+      end
+
+      assert Codex.waiting(Map.put(mark, "tool_input", %{"command" => "  "}), t) ==
+               "Asks for your approval"
+    end
+
+    test "an approval request is over once it ran, or its turn ends" do
+      t = running_tally()
+
+      ask = %{
+        "hook_event_name" => "PermissionRequest",
+        "turn_id" => "t1",
+        "tool_input" => %{"command" => "mix test"},
+        "at" => at(20)
+      }
+
+      assert Codex.waiting(ask, t, []) == "Asks to run mix"
+
+      # The hook keeps the agent's latest call only, so its next call (the
+      # command ran, the turn ended, the person typed) takes the request's
+      # place, and that is not waiting on you.
+      for event <- ["PostToolUse", "UserPromptSubmit", "Interrupt", "SessionEnd"] do
+        assert Codex.waiting(%{ask | "hook_event_name" => event, "at" => at(90)}, t, []) == nil
+      end
+
+      # Turned down and the turn ended, per the session's own file.
+      assert Codex.waiting(ask, %{t | running: false}, []) == nil
+    end
+
+    test "a helper's approval request is over when the person interrupts or quits" do
+      t = running_tally()
+      ask = %{"hook_event_name" => "PermissionRequest", "agent_id" => "a1", "at" => at(20)}
+      assert Codex.waiting(ask, t, []) == "Asks for your approval"
+
+      # An interrupt from before the request is older news.
+      assert Codex.waiting(ask, t, [%{"hook_event_name" => "Interrupt", "at" => at(20)}])
+
+      for event <- ["Interrupt", "SessionEnd"] do
+        assert Codex.waiting(ask, t, [%{"hook_event_name" => event, "at" => at(25)}]) == nil
+      end
+
+      # The session's own turn ending says nothing about the helper.
+      assert Codex.waiting(ask, t, [%{"hook_event_name" => "Stop", "at" => at(25)}]) ==
+               "Asks for your approval"
+    end
+
+    test "a command splits like a shell's, and never fails" do
+      assert Codex.shell_words(~s[PGPASSWORD="a b" psql -c 'x y']) ==
+               ["PGPASSWORD=a b", "psql", "-c", "x y"]
+
+      assert Codex.shell_words("set\nAPI_KEY=k\tdeploy prod") ==
+               ["set", "API_KEY=k", "deploy", "prod"]
+
+      assert Codex.shell_words("cd x && make; ls|wc") == ["cd", "x", "make", "ls", "wc"]
+      assert Codex.shell_words("'a\\' b") == ["a\\", "b"]
+      assert Codex.shell_words("tee x <<'EOF'\nDon't stop\nEOF") |> hd() == "tee"
+      assert Codex.shell_words(~s[echo "unclosed]) == ["echo", "unclosed"]
+      assert Codex.shell_words(<<"ls ", 0xFF, " x\\">>) |> hd() == "ls"
+      assert Codex.shell_words("") == []
+    end
+
+    test "a turn that ended on a question needs you; any later hook call clears it" do
+      t = by_person(CodexTranscript.read_lines(lines()))
+      stop = %{"hook_event_name" => "Stop", "at" => at(30)}
+
+      assert Codex.waiting(Map.put(stop, "last_assistant_message", "Which one?"), t) ==
+               "Which one?"
+
+      assert Codex.waiting(Map.put(stop, "last_assistant_message", "Done."), t) == nil
+
+      for event <- ["UserPromptSubmit", "PostToolUse", "SessionEnd"] do
+        assert Codex.waiting(%{"hook_event_name" => event, "at" => at(30)}, t) == nil
+      end
+
+      assert Codex.waiting(nil, t) == nil
+    end
+
+    test "a question from a session run by a script or by Claude does not count" do
+      stop = %{"hook_event_name" => "Stop", "at" => at(30), "last_assistant_message" => "Ok?"}
+      t = CodexTranscript.read_lines(lines())
+
+      assert Codex.waiting(stop, t) == nil
+      assert Codex.waiting(stop, %{t | originator: "codex_exec"}) == nil
+      assert Codex.waiting(stop, by_person(t)) == "Ok?"
+    end
+
+    test "a hook call from before the current turn started is out of date" do
+      t = running_tally()
+
+      mark = %{
+        "hook_event_name" => "Stop",
+        "last_assistant_message" => "Which one?",
+        "at" => at(-60)
+      }
+
+      assert Codex.waiting(mark, t) == nil
+    end
+
+    test "the card shows needs you, why, and since when" do
+      t = Map.merge(running_tally(), %{mtime: at(40), path: "p"})
+
+      mark = %{
+        "hook_event_name" => "PermissionRequest",
+        "tool_input" => %{"command" => "git push"},
+        "at" => at(30)
+      }
+
+      card = Codex.card(t, [], "Fix it", at(45), %{@id => [mark]})
+      assert {card.status, card.why} == {:needs, "Asks to run git"}
+      assert card.since == DateTime.from_unix!(at(30))
+      assert card.waiting_since == card.since
+
+      plain = Codex.card(t, [], "Fix it", at(45))
+      assert {plain.status, plain.why, plain.waiting_since} == {:working, nil, nil}
+
+      # A helper's call, under the session's id, does not replace the
+      # session's own approval request.
+      done = %{"hook_event_name" => "PostToolUse", "agent_id" => "a1", "at" => at(31)}
+      card = Codex.card(t, [], "Fix it", at(45), %{@id => [mark, done]})
+      assert card.status == :needs
+
+      # A helper asking for approval shows on the session that started it,
+      # whether its calls come under the session's id or its own.
+      kid = Map.merge(running_tally(), %{thread_id: "kid", parent_id: @id, mtime: at(40)})
+      helper = Map.put(mark, "agent_id", "a1")
+      card = Codex.card(t, [], "Fix it", at(45), %{@id => [helper]})
+      assert {card.status, card.why} == {:needs, "Asks to run git"}
+
+      # The session's own activity says nothing about the helper: a later
+      # line, a finished turn or a new turn in the session leave it waiting.
+      busy = %{t | last_at: DateTime.from_unix!(at(40))}
+      assert Codex.waiting(helper, busy) == "Asks to run git"
+      assert Codex.waiting(helper, %{t | running: false}) == "Asks to run git"
+      assert Codex.waiting(helper, %{t | turn_started_at: DateTime.from_unix!(at(35))})
+
+      card = Codex.card(t, [kid], "Fix it", at(45), %{"kid" => [mark]})
+      assert {card.status, card.why} == {:needs, "Asks to run git"}
+
+      # Its questions go to that session, not to you.
+      question = %{"hook_event_name" => "Stop", "last_assistant_message" => "?", "at" => at(30)}
+      done_kid = %{by_person(kid) | running: false}
+      card = Codex.card(t, [done_kid], "Fix it", at(45), %{"kid" => [question]})
+      assert card.status == :working
+
+      card =
+        Codex.card(by_person(t), [], "Fix it", at(45), %{
+          @id => [Map.put(question, "agent_id", "a1")]
+        })
+
+      assert card.status == :working
+    end
+
+    test "a turn that another hook sent on does not count until it ends" do
+      stop = %{"hook_event_name" => "Stop", "at" => at(30), "last_assistant_message" => "Ok?"}
+      assert Codex.waiting(stop, by_person(running_tally())) == nil
+    end
+
+    test "only a session that newly needs you is texted, and none on the first poll" do
+      a = %{key: "codex:a", status: :needs}
+      b = %{key: "codex:b", status: :needs}
+      c = %{key: "codex:c", status: :idle}
+
+      {newly, keys} = Codex.newly_needing([a, c], nil)
+      assert newly == []
+      assert keys == MapSet.new(["codex:a"])
+
+      {newly, keys} = Codex.newly_needing([a, b, c], keys)
+      assert newly == [b]
+      assert keys == MapSet.new(["codex:a", "codex:b"])
+    end
+
+    test "the board keeps the hook in place and reads its calls from each Codex folder" do
+      dir = Path.join(System.tmp_dir!(), "codex-hook-#{System.unique_integer([:positive])}")
+      marks = Path.join(dir, "vitalaize")
+      File.mkdir_p!(marks)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      now = DateTime.utc_now()
+      now_s = DateTime.to_unix(now)
+
+      File.write!(
+        Path.join(marks, "#{@id}.json"),
+        Jason.encode!(%{session_id: @id, hook_event_name: "Stop", last_assistant_message: "Ok?"})
+      )
+
+      stale = Path.join(marks, "old.json")
+      File.write!(stale, Jason.encode!(%{session_id: "old", hook_event_name: "Stop"}))
+      File.touch!(stale, now_s - 3 * 3600)
+
+      gone = Path.join(marks, "gone.json")
+      File.write!(gone, Jason.encode!(%{session_id: "gone", hook_event_name: "Stop"}))
+      File.touch!(gone, now_s - 8 * 24 * 3600)
+
+      File.write!(Path.join(marks, "bad.json"), "not json")
+
+      # A copy the hook never finished, because Codex stopped it.
+      half = Path.join(marks, ".hook.AbC123")
+      File.write!(half, "{")
+      File.touch!(half, now_s - 2 * 3600)
+
+      settings = %{codex: %{enabled: true, dirs: [dir], idle_minutes: 120}, alerts: %{phone: nil}}
+
+      # An approval request from six hours ago is still out: Codex writes
+      # nothing while it waits. One from 13 hours ago is let go.
+      asking = Path.join(marks, "asking.json")
+
+      File.write!(
+        asking,
+        Jason.encode!(%{session_id: "asking", hook_event_name: "PermissionRequest"})
+      )
+
+      File.touch!(asking, now_s - 6 * 3600)
+
+      too_old = Path.join(marks, "too-old.json")
+
+      File.write!(
+        too_old,
+        Jason.encode!(%{session_id: "too-old", hook_event_name: "PermissionRequest"})
+      )
+
+      File.touch!(too_old, now_s - 13 * 3600)
+
+      # A helper's calls sit beside the session's own.
+      File.write!(
+        Path.join(marks, "#{@id}.a1.json"),
+        Jason.encode!(%{session_id: @id, agent_id: "a1", hook_event_name: "PostToolUse"})
+      )
+
+      {found, read} = Codex.marks(settings, now)
+      assert Enum.sort(Map.keys(found)) == Enum.sort([@id, "asking"])
+      assert Codex.asking(found) == MapSet.new(["asking"])
+      [own] = Enum.reject(found[@id], & &1["agent_id"])
+      assert own["last_assistant_message"] == "Ok?"
+      assert is_integer(own["at"])
+      assert length(found[@id]) == 2
+      assert File.exists?(stale)
+      refute File.exists?(gone)
+      refute File.exists?(half)
+
+      # A file already read is not read again until it changes.
+      path = Path.join(marks, "#{@id}.json")
+      {stamp, _} = read[path]
+
+      {again, _} =
+        Codex.marks(settings, now, %{
+          read
+          | path => {stamp, %{"session_id" => "kept", "at" => now_s}}
+        })
+
+      assert Map.has_key?(again, "kept")
+
+      # A poll puts the shipped hook next to the calls, and puts it back.
+      {:ok, %{sessions: []}, memory} = Codex.poll(settings, nil, nil, now)
+      hook = Path.join(marks, "hook.sh")
+      assert File.read!(hook) == Codex.hook_script()
+      File.rm!(hook)
+      Codex.poll(settings, nil, memory, now)
+      assert File.read!(hook) == Codex.hook_script()
+
+      # A folder that is not there is not made.
+      missing = Path.join(dir, "no-codex-here")
+      Codex.poll(put_in(settings.codex.dirs, [missing]), nil, nil, now)
+      refute File.exists?(missing)
+    end
+  end
+
   test "the thread id comes from a session file's name" do
     assert CodexTranscript.id_from_path("/x/rollout-2026-09-22T12-03-00-#{@id}.jsonl") == @id
     assert CodexTranscript.id_from_path("/x/#{@id}.jsonl") == @id

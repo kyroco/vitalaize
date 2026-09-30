@@ -210,13 +210,56 @@ one, delete it from the release first.
   - Pushover: set `pushover_user` to your user key, and `pushover_token` to
     the API token of an app you make at pushover.net.
 
-  Alerts cover the Claude sessions on the machine that runs the board. A
+  Alerts cover the Claude sessions on the machine that runs the board, and
+  its Codex sessions once the Codex hook below is set up. A
   hub does not alert for sessions on the Macs that send it their sessions,
   since those arrive only when a turn ends.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
-  rather than per-token prices, so its cards show tokens and plan use. Codex
-  writes nothing while it waits on you, so a Codex session never shows as
-  needing you. Set `codex: %{enabled: false}` to leave it out.
+  rather than per-token prices, so its cards show tokens and plan use. Set
+  `codex: %{enabled: false}` to leave it out.
+- **Codex needing you.** Codex writes nothing to its session file while it
+  waits on you, so VitalAIze needs a small Codex hook to know. The board
+  keeps it at `~/.codex/vitalaize/hook.sh`. Add these entries to
+  `~/.codex/hooks.json`, next to any hooks you already have there:
+
+  ```json
+  {
+    "hooks": {
+      "PermissionRequest": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "PostToolUse": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "Stop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "SubagentStop": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "Interrupt": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}],
+      "SessionEnd": [{"hooks": [{"type": "command", "command": "sh ~/.codex/vitalaize/hook.sh", "timeout": 5}]}]
+    }
+  }
+  ```
+
+  Then open Codex, type `/hooks` and trust them: Codex skips a new or
+  changed hook until you do. A Codex card then shows **Needs you** (and
+  sends an alert, if alerts are on) when Codex asks to run something, or when
+  a turn ends on a question, meaning the last paragraph of its reply ends in
+  a question mark. It clears when Codex moves on or you reply. The card names
+  only the program Codex wants to run, never the whole command, since that
+  can hold a password. Codex tells nothing when a command you approved
+  starts, so the card keeps saying Needs you until that command finishes.
+  And if Codex runs other commands at the same time as the one waiting on
+  you, the first of those to finish clears the card although Codex still
+  waits.
+  A card waiting on your approval stays up to 12 hours, even past the idle
+  time. The hook keeps only the latest thing Codex sent it for each session
+  and each helper agent, in `~/.codex/vitalaize`, and the board removes those
+  after a week.
+
+  This is new and has not yet been seen working with a real Codex, so it may
+  mark a card wrongly or send a wrong alert. To help check it, turn on
+  recording with `touch ~/.codex/vitalaize/capture-on`. Every call Codex
+  makes to the hook is then added to `~/.codex/vitalaize/payloads.jsonl`.
+  Use Codex as usual (a run where it asks for your approval is the most
+  useful), then `rm ~/.codex/vitalaize/capture-on` and send that file to the
+  VitalAIze team. It holds what you typed and what Codex ran, so read it
+  first and leave out anything private.
 - **New Relic tab.** Set `new_relic: %{enabled: false}` if you do not use
   New Relic. Otherwise set `api_key_ref` to where your New Relic User API key
   lives in 1Password (`"op://Vault/Item/field"`), `account_id`, and the

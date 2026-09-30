@@ -1,6 +1,6 @@
 defmodule Wallboard.Alerts do
   @moduledoc """
-  Tells the board's owner when a Claude session newly needs them.
+  Tells the board's owner when a Claude or Codex session newly needs them.
 
   There are four ways to send, and every one that is set up in settings gets
   one alert each time a session starts waiting:
