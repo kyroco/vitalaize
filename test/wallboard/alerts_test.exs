@@ -201,18 +201,30 @@ defmodule Wallboard.AlertsTest do
       refute Enum.any?(Map.values(shown), &(&1 =~ "hooks.slack.com"))
       assert shown["alerts.ntfy_topic"] == ""
 
-      back = WallboardWeb.SettingsLive.unmask(shown, settings)
+      back = WallboardWeb.SettingsLive.unmask(shown, settings, settings)
       assert back["alerts.slack_webhook"] == hook
 
       typed = Map.put(shown, "alerts.slack_webhook", "https://hooks.slack.com/new")
 
-      assert WallboardWeb.SettingsLive.unmask(typed, settings)["alerts.slack_webhook"] ==
+      assert WallboardWeb.SettingsLive.unmask(typed, settings, settings)["alerts.slack_webhook"] ==
                "https://hooks.slack.com/new"
     end
 
     test "dots typed into an empty secret field are kept as typed" do
       shown = %{"token" => "••••••••"}
-      assert WallboardWeb.SettingsLive.unmask(shown, Settings.defaults())["token"] == "••••••••"
+
+      assert WallboardWeb.SettingsLive.unmask(shown, Settings.defaults(), Settings.defaults())[
+               "token"
+             ] == "••••••••"
+    end
+
+    test "dots from a page drawn before the secret was cleared elsewhere follow the newest value" do
+      shown = Settings.merge(Settings.defaults(), %{token: "hunter2"})
+      values = WallboardWeb.SettingsLive.values(shown)
+      assert values["token"] == "••••••••"
+
+      back = WallboardWeb.SettingsLive.unmask(values, shown, Settings.defaults())
+      assert back["token"] == ""
     end
 
     test "refuses an ntfy server with a query or a fragment" do
