@@ -360,13 +360,14 @@ struct ReviewPage: View {
                     if c.importedSettings != nil { row("Carried over", "your earlier settings file") }
                 } else {
                     row("Hub", c.hubURL)
+                    row("Codex", Detect.usesCodex() ? "sent too, from ~/.codex" : "not on this Mac")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(6)
         }
         Text(c.role.runsBoard
              ? "The board starts now and again whenever you log in. You can change any of this later from the board's settings page, or here with Reconfigure."
-             : "Each Claude session on this Mac is sent to the hub when a turn ends and when it closes, in the background. The hooks are added to each folder's settings.json, which is backed up first.")
+             : "Each Claude and Codex session on this Mac is sent to the hub when a turn ends and when it closes, in the background. The hooks are added to each Claude folder's settings.json and to Codex's hooks.json, each backed up first. Codex runs a new hook only once you trust it with /hooks in Codex.")
             .foregroundStyle(.secondary)
     }
 

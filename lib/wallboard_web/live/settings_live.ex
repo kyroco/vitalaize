@@ -272,6 +272,11 @@ defmodule WallboardWeb.SettingsLive do
           that Mac's Claude settings (backing them up first). After that, each session is sent here
           when a turn ends and when it closes, in the background, so Claude never waits on it.
         </p>
+        <p class="detail-note">
+          When that Mac has Codex, its Codex sessions come too, through two hooks in Codex's
+          hooks.json. Codex runs a new hook only once you trust it, so type /hooks in Codex there
+          afterwards and trust the two wallboard-upload.sh hooks.
+        </p>
         <pre class="settings-code">{install_command(@hub_url, if(@show_key?, do: @key, else: "••••••••"))}</pre>
         <div class="row">
           <button class="link-button" phx-click="toggle_key">
