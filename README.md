@@ -8,8 +8,9 @@ repositories, and how the work trends over days and weeks. When a session
 needs you, it can tell you by Messages, Slack, ntfy or Pushover.
 
 It runs on your own Mac or Linux machine. Your session data is never sent
-anywhere except between your own machines, if you connect more than one
-(see [Known limits](#known-limits) for how that travels).
+anywhere except between your own machines, if you connect more than one, and
+the short alert text that goes to Slack, ntfy or Pushover if you turn those
+on (see [Known limits](#known-limits)).
 
 ![The Agents tab: Claude and Codex sessions under the status line](docs/images/live.jpg)
 
@@ -69,7 +70,7 @@ to tab on its own; tap a tab to pick one, and tap Pin to stay on it.
 
 - **Several repositories.** The status line adds them all up, and the Git
   tab gives each busy one its own column.
-- **Alerts anywhere.** Beside Messages on a Mac, alerts now go to Slack,
+- **Alerts anywhere.** Besides Messages on a Mac, alerts now go to Slack,
   ntfy (iPhone or Android) or Pushover, so a Linux hub can alert you too.
 - **Alerts for your other machines.** A connected machine tells the hub the
   moment one of its Claude sessions starts waiting, so its card says Needs
@@ -86,9 +87,12 @@ If you run 0.2.0 on Linux, upgrade. Every copy of that download had the same
 built-in secret for remote control, so if you started the board by hand
 (not with `systemd.sh`), anyone on your network who also had the download
 could run commands on your machine. 0.3.0 turns remote control off unless
-you ask for it. On a machine connected by 0.2.0 or earlier, run the command
-from the hub's Settings page (Connect another Mac) once more to add the new
-hooks.
+you ask for it by setting `RELEASE_DISTRIBUTION`; if you do, also set
+`RELEASE_COOKIE` to a secret of your own. On a machine connected by 0.2.0 or
+earlier, run the command from the hub's Settings page (Connect another Mac)
+once more to add the new hooks, or on a Mac with the app, open VitalAIze and
+run the setup again. The command hooks up one Claude folder, `~/.claude`;
+for another, run it again with `CLAUDE_CONFIG_DIR` set to that folder.
 
 ## Install on a Mac
 
@@ -117,9 +121,9 @@ hooks.
    screen. Turn the iPad sideways, and set Auto-Lock to Never in the iPad's
    Display & Brightness settings so the screen stays on.
 6. Choose how alerts reach you. Setup asks only for a phone number, for
-   Messages. For Slack, ntfy or Pushover, open **Settings** on the board and
-   fill in the Alerts section (see [Alerts](#alerts)). You can change the
-   repositories there too.
+   Messages. For Slack, ntfy or Pushover, open the board on this Mac, tap
+   **Settings** and fill in the Alerts section (see [Alerts](#alerts)). You
+   can change the repositories there too.
 
 Open VitalAIze again any time to see the board, restart it, change the setup
 or remove it.
@@ -148,20 +152,23 @@ or remove it.
    after you log out too, run `loginctl enable-linger $USER` once.
 
 What differs from a Mac: there is no setup app, so you edit `settings.exs`
-(or the board's Settings page once it runs). List your repositories in
-`github.repos` (see [Build from source](#build-from-source) for the shape).
-Text alerts by Messages need a Mac, so use Slack, ntfy or Pushover instead
-(see [Alerts](#alerts)). The database lives in `~/.local/share/vitalaize`.
-To have other machines find the hub on the network by themselves, install
-`avahi-utils` on the hub; without it, collectors type the hub's address.
+(or the board's Settings page once it runs; see [Settings you may
+want](#settings-you-may-want) for who can open it). List your repositories
+in `github.repos` (see [Build from source](#build-from-source) for the
+shape). Text alerts by Messages need a Mac, so use Slack, ntfy or Pushover
+instead (see [Alerts](#alerts)). The database lives in
+`~/.local/share/vitalaize`. To have other machines find the hub on the
+network by themselves, install `avahi-utils` on the hub; without it,
+collectors type the hub's address.
 
 A Linux machine can be a collector too: run the command from the hub's
-Settings page (Connect another Mac) there. It needs `python3` and `curl`,
-and to report prompts you approve or deny as they happen, `claude` and
-`perl` (see [Known limits](#known-limits)). Like the app, the command hooks
-up Codex too when the machine has it. Codex runs a new hook only once you
-trust it, so afterwards type `/hooks` in Codex on that machine and trust the
-two `wallboard-upload.sh` hooks.
+Settings page (Connect another Mac) there. It hooks up `~/.claude`, or the
+folder in `CLAUDE_CONFIG_DIR`, so run it once per Claude folder. It needs
+`python3` and `curl`, and to report prompts you approve or deny as they
+happen, `claude` and `perl` (see [Known limits](#known-limits)). Like the
+app, the command hooks up Codex too when the machine has it. Codex runs a
+new hook only once you trust it, so afterwards type `/hooks` in Codex on
+that machine and trust the two `wallboard-upload.sh` hooks.
 
 ## What you need
 
@@ -251,20 +258,30 @@ one, delete it from the release first.
 
 ## Settings you may want
 
-Change these in `settings.exs`, or on the board's Settings page (tap
-Settings at the top). Values saved on the page win over the file.
+Change these in `settings.exs`. Most of them are also on the board's
+Settings page (tap Settings at the top); New Relic's key and checks, the
+theme and the logo are in the file only. Values saved on the page win over
+the file. Without a board password, the Settings page opens only in a
+browser on the machine that runs the board; with one, any device that has
+signed in with it can open it. On a Linux hub with no screen, set `token`
+in `settings.exs` first.
 
 - **Keep it private.** Anyone on the same network can open the board. It is
   read-only and shows no keys, but it does show pull request titles and what
-  your sessions ask you. Set `token` in `settings.exs` (or a board password on
-  the Settings page); the first visit from each device then needs
-  `/?token=<your token>` at the end of the address.
+  your sessions ask you. Set `token` in `settings.exs` (or a board password
+  on the Settings page, which takes effect after a restart); the first visit
+  from each device then needs `/?token=<your token>` at the end of the
+  address.
 - **Several repositories.** List them in `github.repos`, or one per line
   under Repositories on the Settings page. Dev and Prod follow the first one.
-  Each repository costs about 600 GitHub calls an hour, so keep it to six.
+  Each repository costs about 600 GitHub calls an hour, and GitHub allows
+  5,000, so keep it to six. For the first couple of hours after you add
+  repositories, the archive also fills in their older runs, which takes up
+  to about 1,300 more calls an hour.
 - **New version note.** On by default. To turn it off, untick "Tell me when
   a new version is out" under Board on the Settings page, or set
-  `updates: %{check: false}`. With it off, the board never asks GitHub.
+  `updates: %{check: false}`. With it off, the board never checks for a new
+  version.
 - **Codex.** On by default, reading `~/.codex/sessions`. Codex runs on a plan
   rather than per-token prices, so its cards show tokens and plan use. Set
   `codex: %{enabled: false}` to leave it out.
@@ -310,8 +327,10 @@ Alerts cover:
   tells the hub the moment one of its sessions starts waiting (a permission
   prompt, a question, or a form from an MCP server), and the card shows
   Needs you on the hub's board, marked with that machine's name, until the
-  session moves on. If the hub cannot be reached, the session carries on as
-  usual.
+  session moves on. Its alert waits a few seconds and is skipped if you
+  answer first, and at most 20 go out in 10 minutes. If the hub cannot be
+  reached, the session carries on as usual, and a hub that restarts forgets
+  the waits already under way.
 - Codex sessions on the machine that runs the board, once its Codex hook is
   set up (below). Codex sessions on other machines reach the hub's Archive
   and Trends, but do not show Needs you or alert yet.
@@ -339,13 +358,13 @@ next to any hooks you already have there:
 
 Then open Codex, type `/hooks` and trust them: Codex skips a new or changed
 hook until you do. A Codex card then shows **Needs you** (and sends an
-alert, if alerts are on) when Codex asks to run something, or when a turn
-ends on a question, meaning the last paragraph of its reply ends in a
-question mark. It clears when Codex moves on or you reply. The card names
-only the program Codex wants to run, never the whole command, since that
-can hold a password. The hook keeps only the latest thing Codex sent it for
-each session and each helper agent, in `~/.codex/vitalaize`, and the board
-removes those after a week.
+alert, if alerts are on) when Codex asks to run something, or, in a session
+you started yourself in Codex, when a turn ends on a question, meaning the
+last paragraph of its reply ends in a question mark. It clears when Codex
+moves on or you reply. The card names only the program Codex wants to run,
+never the whole command, since that can hold a password. The hook keeps only
+the latest thing Codex sent it for each session and each helper agent, in
+`~/.codex/vitalaize`, and the board removes those after a week.
 
 This is new: see [Known limits](#known-limits) before you rely on it.
 
@@ -357,14 +376,19 @@ This is new: see [Known limits](#known-limits) before you rely on it.
   HTTP. The key that lets it in travels the same way. Anyone who can watch
   traffic on your network can read them. Connect machines only on a network
   you trust, such as your home or office Wi-Fi, not a café's.
+- **Alerts leave your machines.** An alert names the session and says what
+  it asks, such as the question it put to you or the end of Codex's reply.
+  Sent by Slack, ntfy or Pushover, that text passes through their servers.
+  Anyone who knows your ntfy topic can read it too, so pick one that is hard
+  to guess, or run your own ntfy server.
 - **Codex "Needs you" has not yet been seen working with a real Codex.** It
-  may mark a card wrongly or send a wrong alert. To help check it, turn on recording with
-  `touch ~/.codex/vitalaize/capture-on`. Every call Codex makes to the hook
-  is then added to `~/.codex/vitalaize/payloads.jsonl`. Use Codex as usual
-  (a run where it asks for your approval is the most useful), then
-  `rm ~/.codex/vitalaize/capture-on` and send that file to the VitalAIze
-  team. It holds what you typed and what Codex ran, so read it first and
-  leave out anything private.
+  may mark a card wrongly or send a wrong alert. To help check it, turn on
+  recording with `touch ~/.codex/vitalaize/capture-on`. Every call Codex
+  makes to the hook is then added to `~/.codex/vitalaize/payloads.jsonl`.
+  Use Codex as usual (a run where it asks for your approval is the most
+  useful), then `rm ~/.codex/vitalaize/capture-on` and send that file to the
+  VitalAIze team. It holds what you typed and what Codex ran, so read it
+  first and leave out anything private.
 - **A card can say Needs you for longer than it should.** In these cases it
   stays until the session's next step (often your next prompt):
   - On a connected machine without `claude` or `perl` on its PATH. That
@@ -400,11 +424,11 @@ it. Learn more at [korium.ai](https://korium.ai).
 ## How it keeps up
 
 Each source has its own timer: sessions every few seconds, GitHub every 30
-seconds (about 600 calls an hour per repository, so six stay inside GitHub's
-limit of 5,000), New Relic every minute. Only what changed
-is sent to the screen. If one source fails, its panel keeps its last good
-data, says how old it is and why, and the rest of the board carries on. Trends
-say "Loading…" beside a section while its history is still coming in.
+seconds (about 600 calls an hour per repository with two runs going, so six
+stay inside GitHub's limit of 5,000), New Relic every minute. Only what
+changed is sent to the screen. If one source fails, its panel keeps its last
+good data, says how old it is and why, and the rest of the board carries on.
+Trends say "Loading…" beside a section while its history is still coming in.
 
 ## If something is off
 
@@ -421,6 +445,14 @@ say "Loading…" beside a section while its history is still coming in.
   allowed the board to control Messages (System Settings, Privacy & Security,
   Automation). For Slack, ntfy or Pushover, check the address, topic or keys,
   and that the board's machine can reach the internet.
+
+## Questions and ideas
+
+Ask for help in [Q&A](https://github.com/kyroco/vitalaize/discussions/categories/q-a)
+and suggest features in
+[Ideas](https://github.com/kyroco/vitalaize/discussions/categories/ideas),
+both in [Discussions](https://github.com/kyroco/vitalaize/discussions). Report
+bugs in [Issues](https://github.com/kyroco/vitalaize/issues).
 
 ## License
 
