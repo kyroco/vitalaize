@@ -172,8 +172,17 @@ To build the Mac app and its installer yourself: `macos/build.sh`. With an
 Apple Developer ID it signs them, and with `--notary-profile NAME` it also
 notarizes them (see the top of the script).
 
-Run the tests with `mix test`. GitHub runs them too, on Linux and macOS, for
-every pull request.
+Run the tests with `mix test`. Before you push, run the same three checks
+GitHub runs on Linux and macOS for every pull request, which fail on bad code
+style or any compiler warning:
+
+```
+mix format --check-formatted
+MIX_ENV=test mix compile --warnings-as-errors --force
+mix test --warnings-as-errors
+```
+
+`mix format` fixes the style for you.
 
 To make a release:
 
