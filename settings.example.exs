@@ -51,15 +51,27 @@
   # when it is newer, shows a note by Settings. false stops the check.
   updates: %{check: true},
 
-  # Text alerts. When a Claude session starts waiting on you, this Mac sends
-  # an iMessage from the Apple ID signed in to its Messages app, to this
-  # number. Leave it nil and alerts are off.
+  # Alerts. When a Claude session starts waiting on you, every channel set up
+  # here gets one alert. Leave them all nil and alerts are off.
   alerts: %{
+    # Messages (Mac only): this Mac sends an iMessage from the Apple ID signed
+    # in to its Messages app, to this number.
     phone: nil,
     # "iMessage", or "SMS" for a plain text sent through your iPhone. SMS
     # reaches numbers that are not on iMessage, such as Google Voice, and
     # needs Text Message Forwarding on (iPhone Settings, Messages).
-    via: "iMessage"
+    via: "iMessage",
+    # Slack: an incoming webhook address, https://hooks.slack.com/services/...
+    slack_webhook: nil,
+    # ntfy (free, any phone): a topic name, subscribed to in the ntfy app.
+    # Anyone who knows the topic can read it, so make it hard to guess.
+    # ntfy_server nil means https://ntfy.sh.
+    ntfy_topic: nil,
+    ntfy_server: nil,
+    # Pushover: your user key, and the API token of an app you make at
+    # pushover.net. Both are needed.
+    pushover_user: nil,
+    pushover_token: nil
   },
 
   # GitHub, read through the `gh` command, which must be signed in
