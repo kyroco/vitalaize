@@ -1,6 +1,8 @@
-# Sobelow's settings, read by `mix sobelow --config`. CI fails on any finding
-# at medium confidence or above, and ignores `# sobelow_skip` comments in the
-# code: a finding is skipped only in `ignore` below, with the reason beside it.
+# Sobelow's settings for running it yourself: `mix sobelow --config`. CI
+# does not read this file; it passes the same settings itself (the SOBELOW
+# line in .github/workflows/ci.yml), so a change to a skip goes in both.
+# `# sobelow_skip` comments in the code are not honored: a finding is skipped
+# only in `ignore` below, with the reason beside it.
 [
   verbose: false,
   private: true,

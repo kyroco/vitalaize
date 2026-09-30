@@ -78,9 +78,10 @@ jobs:
         run: mix test --warnings-as-errors
 
   # Sobelow reads the Elixir code for security problems, since GitHub's own
-  # scanner (CodeQL) cannot read Elixir. Its settings, and each finding it is
-  # told to skip with the reason, are in .sobelow-conf. The check fails on
-  # anything at medium confidence or above.
+  # scanner (CodeQL) cannot read Elixir. The check fails on anything at
+  # medium confidence or above. SOBELOW holds every setting; the one skipped
+  # finding, Config.HTTPS, is there because the board serves plain HTTP on
+  # the local network on purpose (see .sobelow-conf).
   security:
     name: Security scan (Sobelow)
     runs-on: ubuntu-22.04
@@ -90,6 +91,7 @@ jobs:
       security-events: write
     env:
       MIX_ENV: test
+      SOBELOW: --no-config --private --exit medium --threshold medium --no-skip --ignore Config.HTTPS
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -107,19 +109,24 @@ jobs:
             _build
           key: test-${{ runner.os }}-${{ runner.arch }}-otp${{ steps.beam.outputs.otp-version }}-ex${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
       - run: mix deps.get
-      # Prints each finding in the log and fails the check on any. The
-      # pass-or-fail settings are given here, not left to .sobelow-conf, so a
-      # pull request that deletes or edits that file cannot turn the check
-      # off without changing this line too. --no-skip ignores
-      # `# sobelow_skip` comments and a .sobelow-skips file.
+      # Prints each finding in the log and fails the check on any. CI does
+      # not read .sobelow-conf: every setting is here, so a pull request
+      # cannot turn the check off, or skip more, without changing this file.
+      # --no-skip ignores `# sobelow_skip` comments and a .sobelow-skips
+      # file. The one skip, and its reason, match .sobelow-conf.
       - name: Sobelow
-        run: mix sobelow --config --exit medium --threshold medium --no-skip --verbose
+        # SOBELOW is split into its flags on purpose.
+        run: |
+          # shellcheck disable=SC2086
+          mix sobelow $SOBELOW --verbose
       # The same findings as SARIF, for the Security tab. --out, not a
       # redirect, so compiler output never lands in the file. Sobelow exits
       # 1 when it finds something; the step above already failed for that.
       - name: Findings file
         if: ${{ !cancelled() }}
-        run: mix sobelow --config --exit medium --threshold medium --no-skip --format sarif --out sobelow.sarif || [ $? -eq 1 ]
+        run: |
+          # shellcheck disable=SC2086
+          mix sobelow $SOBELOW --format sarif --out sobelow.sarif || [ $? -eq 1 ]
       # Puts the findings under the repo's Security tab. A pull request from
       # a fork gets no permission to upload, so there the log of the
       # Sobelow step is the report.
