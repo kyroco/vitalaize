@@ -1,6 +1,7 @@
 #!/bin/sh
 # VitalAIze's Codex hook. VitalAIze keeps a copy at ~/.codex/vitalaize/hook.sh,
-# and Codex runs it from ~/.codex/hooks.json (see the README).
+# and Codex runs it from ~/.codex/hooks.json (see the Codex page of the wiki,
+# https://github.com/kyroco/vitalaize/wiki/Codex).
 #
 # Codex hands a hook one JSON object on stdin. This keeps the latest one for
 # each session, as <session id>.json next to this script, and for each helper
