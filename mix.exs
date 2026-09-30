@@ -45,6 +45,7 @@ defmodule Wallboard.MixProject do
         include_executables_for: [:unix],
         include_erts: true,
         steps: [
+          &Wallboard.ReleaseSteps.check_version/1,
           :assemble,
           &Wallboard.ReleaseSteps.bundle_openssl/1,
           &Wallboard.ReleaseSteps.add_docs/1,
@@ -65,6 +66,36 @@ defmodule Wallboard.ReleaseSteps do
   the copy, and re-signs both, since macOS refuses to load a changed library
   whose signature no longer matches.
   """
+
+  @doc """
+  Stops a release built from a version tag whose version differs from this
+  file's. The board compares this file's version with GitHub's latest tag to
+  say a new version is out, so a mismatch would tell people forever to
+  download the build they already run.
+  """
+  def check_version(release) do
+    git = System.find_executable("git")
+    args = ["tag", "--points-at", "HEAD", "--list", "v[0-9]*"]
+
+    case git && System.cmd(git, args) do
+      {out, 0} ->
+        tags = String.split(out, "\n", trim: true)
+        wanted = "v#{release.version}"
+
+        if tags != [] and wanted not in tags do
+          Mix.raise(
+            "This commit is tagged #{Enum.join(tags, ", ")} but mix.exs says #{release.version}. " <>
+              "Change version in mix.exs to match the tag."
+          )
+        end
+
+      # Not a git checkout, or no git: nothing to compare.
+      _ ->
+        :ok
+    end
+
+    release
+  end
 
   # Only a Mac build needs this; on Linux, Erlang uses the system's OpenSSL.
   def bundle_openssl(release) do
