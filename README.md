@@ -141,7 +141,22 @@ To build the Mac app and its installer yourself: `macos/build.sh`. With an
 Apple Developer ID it signs them, and with `--notary-profile NAME` it also
 notarizes them (see the top of the script).
 
-Run the tests with `mix test`.
+Run the tests with `mix test`. GitHub runs them too, on Linux and macOS, for
+every pull request.
+
+To make a release:
+
+1. Set the version in `mix.exs`, merge it, and push a tag for it from main,
+   like `git tag v0.3.0 && git push origin v0.3.0`.
+2. GitHub builds both Linux downloads on Ubuntu 22.04 (Intel and ARM), checks
+   that each one starts, and puts them on a draft release for that tag.
+3. Build the Mac installer on a Mac with `macos/build.sh` (it needs the
+   Developer ID), add it with `gh release upload v0.3.0 VitalAIze-0.3.0.pkg`,
+   then write the notes and publish the draft.
+
+Push the tag before making the release, so there is only the one draft. A
+published release only gets Linux downloads it does not have yet; to replace
+one, delete it from the release first.
 
 ## Settings you may want
 
