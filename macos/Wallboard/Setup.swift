@@ -208,12 +208,13 @@ enum Setup {
             github.append("deploy_workflows: [\(deploys)]")
             github.append("lanes: [\(lanes)]")
         }
-        // Several repositories go in `repos`; with one, `repos` is empty and
-        // the board follows `repo`. An imported file's own list is kept while
-        // it stays the same, since its entries may carry settings of their own.
+        // Every repository goes in `repos`, even one: the board keeps the
+        // settings an imported file gave a repository only while its name is
+        // still in the list. An imported file's own list is kept while it
+        // stays the same.
         let repos = [c.repo] + (c.otherRepos ?? []).filter { !$0.isEmpty && $0 != c.repo }
         if !(c.importedSettings != nil && c.importedRepos == repos) {
-            github.append("repos: [\(repos.count > 1 ? repos.map(ex).joined(separator: ", ") : "")]")
+            github.append("repos: [\(repos.map(ex).joined(separator: ", "))]")
         }
 
         let answers = """

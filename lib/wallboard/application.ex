@@ -52,13 +52,11 @@ defmodule Wallboard.Application do
          timeout_ms: 120_000},
         {
           Wallboard.Poller,
-          # Repositories are read four at a time, so each group of four gets
-          # its own two minutes before the poll counts as stuck.
+          # The time limit grows with the repositories in each poll's settings.
           name: :github,
           source: Wallboard.Sources.GitHub,
           interval_ms: settings.github.poll_seconds * 1000,
-          timeout_ms:
-            60_000 + 120_000 * max(div(length(Wallboard.Settings.repo_names(settings)) + 3, 4), 1)
+          timeout_ms: &Wallboard.Sources.GitHub.timeout_ms/1
         },
         # The first read of the transcripts can take a minute or two.
         {Wallboard.Poller,

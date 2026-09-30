@@ -522,40 +522,49 @@ defmodule Wallboard.Settings do
   `repo` alone.
   """
   def github_repos(settings) do
-    gh = settings.github
-    shared = Map.drop(gh, [:repos])
+    shared = Map.drop(settings.github, [:repos])
 
-    entries =
-      case List.wrap(gh[:repos]) do
-        [] -> [gh[:repo]]
-        list -> list
-      end
-
-    entries
+    settings.github
+    |> repo_entries()
     |> Enum.map(fn
-      name when is_binary(name) -> Map.put(shared, :repo, String.trim(name))
-      %{repo: name} = entry when is_binary(name) -> merge(shared, entry)
-      _ -> nil
+      name when is_binary(name) ->
+        Map.put(shared, :repo, String.trim(name))
+
+      %{repo: name} = entry when is_binary(name) ->
+        shared |> merge(entry) |> Map.put(:repo, String.trim(name))
+
+      _ ->
+        nil
     end)
     |> Enum.filter(&(&1 && repo_name?(&1.repo)))
     |> Enum.uniq_by(& &1.repo)
   end
 
-  @doc "Entries in `repos` that are left out because they are not owner/name, as written."
+  @doc """
+  Entries the board leaves out because they are not owner/name, as written:
+  from `repos`, or `repo` when `repos` is empty.
+  """
   def skipped_repos(settings) do
     settings.github
-    |> Map.get(:repos)
-    |> List.wrap()
+    |> repo_entries()
     |> Enum.map(fn
-      %{repo: name} -> name
-      name -> name
+      %{repo: name} when is_binary(name) -> String.trim(name)
+      name when is_binary(name) -> String.trim(name)
+      other -> other
     end)
     |> Enum.reject(&repo_name?/1)
-    |> Enum.map(&inspect_name/1)
+    |> Enum.map(fn
+      name when is_binary(name) -> name
+      other -> inspect(other)
+    end)
   end
 
-  defp inspect_name(name) when is_binary(name), do: name
-  defp inspect_name(other), do: inspect(other)
+  defp repo_entries(gh) do
+    case List.wrap(gh[:repos]) do
+      [] -> List.wrap(gh[:repo])
+      list -> list
+    end
+  end
 
   @doc "The names (owner/name) of the repositories the board follows."
   def repo_names(settings), do: settings |> github_repos() |> Enum.map(& &1.repo)

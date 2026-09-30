@@ -1850,7 +1850,7 @@ defmodule WallboardWeb.BoardLive do
           <h2 class="kicker">Quiet repos · {length(@quiet)}</h2>
           <span class="counts muted-ink">
             {if Enum.any?(@quiet, & &1.hot?),
-              do: "more are busy than fit; the four busiest have columns",
+              do: "more are busy than fit; the ones that ran last have the columns",
               else:
                 "nothing running or failed in 6 hours; one moves up the moment it runs or goes red"}
           </span>
@@ -1933,7 +1933,7 @@ defmodule WallboardWeb.BoardLive do
             No runs in the last day
         <% end %>
       </span>
-      <span class="ql-when"><.ago :if={@last} at={@last.updated_at} fmt="when" /></span>
+      <span class="ql-when"><.ago :if={@last && !@r.error} at={@last.updated_at} fmt="when" /></span>
     </button>
     """
   end

@@ -65,6 +65,15 @@ defmodule Wallboard.Sources.GitHub do
       else: {:ok, %{repos: entries}, memory}
   end
 
+  @doc """
+  How long a poll may take before it counts as stuck: repositories are read
+  four at a time, so each group of four gets its own two minutes.
+  """
+  def timeout_ms(settings) do
+    groups = max(div(length(Settings.repo_names(settings)) + 3, 4), 1)
+    60_000 + 120_000 * groups
+  end
+
   defp errors_text([one]), do: one.error
   defp errors_text(entries), do: Enum.map_join(entries, "; ", &"#{&1.repo}: #{&1.error}")
 

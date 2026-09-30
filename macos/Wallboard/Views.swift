@@ -243,7 +243,7 @@ struct GitHubPage: View {
                     Button("Add") {
                         let repo = newRepo.trimmingCharacters(in: .whitespaces)
                         // owner/name, the only form the board accepts.
-                        let ok = repo.range(of: #"^[\w.-]+/[\w.-]+$"#, options: .regularExpression) != nil
+                        let ok = repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
                         if ok && repo != state.choices.repo && !others.contains(repo) {
                             state.choices.otherRepos = others + [repo]
                         }

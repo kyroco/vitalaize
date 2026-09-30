@@ -69,6 +69,31 @@ defmodule Wallboard.ReposTest do
                Settings.github_repos(merged)
     end
 
+    test "the setup app's answers keep a repo's own settings when one repo is left" do
+      {base, _} = load("several_repos.exs")
+      answers = %{github: %{repo: "acme/mobile", repos: ["acme/mobile"]}}
+      merged = Settings.merge(Settings.defaults(), Settings.apply_overrides(base, answers))
+      assert [%{repo: "acme/mobile", gate_workflow: "build.yml"}] = Settings.github_repos(merged)
+    end
+
+    test "names are trimmed, and only names the board leaves out are listed as skipped" do
+      spaced = Settings.merge(Settings.defaults(), %{github: %{repos: [" a/b", "x/y "]}})
+      assert Settings.repo_names(spaced) == ["a/b", "x/y"]
+      assert Settings.skipped_repos(spaced) == []
+
+      # One repo, from a file before several repos, that is not owner/name.
+      url = Settings.merge(Settings.defaults(), %{github: %{repo: "https://github.com/acme/api"}})
+      assert Settings.repo_names(url) == []
+      assert Settings.skipped_repos(url) == ["https://github.com/acme/api"]
+    end
+
+    test "the GitHub poll's time limit follows the repos in the settings of each poll" do
+      one = Settings.merge(Settings.defaults(), %{github: %{repo: "a/b"}})
+      nine = Settings.merge(Settings.defaults(), %{github: %{repos: Enum.map(1..9, &"a/r#{&1}")}})
+      assert GitHub.timeout_ms(one) == 180_000
+      assert GitHub.timeout_ms(nine) == 420_000
+    end
+
     test "a bad or repeated entry is left out, and the Git tab can name it" do
       settings =
         Settings.merge(Settings.defaults(), %{
