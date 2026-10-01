@@ -22,6 +22,12 @@ message FromCollector {
     Event event = 2;
     Ack ack = 3;
   }
+
+  // Counts up from 1 for every hello and event a collector sends, and keeps
+  // counting across streams. The hub answers with Stored once it has saved
+  // everything up to a number, so the collector knows what it may forget.
+  // 0 on a message that asks for no answer.
+  uint64 seq = 4;
 }
 
 // The first message on every stream.
@@ -115,7 +121,7 @@ message Status {
     IDLE = 3;
   }
 
-  // Why a session waits on its person. A kind, never the question's words.
+  // Why a session waits on its person.
   enum Why {
     WHY_UNKNOWN = 0;
     PERMISSION = 1;
@@ -133,6 +139,9 @@ message Status {
   string tool = 3;
   // When this state began, in seconds since 1970. 0 when not known.
   int64 since = 4;
+  // What the session asks its person, clipped like a prompt. Only while it
+  // waits; empty otherwise.
+  string question = 5;
 }
 
 // The only free text that leaves a collector. Each message holds every
@@ -207,6 +216,7 @@ message FromHub {
     BackSoon back_soon = 3;
     Disconnected disconnected = 4;
     Answer answer = 5;
+    Stored stored = 6;
   }
 }
 
@@ -214,6 +224,9 @@ message FromHub {
 // what came after.
 message Resume {
   repeated ResumePoint points = 1;
+  // True when another Resume follows with more points. The collector sends
+  // nothing until one arrives with this false.
+  bool more = 2;
 }
 
 message ResumePoint {
@@ -230,3 +243,8 @@ message Disconnected {}
 
 // Kept for answers to waiting agents (VIT-11). Empty until then.
 message Answer {}
+
+// The hub has saved every collector message up to and including this seq.
+message Stored {
+  uint64 seq = 1;
+}

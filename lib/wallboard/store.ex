@@ -157,7 +157,48 @@ defmodule Wallboard.Store do
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)",
     # Which tool ran the session: "claude" or "codex". Rows saved before
     # Codex was read are all Claude.
-    "ALTER TABLE sessions ADD COLUMN tool TEXT DEFAULT 'claude'"
+    "ALTER TABLE sessions ADD COLUMN tool TEXT DEFAULT 'claude'",
+    # What collectors stream to the hub (see Wallboard.Link). One row per
+    # event, as it arrived; a repeat lands on the same row. `kind` is file,
+    # status or end. A status and an end come from no file and have no
+    # position, so `kind` and `at` are part of the key: an end never shares
+    # a row with a status, and two statuses of one second leave the later.
+    """
+    CREATE TABLE collector_events (
+      machine TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      file TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      at INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      received_at INTEGER NOT NULL,
+      event BLOB NOT NULL,
+      PRIMARY KEY (machine, session_id, file, position, at, kind)
+    )
+    """,
+    # How far the hub got in each session file of each machine: what it
+    # sends back in Resume.
+    """
+    CREATE TABLE collector_positions (
+      machine TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      file TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (machine, session_id, file)
+    )
+    """,
+    # What each machine said about itself in its last hello.
+    """
+    CREATE TABLE collector_machines (
+      machine TEXT PRIMARY KEY,
+      label TEXT,
+      os TEXT,
+      version TEXT,
+      folders TEXT,
+      seen_at INTEGER
+    )
+    """
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -243,6 +284,20 @@ defmodule Wallboard.Store do
 
   def put_meta(key, value), do: GenServer.call(__MODULE__, {:put_meta, key, value}, 30_000)
 
+  @doc """
+  Saves events a collector sent, under the machine its certificate names,
+  and moves that machine's position in each file forward. All of them or
+  none, and on the disk before this returns. `events` are maps with
+  `session_id`, `file`, `position`, `at`, `kind` ("file", "status" or
+  "end") and `event` (the encoded message).
+  """
+  def put_collector_events(machine, events, now),
+    do: GenServer.call(__MODULE__, {:put_collector_events, machine, events, now}, 30_000)
+
+  @doc "Saves what a machine said about itself in its hello."
+  def put_collector_machine(machine, info, now),
+    do: GenServer.call(__MODULE__, {:put_collector_machine, machine, info, now}, 30_000)
+
   # ---------------------------------------------------------------------------
   # Reading
 
@@ -251,6 +306,44 @@ defmodule Wallboard.Store do
     "SELECT transcript, source_size, source_mtime FROM sessions WHERE machine = ?1 AND deleted_at IS NULL"
     |> query([machine])
     |> Map.new(fn r -> {r.transcript, {r.source_size, r.source_mtime}} end)
+  end
+
+  @doc """
+  The hub's position in each of a machine's session files that moved since
+  `since`, newest first, `limit` at most: `%{session_id, file, position}`.
+  """
+  def collector_positions(machine, since, limit) do
+    query(
+      """
+      SELECT session_id, file, position FROM collector_positions
+      WHERE machine = ?1 AND updated_at >= ?2
+      ORDER BY updated_at DESC LIMIT ?3
+      """,
+      [machine, since, limit]
+    )
+  end
+
+  @doc """
+  A machine's saved events, in the order they were first saved. An event
+  sent again keeps its place and the time it first arrived.
+  """
+  def collector_events(machine) do
+    query(
+      "SELECT session_id, file, position, at, kind, received_at, event FROM collector_events WHERE machine = ?1 ORDER BY rowid",
+      [machine]
+    )
+  end
+
+  @doc "Every machine that has said hello: `%{machine, label, os, version, folders, seen_at}`."
+  def collector_machines do
+    "SELECT machine, label, os, version, folders, seen_at FROM collector_machines ORDER BY machine"
+    |> query([])
+    |> Enum.map(fn m ->
+      case decode(m.folders) do
+        folders when is_list(folders) -> %{m | folders: folders}
+        _ -> %{m | folders: []}
+      end
+    end)
   end
 
   @doc "The newest saved sessions, most recently active first, without their details."
@@ -303,6 +396,10 @@ defmodule Wallboard.Store do
     {:ok, conn} = Sqlite3.open(path)
     :ok = Sqlite3.execute(conn, "PRAGMA journal_mode = WAL")
     :ok = Sqlite3.execute(conn, "PRAGMA synchronous = NORMAL")
+    # What collectors send is confirmed to them once it is saved (see
+    # put_collector_events). Moving it from the log into the database file
+    # must reach the drive too, which on a Mac only this setting ensures.
+    :ok = Sqlite3.execute(conn, "PRAGMA checkpoint_fullfsync = ON")
     migrate(conn)
     Logger.info("Database: #{path}")
     {:ok, %{conn: conn}}
@@ -377,6 +474,62 @@ defmodule Wallboard.Store do
 
   def handle_call({:put_meta, key, value}, _from, %{conn: c} = state) do
     run(c, "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value])
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:put_collector_events, machine, events, now}, _from, %{conn: c} = state) do
+    # The collector forgets these once it is told they are saved, so this
+    # one write waits for the disk. Everything else the board saves can be
+    # read again from its source and keeps the faster setting.
+    # (On a Mac only fullfsync makes the drive itself write it down.)
+    :ok = Sqlite3.execute(c, "PRAGMA fullfsync = ON")
+    :ok = Sqlite3.execute(c, "PRAGMA synchronous = FULL")
+
+    result =
+      transaction(c, fn ->
+        Enum.each(events, fn e ->
+          run(
+            c,
+            """
+            INSERT INTO collector_events
+              (machine, session_id, file, position, at, kind, received_at, event)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT (machine, session_id, file, position, at, kind)
+              DO UPDATE SET event = excluded.event
+            """,
+            [machine, e.session_id, e.file, e.position, e.at, e.kind, now, {:blob, e.event}]
+          )
+
+          if e.file != "" do
+            run(
+              c,
+              """
+              INSERT INTO collector_positions (machine, session_id, file, position, updated_at)
+              VALUES (?1, ?2, ?3, ?4, ?5)
+              ON CONFLICT (machine, session_id, file) DO UPDATE SET
+                position = max(position, excluded.position), updated_at = excluded.updated_at
+              """,
+              [machine, e.session_id, e.file, e.position, now]
+            )
+          end
+        end)
+      end)
+
+    :ok = Sqlite3.execute(c, "PRAGMA synchronous = NORMAL")
+    :ok = Sqlite3.execute(c, "PRAGMA fullfsync = OFF")
+    {:reply, result, state}
+  end
+
+  def handle_call({:put_collector_machine, machine, info, now}, _from, %{conn: c} = state) do
+    run(
+      c,
+      """
+      INSERT OR REPLACE INTO collector_machines (machine, label, os, version, folders, seen_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      """,
+      [machine, info[:label], info[:os], info[:version], encode(info[:folders] || []), now]
+    )
+
     {:reply, :ok, state}
   end
 

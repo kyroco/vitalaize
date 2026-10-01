@@ -59,6 +59,7 @@ defmodule Wallboard.Collector.Proto.FromCollector do
   field(:hello, 1, type: Wallboard.Collector.Proto.Hello, oneof: 0)
   field(:event, 2, type: Wallboard.Collector.Proto.Event, oneof: 0)
   field(:ack, 3, type: Wallboard.Collector.Proto.Ack, oneof: 0)
+  field(:seq, 4, type: :uint64)
 end
 
 defmodule Wallboard.Collector.Proto.Hello do
@@ -181,6 +182,7 @@ defmodule Wallboard.Collector.Proto.Status do
   field(:why, 2, type: Wallboard.Collector.Proto.Status.Why, enum: true)
   field(:tool, 3, type: :string)
   field(:since, 4, type: :int64)
+  field(:question, 5, type: :string)
 end
 
 defmodule Wallboard.Collector.Proto.Summary do
@@ -293,6 +295,7 @@ defmodule Wallboard.Collector.Proto.FromHub do
   field(:back_soon, 3, type: Wallboard.Collector.Proto.BackSoon, json_name: "backSoon", oneof: 0)
   field(:disconnected, 4, type: Wallboard.Collector.Proto.Disconnected, oneof: 0)
   field(:answer, 5, type: Wallboard.Collector.Proto.Answer, oneof: 0)
+  field(:stored, 6, type: Wallboard.Collector.Proto.Stored, oneof: 0)
 end
 
 defmodule Wallboard.Collector.Proto.Resume do
@@ -304,6 +307,7 @@ defmodule Wallboard.Collector.Proto.Resume do
     syntax: :proto3
 
   field(:points, 1, repeated: true, type: Wallboard.Collector.Proto.ResumePoint)
+  field(:more, 2, type: :bool)
 end
 
 defmodule Wallboard.Collector.Proto.ResumePoint do
@@ -344,4 +348,35 @@ defmodule Wallboard.Collector.Proto.Answer do
     full_name: "wallboard.collector.proto.Answer",
     protoc_gen_elixir_version: "0.17.0",
     syntax: :proto3
+end
+
+defmodule Wallboard.Collector.Proto.Stored do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.Stored",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:seq, 1, type: :uint64)
+end
+
+defmodule Wallboard.Collector.Proto.Collector.Service do
+  @moduledoc false
+
+  use GRPC.Service,
+    name: "wallboard.collector.proto.Collector",
+    protoc_gen_elixir_version: "0.17.0"
+
+  rpc(
+    :Stream,
+    stream(Wallboard.Collector.Proto.FromCollector),
+    stream(Wallboard.Collector.Proto.FromHub)
+  )
+end
+
+defmodule Wallboard.Collector.Proto.Collector.Stub do
+  @moduledoc false
+
+  use GRPC.Stub, service: Wallboard.Collector.Proto.Collector.Service
 end
