@@ -200,16 +200,42 @@ jobs:
       - run: mix deps.get --check-locked
       # Hex lets mix.exs (or HEX_IGNORE_* variables) name advisories and
       # retired packages to ignore, and passes when only those are found.
-      # Any ignored finding fails this step too, so an ignore list cannot
-      # hide one; the same idea as Sobelow's --no-config above. The audit
-      # sees only Hex packages: a git or path dependency, or a `hex:` mirror
-      # setting in mix.exs, would still escape it, so review those.
+      # An ignored finding fails this step too, unless it is on the short
+      # list below, so an ignore list cannot hide one; the same idea as
+      # Sobelow's --no-config above. The audit sees only Hex packages: a
+      # git or path dependency, or a `hex:` mirror setting in mix.exs, would
+      # still escape it, so review those.
+      #
+      # ALLOWED is every advisory this check lets through, as package:ID.
+      # Each needs its reason here and an issue that tracks taking it out.
+      #
+      #   cowlib, EEF-CVE-2026-43966 and EEF-CVE-2026-43969 (VIT-46). The
+      #   link's gRPC server (Wallboard.Link) runs on Cowboy, which needs
+      #   cowlib, and no cowlib release fixes these two yet. Neither is in
+      #   code this project runs: one is in building a Cookie header as an
+      #   HTTP client (cow_cookie:cookie/1), the other in writing structured
+      #   header values from text someone else chose
+      #   (cow_http_struct_hd:escape_string/2). Take both out when a fixed
+      #   cowlib is released.
       - name: No known security holes or retired packages
+        env:
+          ALLOWED: "cowlib:EEF-CVE-2026-43966 cowlib:EEF-CVE-2026-43969"
         run: |
-          if mix hex.audit > audit.log 2>&1; then status=0; else status=$?; fi
+          # shellcheck disable=SC2086
+          ids=$(printf '%s\n' $ALLOWED | sed 's/^[^:]*://' | paste -sd, -)
+          if HEX_IGNORE_ADVISORIES="$ids" HEX_IGNORE_RETIREMENTS="" mix hex.audit > audit.log 2>&1; then status=0; else status=$?; fi
           cat audit.log
-          if grep -q '^Ignored' audit.log; then
-            echo "::error::A security advisory or retired package is being ignored. Update the package instead."
+          # Everything Hex skipped, whoever asked it to, must be on the list:
+          # only advisories, each for the package and the ID named there.
+          refused=$(awk -v allowed=" $ALLOWED " '
+            /^Ignored advisories:$/ { inside = 1; next }
+            /^Ignored/ { inside = 0; print "  " $0; next }
+            /^[^ ]/ { inside = 0 }
+            inside && /^  [^ ]/ && index(allowed, " " $1 ":" $4 " ") == 0 { print "  " $1 " " $4 }
+          ' audit.log)
+          if [ -n "$refused" ]; then
+            echo "::error::A security advisory or retired package is being ignored that this check does not allow. Update the package instead."
+            echo "$refused"
             exit 1
           fi
           exit "$status"
