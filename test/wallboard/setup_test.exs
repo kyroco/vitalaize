@@ -50,6 +50,83 @@ defmodule Wallboard.SetupTest do
     """)
   end
 
+  describe "a repository's own workflows" do
+    test "typed after its name, they are saved in settings.json and read back", c do
+      settings_file(c.dir)
+      typed = "acme/api\nacme/mobile gate=build.yml prod=ship.yml"
+
+      assert {:ok, over} = Settings.change(%{"github.repos" => typed})
+      Settings.save!(over)
+
+      assert Jason.decode!(File.read!(c.saved)) == %{
+               "github" => %{
+                 "repos" => [
+                   "acme/api",
+                   %{
+                     "repo" => "acme/mobile",
+                     "gate_workflow" => "build.yml",
+                     "prod_deploy" => "ship.yml"
+                   }
+                 ]
+               }
+             }
+
+      # A start reads it back from the file.
+      loaded = Settings.load!()
+
+      assert [_, %{repo: "acme/mobile", gate_workflow: "build.yml", prod_deploy: "ship.yml"}] =
+               Settings.github_repos(loaded)
+
+      assert Settings.shown(loaded)["github.repos"] == typed
+      # The same again changes nothing.
+      assert {:ok, ^over} = Settings.change(%{"github.repos" => typed})
+    end
+
+    test "one the settings file describes is saved by name and follows the file, through a Track too",
+         c do
+      file = fn gate ->
+        File.write!(Path.join(c.dir, "settings.exs"), """
+        %{
+          archive: %{path: #{inspect(Path.join(c.dir, "wallboard.db"))}, advertise: false},
+          github: %{
+            repos: [
+              "acme/api",
+              %{repo: "acme/mobile", gate_workflow: "#{gate}", branch: "develop"}
+            ]
+          }
+        }
+        """)
+      end
+
+      file.("build.yml")
+      Settings.load!()
+
+      # The form sends mobile's line as it showed it, and adds web.
+      typed = "acme/api\nacme/mobile gate=build.yml\nacme/web gate=ci.yml"
+      assert {:ok, over} = Settings.change(%{"github.repos" => typed})
+      Settings.save!(over)
+
+      assert :ok = Settings.track_repo("acme/docs")
+
+      assert Jason.decode!(File.read!(c.saved))["github"]["repos"] == [
+               "acme/api",
+               "acme/mobile",
+               %{"repo" => "acme/web", "gate_workflow" => "ci.yml"},
+               "acme/docs"
+             ]
+
+      assert [_, mobile, web, docs] = Settings.github_repos(Settings.get())
+      assert mobile.gate_workflow == "build.yml" and mobile.branch == "develop"
+      assert web.gate_workflow == "ci.yml" and docs.gate_workflow == nil
+
+      # The file's gate changes: nothing saved stands in its way.
+      file.("ios.yml")
+
+      assert [_, %{gate_workflow: "ios.yml"}, %{gate_workflow: "ci.yml"}, _] =
+               Settings.github_repos(Settings.load!())
+    end
+  end
+
   # Stands in for launchctl, systemctl and systemd.sh, and keeps what was
   # run. `settings` is the file the service it plays was started with.
   defp service(state, settings \\ System.get_env("WALLBOARD_SETTINGS")) do

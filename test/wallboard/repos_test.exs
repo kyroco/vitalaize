@@ -141,12 +141,53 @@ defmodule Wallboard.ReposTest do
           Enum.find(fs, &(elem(&1, 0) == [:github, :repos]))
         end)
 
-      assert Settings.check_one(field, "acme/api gate=ci.yml") == :ok
+      assert Settings.check_one(field, "acme/web, acme/api gate=ci.yml") == :ok
       assert {:error, "gate=ci.yml: after" <> _} = Settings.check_one(field, "gate=ci.yml")
-      assert {:error, "lanes=x: after" <> _} = Settings.check_one(field, "acme/api lanes=x")
+      assert {:error, "lanes=x: after" <> _} = Settings.check_one(field, "a/b acme/api lanes=x")
 
-      assert {:error, "../x.yml is not a workflow" <> _} =
-               Settings.check_one(field, "acme/api gate=../x.yml")
+      # A file name, never a path, and never one that walks up the address.
+      for bad <- ["../x.yml", "..", ".", "a/b.yml", ".hidden"] do
+        assert {:error, message} = Settings.check_one(field, "a/b acme/api gate=#{bad}")
+        assert message =~ "is not a workflow file name"
+      end
+
+      # The first repo's workflows have fields of their own.
+      assert {:error, "acme/api is the first repository" <> _} =
+               Settings.check_one(field, "acme/api gate=ci.yml")
+    end
+
+    test "a form shows the first repo by name alone, and leaves out a workflow it could not take back" do
+      settings =
+        Settings.merge(Settings.defaults(), %{
+          github: %{
+            repos: [
+              %{repo: "acme/api", gate_workflow: "own.yml"},
+              %{repo: "acme/mobile", gate_workflow: "two words.yml", prod_deploy: "ship.yml"}
+            ]
+          }
+        })
+
+      assert Settings.shown(settings)["github.repos"] == "acme/api\nacme/mobile prod=ship.yml"
+
+      # Saved as shown, both keep what the file gives them.
+      assert {:ok, over} = Settings.check(page_values(settings), settings)
+      refute Map.has_key?(over, :github)
+      [api, mobile] = Settings.github_repos(settings)
+      assert api.gate_workflow == "own.yml" and mobile.gate_workflow == "two words.yml"
+    end
+
+    test "a line the Mac app writes into the settings file keeps what an older file gave the repo" do
+      {file, _} = load("several_repos.exs")
+      # Reconfigure writes the list as it showed it: mobile's line has its gate.
+      answers = %{github: %{repos: ["acme/api", "acme/mobile gate=build.yml", "acme/web"]}}
+      merged = Settings.merge(Settings.defaults(), Settings.apply_overrides(file, answers))
+
+      assert [
+               _,
+               %{repo: "acme/mobile", gate_workflow: "build.yml", lanes: [%{label: "Build"}]},
+               _
+             ] =
+               Settings.github_repos(merged)
     end
 
     test "a file entry written as a line, as the Mac app writes its list, is read the same way" do
@@ -479,6 +520,7 @@ defmodule Wallboard.ReposTest do
         ])
 
       assert rockets.s.lanes == [] and boosters.s.lanes == []
+      assert rockets.s.lanes_more == 0
 
       html =
         render_component(&WallboardWeb.BoardLive.timeline/1,
@@ -519,6 +561,19 @@ defmodule Wallboard.ReposTest do
         )
 
       assert html =~ "+2 more workflows ran"
+
+      # Its own rows count toward the six and are never the ones cut.
+      own = for n <- 1..7, do: %{label: "Own #{n}", workflows: ["o#{n}.yml"]}
+      own_runs = for n <- 1..7, do: run(100 + n, "o#{n}.yml", ago_min: 300)
+
+      one = %{lanes: own, repos: ["acme/rockets"]}
+      [mixed] = two_repos([{"acme/rockets", Enum.take(own_runs, 4) ++ runs}], one)
+      [crowded] = two_repos([{"acme/rockets", own_runs ++ runs}], one)
+
+      assert labels(mixed) == ["Own 1", "Own 2", "Own 3", "Own 4", "Flow 1", "Flow 2"]
+      assert mixed.s.lanes_more == 6
+      assert labels(crowded) == for(n <- 1..7, do: "Own #{n}")
+      assert crowded.s.lanes_more == 8
     end
 
     test "a repo with no gate workflow shows main green or red from its latest runs on main" do
@@ -546,7 +601,8 @@ defmodule Wallboard.ReposTest do
                run(2, "ci.yml", sha: "new", ago_min: 40, conclusion: "failure")
              ]) == {"success", :runs}
 
-      # A pull request's run, or one on another branch, is not a run on main.
+      # Only a push to main is a run on main: not a pull request's run (even
+      # from a branch called main), a review's, a nightly's or another branch's.
       assert main.([
                run(1, "ci.yml", sha: "new", ago_min: 30),
                run(2, "ci.yml",
@@ -555,8 +611,44 @@ defmodule Wallboard.ReposTest do
                  conclusion: "failure",
                  event: "pull_request"
                ),
-               run(3, "ci.yml", sha: "br", ago_min: 5, conclusion: "failure", branch: "fix")
+               run(3, "ci.yml", sha: "br", ago_min: 5, conclusion: "failure", branch: "fix"),
+               run(4, "ci.yml",
+                 sha: "fork",
+                 ago_min: 4,
+                 conclusion: "failure",
+                 event: "pull_request_review"
+               ),
+               run(5, "stale.yml",
+                 sha: "new",
+                 ago_min: 3,
+                 conclusion: "failure",
+                 event: "schedule"
+               )
              ]) == {"success", :runs}
+
+      # The tests failed on the last commit. On the new one the quick lint
+      # passed and the tests are still going: main is not green yet.
+      assert main.([
+               run(1, "lint.yml", sha: "new", ago_min: 1),
+               run(2, "ci.yml", sha: "new", status: :in_progress, ago_min: 0),
+               run(3, "ci.yml", sha: "old", ago_min: 30, conclusion: "failure"),
+               run(4, "lint.yml", sha: "old", ago_min: 30)
+             ]) == {"failure", :runs}
+
+      # An old commit's run made again does not become the newest commit:
+      # it keeps the place its first start gave it.
+      again = %{
+        run(2, "ci.yml", sha: "old", ago_min: 1)
+        | started_at: DateTime.add(@now, -180)
+      }
+
+      assert main.([
+               run(1, "ci.yml", sha: "new", ago_min: 20, conclusion: "failure"),
+               Map.put(again, :created_at, DateTime.add(@now, -3600))
+             ]) == {"failure", :runs}
+
+      # A run with no commit named is passed over, not a crash.
+      assert main.([%{run(1, "ci.yml", ago_min: 5) | sha: nil}]) == {nil, :runs}
 
       # A run still going, or a cancelled one, decides nothing.
       assert main.([
@@ -642,6 +734,17 @@ defmodule Wallboard.ReposTest do
 
       assert shop.s.main.id == 1 and shop.s.main_from == :gate
 
+      # What does change, for every repo: a row is drawn only when one of
+      # its workflows ran in the six hours.
+      [gate_only] =
+        GitHub.repos(
+          %{repos: [%{repo: "acme/shop", facts: facts(Enum.take(runs, 1)), error: nil}]},
+          settings,
+          @now
+        )
+
+      assert labels(gate_only) == ["Gate"]
+
       # The same file with a second repo added on the settings page: the
       # first repo's chart does not change, and the second borrows nothing.
       two =
@@ -669,6 +772,10 @@ defmodule Wallboard.ReposTest do
     json = Wallboard.Fixtures.read!("github/workflows.json")
     assert GitHub.parse_workflows(json) == {:ok, ["ci.yml", "codeql.yml", "dependabot-updates"]}
     assert {:error, _} = GitHub.parse_workflows(~s({"message": "Not Found"}))
+
+    # Only the first page of more: a file past it must not look missing.
+    assert {:error, "GitHub lists more" <> _} =
+             GitHub.parse_workflows(~s({"total_count": 130, "workflows": [{"path": "a/ci.yml"}]}))
   end
 
   describe "GitRemote" do

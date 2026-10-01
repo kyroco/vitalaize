@@ -35,6 +35,10 @@ defmodule Wallboard.Settings do
   @repo_words [gate_workflow: "gate", dev_deploy: "dev", prod_deploy: "prod"]
   @repo_keys Keyword.keys(@repo_words)
 
+  # A workflow file as a form takes it: a name like ci.yml, never a path
+  # and never "." or "..".
+  @workflow_file ~r/\A\w[\w.-]*\z/
+
   # What a repository that names no workflows has.
   @no_workflows %{
     gate_workflow: nil,
@@ -514,7 +518,7 @@ defmodule Wallboard.Settings do
             {:ok, value} ->
               if value == current(if(path == [:role], do: under_file, else: under), path, type),
                 do: {drop_path(saved, path), errors},
-                else: {put_path(saved, path, value), errors}
+                else: {put_path(saved, path, plain_repos(path, value, under)), errors}
 
             {:error, msg} ->
               {saved, Map.put(errors, key, "#{label}: #{msg}")}
@@ -526,6 +530,20 @@ defmodule Wallboard.Settings do
       {_, errors} -> {:error, errors}
     end
   end
+
+  # A repository whose workflows are the same as the settings file gives it
+  # is saved by name alone, so it goes on following the file when the file
+  # changes (see keep_repo_details/2).
+  defp plain_repos([:github, :repos], entries, under) do
+    same = MapSet.new(repo_fields(under))
+
+    Enum.map(entries, fn
+      %{repo: name} = entry -> if MapSet.member?(same, entry), do: name, else: entry
+      name -> name
+    end)
+  end
+
+  defp plain_repos(_path, value, _under), do: value
 
   @doc """
   Takes the given keys out of the saved settings, so those settings follow
@@ -840,10 +858,19 @@ defmodule Wallboard.Settings do
 
   defp parse(:repos, raw, _path) do
     with {:ok, entries} <- parse_repos(raw) do
-      {:ok,
-       entries
-       |> Enum.uniq_by(& &1.repo)
-       |> Enum.map(fn entry -> if map_size(entry) == 1, do: entry.repo, else: entry end)}
+      case Enum.uniq_by(entries, & &1.repo) do
+        # The first repository's workflows have fields of their own.
+        [%{repo: name} = first | _] when map_size(first) > 1 ->
+          {:error,
+           "#{name} is the first repository: its workflows are the gate, dev deploy and " <>
+             "prod deploy settings. Write gate=, dev= or prod= only after another repository"}
+
+        entries ->
+          {:ok,
+           Enum.map(entries, fn entry ->
+             if map_size(entry) == 1, do: entry.repo, else: entry
+           end)}
+      end
     end
   end
 
@@ -1051,16 +1078,21 @@ defmodule Wallboard.Settings do
           into: %{},
           do: {String.trim(name), entry}
 
+    # A name alone takes the file's entry as it is. One with workflows of
+    # its own, as a map or as a line ("owner/name gate=ci.yml"), is laid
+    # over the file's entry, which keeps the rest of what the file gave it.
     update_in(settings, [:github, :repos], fn repos ->
-      Enum.map(List.wrap(repos), fn
-        name when is_binary(name) ->
-          Map.get(details, name, name)
+      Enum.map(List.wrap(repos), fn raw ->
+        case repo_entry(raw) do
+          %{repo: name} = entry when is_binary(raw) and map_size(entry) == 1 ->
+            Map.get(details, name, raw)
 
-        %{repo: name} = entry when is_binary(name) ->
-          merge(Map.get(details, String.trim(name), %{}), entry)
+          %{repo: name} = entry ->
+            merge(Map.get(details, name, %{}), entry)
 
-        entry ->
-          entry
+          nil ->
+            raw
+        end
       end)
     end)
   end
@@ -1133,6 +1165,11 @@ defmodule Wallboard.Settings do
   The repositories as a form shows and saves them, in settings order: a
   name, or a map of the name and the workflows that entry names for itself
   (`gate_workflow`, `dev_deploy`, `prod_deploy`).
+
+  The first repository is always its name alone: its workflows are the
+  gate, dev deploy and prod deploy fields. A workflow a form could not
+  take back (a settings file can hold any text) is left out, and stays as
+  the file has it.
   """
   def repo_fields(settings) do
     settings.github
@@ -1140,11 +1177,20 @@ defmodule Wallboard.Settings do
     |> Enum.map(&repo_entry/1)
     |> Enum.filter(&(&1 && repo_name?(&1.repo)))
     |> Enum.uniq_by(& &1.repo)
-    |> Enum.map(fn entry ->
-      case Map.take(entry, @repo_keys) do
-        own when own == %{} -> entry.repo
-        own -> Map.put(own, :repo, entry.repo)
-      end
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {entry, 0} ->
+        entry.repo
+
+      {entry, _} ->
+        own =
+          entry
+          |> Map.take(@repo_keys)
+          |> Map.filter(fn {_, file} ->
+            is_nil(file) or (is_binary(file) and file =~ @workflow_file)
+          end)
+
+        if own == %{}, do: entry.repo, else: Map.put(own, :repo, entry.repo)
     end)
   end
 
@@ -1174,7 +1220,7 @@ defmodule Wallboard.Settings do
             else: {:halt, {:error, "#{name} is not owner/name"}}
 
         {[word, file], [entry | rest]} when is_map_key(words, word) ->
-          if file =~ ~r/\A[\w.-]*\z/,
+          if file == "" or file =~ @workflow_file,
             do: {:cont, [Map.put(entry, words[word], blank_to_nil(file)) | rest]},
             else: {:halt, {:error, "#{file} is not a workflow file name, like ci.yml"}}
 
