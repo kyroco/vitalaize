@@ -1,0 +1,55 @@
+# The first screen of a collector, its Settings, and pairing again.
+
+wait 40 "The collector is running"
+expect "Collector only"
+wait 60 "Connected to the hub at"
+absent "Not paired with a hub yet"
+snap c07-status
+click "Check again"
+wait 10 "The collector is running"
+click "Show the log"
+opened "board.log"
+click "Restart the collector"
+wait 5 "Restarting the collector…"
+wait 60 "The collector restarted and is running."
+snap c08-restarted
+
+# Settings
+click "Settings"
+wait 40 "Claude folders to watch"
+snap c09-settings
+click "Save"
+wait 5 "Nothing changed."
+type "Claude folders to watch" "{HOME}/.claude"
+click "Save"
+wait 40 "Saved in"
+snap c09-settings-saved
+click "Back"
+wait 20 "The collector is running"
+
+# Pair again, and the hub's owner refuses
+click "Pair again…"
+wait 5 "Pick the hub, or type its address."
+snap c10-pair-sheet
+disabled "Pair"
+type "Hub address" "{HUB}"
+enabled "Pair"
+click "Pair"
+wait 60 "Waiting for the hub to approve…"
+snap c10-pair-code
+wait 90 "The hub's owner refused this machine."
+snap c10-refused
+click "Close"
+gone 5 "Pick the hub, or type its address."
+expect "The hub's owner refused this machine."
+expect "Connected to the hub at"
+
+# An address where no board answers
+click "Pair again…"
+wait 5 "Pick the hub, or type its address."
+type "Hub address" "http://localhost:4999"
+click "Pair"
+wait 60 "Could not pair: nothing answers at http://localhost:4999."
+snap c11-no-hub
+click "Close"
+gone 5 "Pick the hub, or type its address."

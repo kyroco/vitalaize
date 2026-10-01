@@ -161,6 +161,7 @@ final class AppState: ObservableObject {
     @Published var mendFailure: String?
     @Published var mendDone: String?
     @Published var mending = false
+    private var ticks = 0
 
     /// Said on the wizard's second step when the earlier settings file the
     /// setup carried over before is gone.
@@ -346,9 +347,16 @@ final class AppState: ObservableObject {
         let c = choices
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try Setup.install(c, onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
-                                  say: { line in DispatchQueue.main.async { self.log.append(line) } })
+                let pairing = try Setup.install(c, onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
+                                                say: { line in DispatchQueue.main.async { self.log.append(line) } })
                 DispatchQueue.main.async {
+                    // Why the hub did not pair stays on the first screen:
+                    // the setup's own lines are gone once it shows.
+                    if let pairing, !pairing.ok {
+                        self.pairMessage = "The collector is set up, but it did not pair. \(pairing.message) Use Pair with a hub… to try again."
+                    } else {
+                        self.pairMessage = nil
+                    }
                     self.finder.stop()
                     self.screen = .status
                     self.refreshStatus()
@@ -497,6 +505,10 @@ final class AppState: ObservableObject {
         guard screen == .status, !mending else { return }
         let board = choices.role.runsBoard
         let port = choices.port
+        // A collector's link to its hub comes and goes without the
+        // collector stopping, so its line is read again every half minute.
+        ticks += 1
+        if !board, ticks % 6 == 0 { return refreshStatus() }
         DispatchQueue.global(qos: .utility).async {
             let up = board ? Setup.boardRunning(port: port) : Setup.serviceRunning()
             DispatchQueue.main.async { if self.screen == .status, self.running != up { self.refreshStatus() } }

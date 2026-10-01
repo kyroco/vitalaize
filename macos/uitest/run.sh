@@ -75,6 +75,9 @@ home() {
   rm -rf "$H"
   mkdir -p "$H/.claude/projects" "$OUT"
   export CFFIXED_USER_HOME="$H" WALLBOARD_LABEL="$LABEL" VITALAIZE_DATA="$DATA" VITALAIZE_RELEASE="$BOARD"
+  # Every throwaway Mac is this one computer, so each needs a name of its
+  # own: a hub refuses a collector that carries the hub's name.
+  export VITALAIZE_MACHINE="uitest-$NAME"
   LABELS+=("$LABEL")
   if curl -s --max-time 2 -o /dev/null "http://localhost:$PORT/"; then
     echo "Something already answers on port $PORT. Stop it first." >&2
@@ -90,6 +93,7 @@ use() {
   LABEL="$LABEL_BASE.$NAME"
   DATA="$H/Library/Application Support/${3:-VitalAIze}"
   export CFFIXED_USER_HOME="$H" WALLBOARD_LABEL="$LABEL" VITALAIZE_DATA="$DATA" VITALAIZE_RELEASE="$BOARD"
+  export VITALAIZE_MACHINE="uitest-$NAME"
 }
 
 stop_item() { launchctl bootout "gui/$(id -u)/$1" 2>/dev/null; return 0; }
@@ -107,9 +111,25 @@ app() { "$APP" "$@"; }
 # drive STEPS: opens the window and clicks through steps/STEPS.txt. Words
 # in braces in a step file are filled in here.
 drive() {
+  drive_start "$1"
+  drive_wait
+}
+
+# drive_start STEPS, then drive_wait: the same in two halves, for a
+# scenario that has something to do outside the window while it is open
+# (pressing Approve on the hub).
+drive_start() {
+  DRIVING="$1"
   local steps="$OUT/$1.steps"
   sed -e "s|{PORT}|$PORT|g" -e "s|{HOME}|$H|g" -e "s|{PORT2}|${PORT2:-}|g" -e "s|{DATA}|$DATA|g" -e "s|{HUB}|${HUB:-}|g" "$HERE/steps/$1.txt" >"$steps"
-  VITALAIZE_UITEST="$steps" VITALAIZE_UITEST_OUT="$OUT" "$APP" >"$OUT/$1.log" 2>&1
+  rm -f "$OUT/results.txt"
+  VITALAIZE_UITEST="$steps" VITALAIZE_UITEST_OUT="$OUT" "$APP" >"$OUT/$1.log" 2>&1 &
+  DRIVER=$!
+}
+
+drive_wait() {
+  set -- "$DRIVING"
+  wait "$DRIVER"
   local status=$?
   if [ -f "$OUT/results.txt" ]; then
     mv "$OUT/results.txt" "$OUT/$1.results.txt"
@@ -133,6 +153,50 @@ check() {
     echo "    FAILED check: $what"
   fi
 }
+
+# setup_by_command PORT NAME [key=value ...]: sets this throwaway home up
+# with the app's own command line, for a scenario whose subject is what
+# comes after the setup. Values are JSON, laid over what --detect finds.
+setup_by_command() {
+  app --detect >"$H/choices.json"
+  python3 - "$H/choices.json" "$DATA" "$H" "$@" <<'PY'
+import json, sys
+path, data, home, port, name, *rest = sys.argv[1:]
+c = json.load(open(path))
+c.update(dataFolder=data, port=int(port), boardName=name, repo="acme/rockets", branch="main",
+         role="hubAndCollector", claudeFolders=[home + "/.claude"], korium=False, codex=False,
+         newRelic=False, phone="", devProfile="", prodProfile="",
+         gateWorkflow="", devWorkflow="", prodWorkflow="", otherRepos=[])
+for pair in rest:
+    key, value = pair.split("=", 1)
+    c[key] = json.loads(value)
+json.dump(c, open(path, "w"), indent=2)
+PY
+  app --install "$H/choices.json" >"$OUT/$NAME-setup.log" 2>&1
+}
+
+# save_settings 'JSON': saves settings the way the app's Settings does,
+# like save_settings '{"link.enabled": "true", "link.port": "4758"}'.
+save_settings() {
+  printf '{"values": %s}' "$1" >"$H/save.json"
+  app --save "$H/save.json" >>"$OUT/$NAME-setup.log" 2>&1
+}
+
+# wait_until SECONDS COMMAND...: true once the command is, false when time is up.
+wait_until() {
+  local left="$1"
+  shift
+  while [ "$left" -gt 0 ]; do
+    "$@" >/dev/null 2>&1 && return 0
+    sleep 1
+    left=$((left - 1))
+  done
+  return 1
+}
+
+# The mailbox of the board on a port, as its owner uses it in a browser.
+mailbox() { node "$HERE/mailbox.mjs" "$@"; }
+mailbox_has_code() { [ -n "$(mailbox "$1" list 2>/dev/null)" ]; }
 
 answers() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$1/")" = 200 ]; }
 no_answer() { ! answers "$1"; }

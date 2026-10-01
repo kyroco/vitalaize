@@ -107,6 +107,13 @@ struct Paired: Codable {
     var machine: String
 }
 
+/// How a collector's link to its hub stands, as the collector last wrote
+/// it: up, down, back_soon or removed, and when (seconds since 1970).
+struct LinkState: Codable {
+    var state: String
+    var at: Int
+}
+
 struct SettingsDoc: Codable {
     var role: String
     /// The file the settings are saved in.
@@ -114,6 +121,8 @@ struct SettingsDoc: Codable {
     /// running, stopped, or none when no login item is set up.
     var service: String
     var paired: Paired?
+    /// Nil when the collector has not said: not paired, or not run since.
+    var link: LinkState?
     var sections: [SettingsSection]
 }
 
@@ -418,7 +427,11 @@ enum Setup {
     }
 
     /// Installs everything the choices ask for. `say` reports each step.
-    static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws {
+    /// Gives back how pairing went when it asked a hub to pair: a collector
+    /// is set up whether or not the hub said yes, so the caller has that to
+    /// tell the person.
+    @discardableResult
+    static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws -> PairAnswer? {
         // Kept from an earlier setup, so Uninstall still finds Codex's hooks
         // when this run could not reach them. The earlier record stays
         // where Uninstall looks until this run has written its own: the
@@ -429,6 +442,7 @@ enum Setup {
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
         let backups = backupFolder(data)
         var hooked: [String] = []
+        var pairing: PairAnswer?
 
         if c.role.runsBoard {
             c = try carryOver(c, backups: backups, say: say)
@@ -481,6 +495,7 @@ enum Setup {
                 // The collector is set up either way; pairing can be done
                 // again from the app's first screen.
                 say(answer.ok ? answer.message : "Not paired yet. \(answer.message) Pair from this app when the hub is ready.")
+                pairing = answer
             }
         }
 
@@ -493,6 +508,7 @@ enum Setup {
         try replace(data.appendingPathComponent("install.json"), with: try enc.encode(saved), backups: backups)
         dataFolder = c.dataFolder
         say("Done")
+        return pairing
     }
 
     // MARK: Keeping what was there

@@ -75,7 +75,8 @@ defmodule Wallboard.Application do
        max_bytes: settings.collector.outbox_mb * 1_000_000},
       Wallboard.Collector.Watcher,
       # Sends the outbox to the hub, once this machine is paired with one.
-      {Wallboard.Collector.Sender, dir: settings.collector.dir}
+      # It looks where pairing saves the certificate and the hub's address.
+      {Wallboard.Collector.Sender, dir: Wallboard.Pairing.dir(settings)}
     ]
   end
 

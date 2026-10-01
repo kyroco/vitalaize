@@ -11,8 +11,9 @@ defmodule Wallboard.Collector.Sender do
 
   ## Where the hub is
 
-  The collector's folder (`collector.dir` in settings) holds what pairing
-  leaves there: `cert.pem`, `key.pem` and `ca.pem`, and `hub.json` with the
+  Its folder (`Wallboard.Pairing.dir/1`, the collector's folder's `link`)
+  holds what pairing leaves there: `cert.pem`, `key.pem` and `ca.pem`, and
+  `hub.json` with the
   hub's address, such as `{"host": "192.168.1.20", "link_port": 4748}`.
   Until all four are there nothing is sent, and the outbox keeps the
   events. The sender looks for them twice a second, so a collector paired
@@ -43,6 +44,13 @@ defmodule Wallboard.Collector.Sender do
   Which events are dropped unsent is kept in `skip.json` in the collector's
   folder, so a collector that stops halfway through does not send them
   after it starts again.
+
+  ## How the link stands
+
+  Every time the stream to the hub opens or is lost, the sender writes
+  that in `state.json` beside the certificate, for the VitalAIze app and
+  `vitalaize setup` to show (`link_state/1`): the app runs as its own
+  program and cannot ask the collector.
   """
 
   use GenServer
@@ -77,6 +85,26 @@ defmodule Wallboard.Collector.Sender do
          when is_binary(host) and host != "" and is_integer(port) and port > 0 and port < 65_536 <-
            Jason.decode(text) do
       {:ok, %{tls: %{cert_pem: cert, key_pem: key, ca_pem: ca}, host: host, port: port}}
+    else
+      _ -> :error
+    end
+  end
+
+  @states ["up", "down", "back_soon", "removed"]
+
+  @doc """
+  How the link stands, as the running collector last wrote it in `dir`:
+  `{:ok, %{state: state, at: unix_seconds}}`, where `state` is `"up"` (the
+  stream to the hub is open), `"down"` (no connection now; it keeps
+  trying), `"back_soon"` (the hub said it is restarting) or `"removed"`
+  (the hub revoked this machine). `:error` when nothing was written: the
+  machine is not paired, or no collector has run since it was.
+  """
+  def link_state(dir) do
+    with {:ok, text} <- File.read(Path.join(dir, "state.json")),
+         {:ok, %{"state" => state, "at" => at}} when state in @states and is_integer(at) <-
+           Jason.decode(text) do
+      {:ok, %{state: state, at: at}}
     else
       _ -> :error
     end
@@ -125,7 +153,23 @@ defmodule Wallboard.Collector.Sender do
 
   def handle_info({:wallboard_link, :removed}, state) do
     Logger.warning("Collector: the hub removed this machine. Nothing more is sent.")
+    note(state, "removed")
     {:noreply, %{state | removed?: true}}
+  end
+
+  def handle_info({:wallboard_link, :up}, state) do
+    note(state, "up")
+    {:noreply, state}
+  end
+
+  def handle_info({:wallboard_link, {:down, _wait}}, state) do
+    note(state, "down")
+    {:noreply, state}
+  end
+
+  def handle_info({:wallboard_link, :back_soon}, state) do
+    note(state, "back_soon")
+    {:noreply, state}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
@@ -165,6 +209,8 @@ defmodule Wallboard.Collector.Sender do
 
         {:ok, pid} = Client.start_link(opts)
         Logger.info("Collector: sending to the hub at #{inspect(hub.host)}, port #{hub.port}.")
+        # Not connected until the client says so.
+        note(state, "down")
         %{state | client: pid}
       else
         if not state.warned?,
@@ -178,6 +224,20 @@ defmodule Wallboard.Collector.Sender do
   end
 
   defp connect(state), do: state
+
+  # Writes how the link stands (see `link_state/1`). The file is written
+  # whole beside itself and moved into place, so a reader never sees half
+  # of it; a folder that cannot be written costs only the note.
+  defp note(state, word) do
+    path = Path.join(state.dir, "state.json")
+    tmp = path <> ".tmp"
+
+    with :ok <- File.write(tmp, Jason.encode!(%{state: word, at: System.os_time(:second)})) do
+      File.rename(tmp, path)
+    end
+
+    :ok
+  end
 
   # Read before the client is started: files that are there and are not a
   # certificate must not stop the collector.

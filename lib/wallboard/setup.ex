@@ -542,7 +542,9 @@ defmodule Wallboard.Setup do
 
     * `["show"]`: the role, where the settings are saved, the sections and
       fields for this role with their values (a secret that is set comes
-      as `kept`), whether this machine is paired, and the service's state.
+      as `kept`), whether this machine is paired, how its link to the hub
+      stands (`link`, see `Wallboard.Collector.Sender.link_state/1`; nil
+      when the collector has not said), and the service's state.
     * `["save"]`: reads `{"values": {"alerts.phone": "..."}}` from standard
       input, saves, and answers `ok`, `lines` (what happened, to show) and
       `service`, or `ok: false` and `errors` by path.
@@ -566,6 +568,7 @@ defmodule Wallboard.Setup do
       kept: Settings.kept(),
       service: Service.state(opts),
       paired: paired(settings),
+      link: link(settings),
       sections:
         for {title, fields} <- Settings.editable(settings.role) do
           %{
@@ -690,6 +693,13 @@ defmodule Wallboard.Setup do
 
       :error ->
         nil
+    end
+  end
+
+  defp link(settings) do
+    case Wallboard.Collector.Sender.link_state(Pairing.dir(settings)) do
+      {:ok, state} -> state
+      :error -> nil
     end
   end
 

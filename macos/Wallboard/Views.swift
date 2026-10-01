@@ -400,7 +400,7 @@ struct HubPage: View {
             .frame(maxWidth: .infinity, alignment: .leading).padding(6)
         }
         Form {
-            TextField("Hub address", text: $state.choices.hubURL, prompt: Text("http://192.168.1.20:4747"))
+            TextField("Hub address", text: $state.choices.hubURL, prompt: Text(verbatim: "http://192.168.1.20:4747"))
         }
         .formStyle(.grouped)
         .textFieldStyle(.roundedBorder)
@@ -550,11 +550,13 @@ struct StatusView: View {
                             Button("Check again") { state.refreshStatus() }
                         }
                         if let hub = state.doc?.paired {
-                            Text("Paired with the hub at \(hub.host) as \(hub.machine).")
+                            LinkLine(hub: hub, link: state.running ? state.doc?.link : nil)
                         } else if state.doc != nil {
                             Text("Not paired with a hub yet, so nothing is sent.").foregroundStyle(.red)
                         }
-                        if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
+                        if let message = state.pairMessage {
+                            Text(message).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .padding(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -634,6 +636,30 @@ struct MendBox: View {
     }
 }
 
+/// Whether a paired collector is in touch with its hub right now.
+struct LinkLine: View {
+    let hub: Paired
+    let link: LinkState?
+
+    var body: some View {
+        switch link?.state {
+        case "up":
+            Text("Connected to the hub at \(hub.host) as \(hub.machine).")
+        case "down":
+            Text("Paired with the hub at \(hub.host) as \(hub.machine), but the hub is not answering right now. What this Mac reads is kept, and sent when the hub answers again.")
+                .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        case "back_soon":
+            Text("Paired with the hub at \(hub.host) as \(hub.machine). The hub is restarting; sending goes on when it is back.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        case "removed":
+            Text("The hub at \(hub.host) removed this machine, so nothing is sent. Use Pair again… to connect it again.")
+                .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        default:
+            Text("Paired with the hub at \(hub.host) as \(hub.machine).")
+        }
+    }
+}
+
 // MARK: - Pairing
 
 /// The code to approve on the hub, as large as mockup 8 shows it.
@@ -678,7 +704,7 @@ struct PairSheet: View {
                 HStack { ProgressView().controlSize(.small); Text("Asking the hub…").foregroundStyle(.secondary) }
             } else {
                 Text("Pick the hub, or type its address. This Mac then shows a code to approve in the mailbox on the hub's board.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(finder.hubs) { hub in
                     Button { address = hub.url } label: {
                         HStack {
@@ -689,8 +715,11 @@ struct PairSheet: View {
                     }
                     .buttonStyle(.plain)
                 }
-                TextField("Hub address", text: $address, prompt: Text("http://192.168.1.20:4747"))
+                Text("Hub address")
+                TextField("Hub address", text: $address, prompt: Text(verbatim: "http://192.168.1.20:4747"))
                     .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .onSubmit { if !address.trimmingCharacters(in: .whitespaces).isEmpty { state.pair(hub: address) } }
                 if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
             }
             HStack {
