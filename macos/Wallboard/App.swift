@@ -9,6 +9,7 @@ import SwiftUI
 ///   VitalAIze --settings              print this Mac's settings (JSON)
 ///   VitalAIze --save FILE.json        save settings: {"values": {"port": "4800"}}
 ///   VitalAIze --pair [ADDRESS]        pair this Mac with a hub by code
+///   VitalAIze --mend                  check how VitalAIze starts here, and mend it
 ///
 /// The command line is for setting up Macs by script, and for testing.
 @main
@@ -70,6 +71,23 @@ enum CLI {
             }
             print(answer.message)
             return answer.ok ? 0 : 1
+        case "--mend":
+            guard let record = Setup.installed() else {
+                print("VitalAIze is not set up on this Mac.")
+                return 1
+            }
+            guard let fault = Setup.startFault(record) else {
+                print("Nothing to mend.")
+                return 0
+            }
+            print(fault)
+            do {
+                try Setup.mend(record) { print($0) }
+                return 0
+            } catch {
+                print("Failed: \(error.localizedDescription)")
+                return 1
+            }
         default:
             return nil
         }
@@ -122,15 +140,61 @@ final class AppState: ObservableObject {
     @Published var pairMessage: String?
     @Published var pairing = false
 
+    /// What the app found wrong with how VitalAIze starts on this Mac and
+    /// did about it, for the first screen; and what it could not mend.
+    @Published var mendLines: [String] = []
+    @Published var mendFailure: String?
+    @Published var mending = false
+
+    /// Said on the wizard's second step when the earlier settings file the
+    /// setup carried over before is gone.
+    @Published var importNote: String?
+
     let finder = HubFinderHolder.shared
 
     init() {
-        if Setup.installed() != nil {
-            choices = Setup.installed()!.choices
+        if let record = Setup.installed() {
+            let checked = Setup.checkedImport(record.choices)
+            choices = checked.choices
+            importNote = checked.note
             screen = .status
-            refreshStatus()
+            checkStart()
         } else {
             detect()
+        }
+    }
+
+    /// Looks at how VitalAIze starts on this Mac and mends it when it
+    /// cannot: an app installed over an older one finds a login item that
+    /// names the older app. `restart` asks for a restart when nothing
+    /// needed mending.
+    func checkStart(restart: Bool = false) {
+        mending = true
+        mendFailure = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            var lines: [String] = []
+            var failure: String?
+            if let record = Setup.installed(), let fault = Setup.startFault(record) {
+                lines.append(fault)
+                DispatchQueue.main.async { self.mendLines = lines }
+                do {
+                    try Setup.mend(record) { line in
+                        lines.append(line)
+                        let now = lines
+                        DispatchQueue.main.async { self.mendLines = now }
+                    }
+                } catch {
+                    failure = error.localizedDescription
+                }
+            } else if restart {
+                Setup.restartBoard()
+                sleep(6)
+            }
+            DispatchQueue.main.async {
+                self.mending = false
+                self.mendFailure = failure
+                self.refreshStatus()
+            }
         }
     }
 
@@ -166,6 +230,9 @@ final class AppState: ObservableObject {
 
     /// Opens the wizard on what is installed, with the lists it offers.
     func reconfigure() {
+        let checked = Setup.checkedImport(choices)
+        choices = checked.choices
+        if let note = checked.note { importNote = note }
         step = 0
         screen = .wizard
         finder.start()

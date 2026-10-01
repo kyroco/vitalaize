@@ -209,6 +209,10 @@ struct FoldersPage: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
             }
+            if let note = state.importNote {
+                Label(note, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -476,10 +480,8 @@ struct StatusView: View {
                 HStack {
                     Button("Open the board") { state.open("/") }.keyboardShortcut(.defaultAction)
                     Button("Settings") { state.openSettings() }
-                    Button("Restart the board") {
-                        Setup.restartBoard()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { state.refreshStatus() }
-                    }
+                    Button("Restart the board") { state.checkStart(restart: true) }
+                        .disabled(state.mending)
                     Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
                 }
                 Text("Other machines connect by running this app there (or vitalaize setup on Linux) and picking Collector only. Each shows a code; approve it in the mailbox on the board.")
@@ -507,13 +509,13 @@ struct StatusView: View {
                     Button(state.doc?.paired == nil ? "Pair with a hub…" : "Pair again…") { showPair = true }
                         .keyboardShortcut(.defaultAction)
                     Button("Settings") { state.openSettings() }
-                    Button("Restart the collector") {
-                        Setup.restartBoard()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { state.refreshStatus() }
-                    }
+                    Button("Restart the collector") { state.checkStart(restart: true) }
+                        .disabled(state.mending)
                     Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
                 }
             }
+
+            if state.mending || !state.mendLines.isEmpty || state.mendFailure != nil { MendBox() }
 
             Spacer()
             Divider()
@@ -539,6 +541,39 @@ struct StatusView: View {
             }
             .padding(24)
             .frame(width: 460)
+        }
+    }
+}
+
+/// What the app found wrong with how VitalAIze starts here, and what it
+/// did about it.
+struct MendBox: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                if state.mending {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(state.mendLines.isEmpty ? "Checking how VitalAIze starts on this Mac…" : "Mending how VitalAIze starts on this Mac…")
+                    }
+                }
+                ForEach(Array(state.mendLines.enumerated()), id: \.offset) { _, line in
+                    Text(line).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                if let failure = state.mendFailure {
+                    Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Use Show the log to see why, then Reconfigure to set it up again. Your settings and database are where they were.")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else if !state.mending && !state.mendLines.isEmpty {
+                    Label("Mended. Your settings and database are where they were.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
