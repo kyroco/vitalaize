@@ -232,12 +232,8 @@ defmodule Wallboard.RepoPrompts do
   def handle_call({:ignore, id}, _from, state) do
     case state.asks[id] do
       %{repo: repo} ->
-        # Under the name it was seen by as well, when GitHub gave another.
-        names = Enum.uniq_by([repo | if(name?(id), do: [id], else: [])], &key/1)
-        keys = Enum.map(names, &key/1)
-
         ignored =
-          Enum.take(Enum.reject(state.ignored, &(key(&1) in keys)) ++ names, -@max_ignored)
+          Enum.take(Enum.reject(state.ignored, &(key(&1) == id)) ++ [repo], -@max_ignored)
 
         {:reply, :ok, %{state | ignored: ignored} |> drop(id) |> again() |> settle()}
 
@@ -367,18 +363,19 @@ defmodule Wallboard.RepoPrompts do
     now = System.os_time(:second)
 
     Enum.reduce(seen, state, fn {repo, machine}, state ->
-      id = is_binary(repo) && key(repo)
-      # The name GitHub knows it by, when that is another.
-      other = id && state.same_as[id]
+      seen_as = is_binary(repo) && key(repo)
+      # A renamed repository goes by the name GitHub knows it by now, so it
+      # has one ask whichever name it is seen under.
+      id = seen_as && Map.get(state.same_as, seen_as, seen_as)
 
       cond do
         not name?(repo) or not is_binary(machine) ->
           state
 
-        MapSet.member?(ignored, id) or MapSet.member?(ignored, other) ->
+        MapSet.member?(ignored, id) or MapSet.member?(ignored, seen_as) ->
           state
 
-        MapSet.member?(following, id) or MapSet.member?(following, other) ->
+        MapSet.member?(following, id) or MapSet.member?(following, seen_as) ->
           drop(state, id)
 
         ask = state.asks[id] ->
@@ -490,8 +487,8 @@ defmodule Wallboard.RepoPrompts do
 
   # GitHub can see it, under `name`. That is the asked name in GitHub's own
   # spelling, or, for a repository that was renamed or moved, its name now:
-  # then the ask is about that one, and goes if the board follows or
-  # ignores it already.
+  # then the ask moves to that name, joins the ask that name has already,
+  # or goes if the board follows or ignores that name.
   defp visible(state, id, ask, name) do
     now_id = key(name)
 
@@ -504,12 +501,20 @@ defmodule Wallboard.RepoPrompts do
 
       true ->
         same_as = state.same_as |> Enum.take(199) |> Map.new() |> Map.put(id, now_id)
-        state = %{state | same_as: same_as}
+        state = drop(%{state | same_as: same_as}, id)
         known? = now_id in Enum.map(state.ignored, &key/1) or now_id in following(state)
 
-        if known? or Map.has_key?(state.asks, now_id),
-          do: drop(state, id),
-          else: put_in(state.asks[id], %{ask | sight: :visible, repo: name})
+        case state.asks[now_id] do
+          _ when known? ->
+            state
+
+          %{} = there ->
+            machines = Enum.take(Enum.uniq(there.machines ++ ask.machines), @max_machines)
+            put_in(state.asks[now_id].machines, machines)
+
+          nil ->
+            put_in(state.asks[now_id], %{ask | sight: :visible, repo: name})
+        end
     end
   end
 

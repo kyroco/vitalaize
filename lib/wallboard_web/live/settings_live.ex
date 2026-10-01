@@ -160,23 +160,12 @@ defmodule WallboardWeb.SettingsLive do
   defp relist(socket), do: socket
 
   # A repo tracked from the mailbox while this page is open goes into its
-  # Repositories box, so the page shows it and a Save keeps it.
-  defp tracked_since(%{assigns: %{values: values, settings: shown}} = socket) do
-    now = Settings.get()
-
-    case added(shown, now) do
-      [] ->
-        socket
-
-      names ->
-        box = Enum.join([String.trim_trailing(values["github.repos"] || "") | names], "\n")
-
-        assign(socket,
-          values: Map.put(values, "github.repos", String.trim_leading(box, "\n")),
-          settings: put_in(shown, [:github, :repos], Settings.repo_names(now))
-        )
-    end
-  end
+  # Repositories box, so the page shows it. What the page was drawn from
+  # (`settings`) stays as it was: a browser does not always take the new
+  # box (it leaves a box someone is typing in alone), and Save puts the
+  # repo back from that difference either way.
+  defp tracked_since(%{assigns: %{values: values, settings: shown}} = socket),
+    do: assign(socket, values: keep_tracked(values, shown, Settings.get()))
 
   defp tracked_since(socket), do: socket
 
@@ -189,7 +178,9 @@ defmodule WallboardWeb.SettingsLive do
   @doc """
   The form's values with any repo tracked since the page was drawn (`shown`)
   put back at the end of the Repositories box: the box is sent whole, and a
-  page drawn before a Track in the mailbox would otherwise undo it.
+  page drawn before a Track in the mailbox would otherwise undo it. The
+  example name a board with no repos starts with leaves the box then, as
+  it left the list.
   """
   def keep_tracked(values, shown, now) do
     case added(shown, now) do
@@ -197,10 +188,19 @@ defmodule WallboardWeb.SettingsLive do
         values
 
       names ->
-        typed = Map.get(values, "github.repos", "")
-        has = typed |> String.split(~r/[\s,]+/, trim: true) |> Enum.map(&String.downcase/1)
+        example = String.downcase(Settings.defaults().github.repo)
+        following = now |> Settings.repo_names() |> Enum.map(&String.downcase/1)
+
+        lines =
+          values
+          |> Map.get("github.repos", "")
+          |> to_string()
+          |> String.split(~r/[\s,]+/, trim: true)
+          |> Enum.reject(&(String.downcase(&1) == example and example not in following))
+
+        has = Enum.map(lines, &String.downcase/1)
         missing = Enum.reject(names, &(String.downcase(&1) in has))
-        Map.put(values, "github.repos", Enum.join([typed | missing], "\n"))
+        Map.put(values, "github.repos", Enum.join(lines ++ missing, "\n"))
     end
   end
 

@@ -253,6 +253,48 @@ defmodule Wallboard.RepoPromptsTest do
       assert length(Mailbox.items()) == 5
     end
 
+    test "a renamed repo seen under both names has one item and one question each", c do
+      start_hub(c)
+      answer(c, "acme/old", {:visible, "acme/new"})
+
+      # The new name first, then the old one, twice.
+      streamed("air", "s1", "acme/new")
+      settled()
+      streamed("box", "s2", "acme/old")
+      settled()
+      streamed("box", "s3", "acme/old")
+      settled()
+      assert [%{id: "repo:acme/new"}] = Mailbox.items()
+      assert asked(c) == ["acme/new", "acme/old"]
+      assert panel() =~ "on air and box."
+
+      # The old name first, then the new one.
+      answer(c, "acme/was", {:visible, "acme/is"})
+      streamed("air", "s4", "acme/was")
+      settled()
+      streamed("air", "s5", "acme/is")
+      settled()
+
+      assert Mailbox.items() |> Enum.map(& &1.id) |> Enum.sort() ==
+               ["repo:acme/is", "repo:acme/new"]
+
+      assert asked(c) == ["acme/new", "acme/old", "acme/was"]
+
+      # Ignored once, it stays ignored under either name, and one Ask again undoes it.
+      assert :ok = Mailbox.act("repo:acme/is", "ignore")
+      streamed("air", "s6", "acme/was")
+      settled()
+      assert [%{id: "repo:acme/new"}] = Mailbox.items()
+      assert RepoPrompts.ignored() == ["acme/is"]
+      assert :ok = RepoPrompts.ask_again("acme/is")
+      settled()
+
+      assert Enum.map(Mailbox.items(), & &1.id) |> Enum.sort() == [
+               "repo:acme/is",
+               "repo:acme/new"
+             ]
+    end
+
     test "a renamed repo the board follows under its new name raises nothing", c do
       start_hub(c)
       answer(c, "acme/shop-old", {:visible, "acme/shop"})
@@ -389,10 +431,19 @@ defmodule Wallboard.RepoPromptsTest do
         "%{archive: %{path: #{inspect(Path.join(c.dir, "wallboard.db"))}}}"
       )
 
-      Settings.load!()
+      shown = Settings.load!()
       start_hub(c)
       assert :ok = Settings.track_repo("acme/billing-api")
-      assert Settings.repo_names(Settings.get()) == ["acme/billing-api"]
+      now = Settings.get()
+      assert Settings.repo_names(now) == ["acme/billing-api"]
+
+      # A settings page drawn before it shows the example; its Save does
+      # not bring the example back.
+      sent = %{"github.repos" => "your-org/your-repo"}
+
+      assert SettingsLive.keep_tracked(sent, shown, now) == %{
+               "github.repos" => "acme/billing-api"
+             }
     end
   end
 
