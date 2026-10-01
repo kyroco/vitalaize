@@ -10,8 +10,15 @@ defmodule Wallboard.CollectorOutboxTest do
     %{dir: dir}
   end
 
+  # Temporary, so the test's supervisor does not start it again when a test
+  # stops it. Started again, a second outbox works in the same folder as
+  # the one the test starts next, and writes its saved point there while
+  # the test is changing those files.
   defp start(dir, opts \\ []) do
-    start_supervised!({Outbox, [dir: dir, name: nil] ++ opts}, id: make_ref())
+    start_supervised!({Outbox, [dir: dir, name: nil] ++ opts},
+      id: make_ref(),
+      restart: :temporary
+    )
   end
 
   defp event(n, pad \\ 0) do

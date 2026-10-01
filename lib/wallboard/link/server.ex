@@ -55,8 +55,14 @@ defmodule Wallboard.Link.Server do
           at: now
         })
 
+      # Removed between the handshake and here, so `Hub.revoke/1` found no
+      # stream to tell. Told now, or it would try again for ever.
+      {:error, :revoked} ->
+        send_to(stream, counter, {:disconnected, %Proto.Disconnected{}})
+        refuse(:unauthenticated, "this machine is no longer approved")
+
       {:error, _} ->
-        raise GRPC.RPCError, status: :unauthenticated, message: "this machine is not approved"
+        refuse(:unauthenticated, "this machine is not approved")
     end
   end
 
