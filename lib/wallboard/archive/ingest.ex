@@ -18,6 +18,10 @@ defmodule Wallboard.Archive.Ingest do
   database's folder, in inbox/<machine>/<account>/, so Refresh can read
   them again.
 
+  A machine can also run a streaming collector (see `Wallboard.Link`).
+  Once its stream has saved a session, an upload of that session is taken
+  and not saved, so the session is counted once.
+
   Codex sessions come the same way, from a Codex Stop and SessionEnd hook
   (see `codex_upload_script/2`), with `tool=codex`: one session's
   rollout file, its helper agents' rollout files, and optionally its lines
@@ -68,7 +72,8 @@ defmodule Wallboard.Archive.Ingest do
     with true <- valid_name?(machine) || {:error, "bad machine name"},
          true <- valid_name?(account) || {:error, "bad account name"},
          {:ok, files} <- unpack(gzip_tar),
-         {:ok, sid, main, subs} <- sort_files(files) do
+         {:ok, sid, main, subs} <- sort_files(files),
+         :ok <- not_streamed(sid) do
       dir = Path.join([Path.dirname(settings.archive.path), "inbox", machine, account])
       main_path = Path.join(dir, sid <> ".jsonl")
       File.mkdir_p!(Path.join([dir, sid, "subagents"]))
@@ -85,6 +90,7 @@ defmodule Wallboard.Archive.Ingest do
         prices: settings.usage.prices,
         machine: machine,
         account: Claude.account_label(account),
+        source: "upload",
         size: byte_size(gzip_tar),
         mtime: System.os_time(:second),
         now: System.os_time(:second)
@@ -97,6 +103,10 @@ defmodule Wallboard.Archive.Ingest do
         else: {:ok, :empty}
     end
   end
+
+  # A session a collector already streams is not saved a second time from
+  # an upload: the machine may run both until its hooks are retired.
+  defp not_streamed(sid), do: if(Store.streamed?(sid), do: {:ok, :streamed}, else: :ok)
 
   # Reads the whole archive in memory, so no uploaded path ever touches disk
   # before it is checked.
@@ -151,7 +161,8 @@ defmodule Wallboard.Archive.Ingest do
     with true <- valid_name?(machine) || {:error, "bad machine name"},
          true <- valid_name?(account) || {:error, "bad account name"},
          {:ok, files} <- unpack(gzip_tar),
-         {:ok, up} <- sort_codex_files(files) do
+         {:ok, up} <- sort_codex_files(files),
+         :ok <- not_streamed(up.id) do
       dir = Path.join([Path.dirname(settings.archive.path), "inbox", machine, account])
       File.mkdir_p!(dir)
       {main_name, main} = up.main
@@ -172,6 +183,7 @@ defmodule Wallboard.Archive.Ingest do
         # The id checked above, whatever later lines of the file say.
         session_id: up.id,
         title: up.title,
+        source: "upload",
         size: byte_size(gzip_tar),
         mtime: System.os_time(:second),
         now: System.os_time(:second)

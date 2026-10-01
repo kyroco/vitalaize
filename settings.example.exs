@@ -23,6 +23,8 @@
     codex_dirs: nil,
     # Where it keeps its place and the events not sent yet. nil: a
     # "collector" folder beside the database's usual place (see archive).
+    # Pairing with a hub leaves this machine's certificate and the hub's
+    # address here too; the collector sends once they are there.
     dir: nil,
     # The most the unsent events may take on disk, in megabytes.
     outbox_mb: 64,

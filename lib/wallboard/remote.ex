@@ -293,15 +293,23 @@ defmodule Wallboard.Remote do
   def handle_info({:alert, key, since}, state) do
     case state.entries[key] do
       %{waiting?: true, since: ^since} = entry ->
-        {ok?, sent} = alert_allowed?(state.sent, System.os_time(:millisecond))
-        [session] = board_sessions(%{key => entry})
-        name = "#{session.name} on #{entry.machine}"
+        # A machine that also runs a streaming collector reports the same
+        # wait there, and that one sends the alert. Only while its stream
+        # is open: a collector that is cut off reports nothing.
+        if Wallboard.Link.Sessions.live?(entry.session_id) do
+          {:noreply, state}
+        else
+          {ok?, sent} = alert_allowed?(state.sent, System.os_time(:millisecond))
+          [session] = board_sessions(%{key => entry})
+          name = "#{session.name} on #{entry.machine}"
 
-        if ok?,
-          do: Wallboard.Alerts.needs_you([%{session | name: name}], Wallboard.Settings.get()),
-          else: Logger.warning("Too many alerts from other machines; not sent: #{name} needs you")
+          if ok?,
+            do: Wallboard.Alerts.needs_you([%{session | name: name}], Wallboard.Settings.get()),
+            else:
+              Logger.warning("Too many alerts from other machines; not sent: #{name} needs you")
 
-        {:noreply, %{state | sent: sent}}
+          {:noreply, %{state | sent: sent}}
+        end
 
       _ ->
         {:noreply, state}
