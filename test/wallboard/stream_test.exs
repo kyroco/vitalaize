@@ -4,7 +4,6 @@ defmodule Wallboard.StreamTest do
   # and one database.
   use ExUnit.Case, async: false
 
-  alias Wallboard.Archive.Ingest
   alias Wallboard.Collector.{Outbox, Sender, Watcher}
   alias Wallboard.Fixtures
   alias Wallboard.Link.{Authority, Hub, Sessions}
@@ -335,14 +334,6 @@ defmodule Wallboard.StreamTest do
     end
   end
 
-  # The transcripts sent the old way: as a .tar.gz to the upload path.
-  defp tar(c, files) do
-    path = Path.join(c.dir, "up-#{System.unique_integer([:positive])}.tgz")
-    entries = for {name, body} <- files, do: {String.to_charlist(name), body}
-    :ok = :erl_tar.create(String.to_charlist(path), entries, [:compressed])
-    File.read!(path)
-  end
-
   defp both_sessions(c) do
     add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
     add(claude_path(c, @helper_file), lines("collector/claude_subagent.jsonl"))
@@ -355,7 +346,6 @@ defmodule Wallboard.StreamTest do
     test "a Claude and a Codex session show as cards, change status, and alert once per channel",
          c do
       start_hub(c)
-      start_supervised!(Wallboard.Remote)
       pair(c)
       w = start_collector(c)
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Poller.topic())
@@ -405,16 +395,8 @@ defmodule Wallboard.StreamTest do
       assert slack =~ "on papa needs you"
       assert ntfy =~ "A permission prompt is waiting for your approval"
 
-      # The same machine still runs the old hooks, which report the same
-      # wait. That sends nothing more, and shows no second card.
-      hook = %{
-        "hook_event_name" => "Notification",
-        "notification_type" => "permission_prompt",
-        "message" => "Claude needs your permission",
-        "session_id" => @claude_id
-      }
-
-      :ok = Wallboard.Remote.report(hook, "papa-mac", "main", System.os_time(:millisecond))
+      # One wait, one alert on each channel: nothing else on the hub
+      # alerts for a session on another machine.
       refute_receive {:alert, _, _}, 1_800
 
       # Codex asks to run something.
@@ -465,22 +447,37 @@ defmodule Wallboard.StreamTest do
   end
 
   describe "saved in the archive" do
-    test "the same totals as the upload path gives for the same transcripts, counted once", c do
+    test "the same totals as an old upload of the same transcripts, counted once", c do
       start_hub(c)
       both_sessions(c)
-      settings = Settings.get()
 
-      # The old way first: the transcripts as an upload, from a machine
-      # that names itself.
-      up =
-        tar(c, [
-          {@claude_id <> ".jsonl", File.read!(claude_path(c, @claude_id <> ".jsonl"))},
-          {@helper_file, File.read!(claude_path(c, @helper_file))}
-        ])
+      # What 0.2.0 left in the archive: the rows the transcript reader
+      # built from an upload of these same files, from a machine that
+      # named itself.
+      ctx = %{
+        prices: Settings.get().usage.prices,
+        machine: "papa-mac",
+        account: Claude.account_label(".claude"),
+        source: "upload",
+        size: 0,
+        mtime: 0,
+        now: 0
+      }
 
-      assert {:ok, @claude_id} = Ingest.receive(up, "papa-mac", ".claude", settings)
-      codex_up = tar(c, [{@codex_name, File.read!(codex_path(c))}])
-      assert {:ok, @codex_id} = Ingest.receive_codex(codex_up, "papa-mac", ".codex", settings)
+      true =
+        Wallboard.Archive.Collector.save_session(
+          claude_path(c, @claude_id <> ".jsonl"),
+          [claude_path(c, @helper_file)],
+          ctx
+        )
+
+      true =
+        Wallboard.Archive.Collector.save_codex(codex_path(c), [], %{
+          ctx
+          | account: Wallboard.Archive.Collector.codex_account(".codex")
+        })
+
+      assert %{source: "upload"} = Store.get_session("papa-mac", @claude_id)
 
       uploaded = %{
         @claude_id => Store.get_session("papa-mac", @claude_id),
@@ -529,9 +526,6 @@ defmodule Wallboard.StreamTest do
         assert Store.query("SELECT 1 AS n FROM requests WHERE machine = 'papa-mac'", []) == []
       end
 
-      # An upload that comes after the stream is taken and not saved.
-      assert {:ok, :streamed} = Ingest.receive(up, "papa-mac", ".claude", settings)
-      assert {:ok, :streamed} = Ingest.receive_codex(codex_up, "papa-mac", ".codex", settings)
       assert Store.counts().total == 2
     end
   end
@@ -691,8 +685,6 @@ defmodule Wallboard.StreamTest do
       wait_until(fn -> card(@claude_id).stale end)
       # Stale, not idle: the hub does not know what happened since.
       assert %{status: :working, stale_since: %DateTime{}} = card(@claude_id)
-      # A cut-off collector's word no longer stands in for the old hooks'.
-      refute Sessions.live?(@claude_id)
 
       w = start_collector(c)
       wait_until(fn -> not card(@claude_id).stale end)

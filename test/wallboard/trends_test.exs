@@ -122,6 +122,70 @@ defmodule Wallboard.TrendsTest do
     assert Enum.any?(off.cards, &(&1.group == :github))
   end
 
+  test "a period that spans old uploads and new streaming counts every session once" do
+    start_supervised!({Store, path: ":memory:"})
+    now = DateTime.utc_now()
+    day = 86_400
+    at = DateTime.to_unix(now)
+
+    put = fn machine, id, source, ended_at ->
+      :ok =
+        Store.put_session(
+          %{
+            machine: machine,
+            session_id: id,
+            source: source,
+            tool: "claude",
+            ended_at: ended_at,
+            prompts: 1,
+            tool_calls: 10
+          },
+          [
+            %{
+              machine: machine,
+              session_id: id,
+              request_id: "r-" <> id,
+              at: ended_at,
+              cost: 1.0,
+              input_tokens: 10,
+              cache_read_tokens: 0,
+              cache_write_tokens: 0
+            }
+          ]
+        )
+    end
+
+    # Three days ago 0.2.0 was still on the machine: two sessions came as
+    # uploads, under the name the machine gave itself.
+    put.("build-box.local", "only-uploaded", "upload", at - 3 * day)
+    put.("build-box.local", "both-ways", "upload", at - 3 * day)
+    # The hub's own session, read from its own files.
+    put.("the-hub", "local", nil, at - 2 * day)
+    # Then the collector: it streams a new session, and the one that was
+    # still open when the machine moved across, under its certificate's name.
+    put.("build-box", "only-streamed", "stream", at - 3600)
+    put.("build-box", "both-ways", "stream", at - 3600)
+
+    saved =
+      Store.query("SELECT machine, session_id, source FROM sessions ORDER BY session_id", [])
+
+    assert Enum.map(saved, &{&1.session_id, &1.machine, &1.source}) == [
+             {"both-ways", "build-box", "stream"},
+             {"local", "the-hub", nil},
+             {"only-streamed", "build-box", "stream"},
+             {"only-uploaded", "build-box.local", "upload"}
+           ]
+
+    t = Trends.build(Wallboard.Settings.merge(settings(), %{}), 7, now)
+    card = fn key -> Enum.find(t.cards, &(&1.key == key)) end
+
+    # Four sessions, each one's dollar and its ten tool calls counted once.
+    assert card.(:sessions).value == 4
+    assert card.(:spend).value == 4.0
+    assert Store.counts().total == 4
+    assert [%{n: 4}] = Store.query("SELECT count(*) AS n FROM requests", [])
+  end
+
   defp settings do
     %{
       archive: %{backfill_days: 14},

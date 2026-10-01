@@ -1,8 +1,10 @@
 #!/bin/sh
 # Unpacks a Linux download, starts the board from it and checks that the page
-# answers, then stops it. Then it starts the same download as a collector
-# and checks that it comes up and opens no port, and last answers
-# `vitalaize setup` from a script and checks it saved. CI runs this on every
+# answers and that an upload from an old collector is refused, then stops
+# it. Then it starts the same download as a collector and checks that it
+# comes up and opens no port, and last answers `vitalaize setup` from a
+# script and checks it saved, and took an old upload hook out of a made-up
+# Claude folder. CI runs this on every
 # download it builds, so a download that cannot start never reaches a
 # release.
 #
@@ -94,6 +96,19 @@ grep -q 'RELEASE_DISTRIBUTION:-none' "$ROOT"/releases/*/env.sh ||
   failed "The download's releases/*/env.sh does not turn Erlang remote connections off."
 echo "The board started from $(basename "$1") and answered on port $PORT."
 
+# A machine still on the upload hooks of 0.2.0 calls the board the old way,
+# with the old shared key. The board must refuse it in words, and keep
+# nothing it sent.
+code=$(curl -s --max-time 10 -o "$WORK/refusal.txt" -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer the-old-shared-key" -H "Content-Type: application/gzip" \
+  --data-binary "not a transcript" \
+  "http://127.0.0.1:$PORT/ingest/transcript?machine=old-box&account=.claude") || code=none
+[ "$code" = 410 ] || failed "An old upload call was answered $code, not refused with 410."
+grep -q 'no longer takes uploads' "$WORK/refusal.txt" ||
+  failed "An old upload call was refused without saying why."
+[ ! -e "$WORK/inbox" ] || failed "An old upload call left files in $WORK/inbox."
+echo "The board refused an upload from an old collector."
+
 # The same download as a collector: it must come up, and nothing may answer
 # on the port, since a collector runs no board.
 kill "$BOARD" 2>/dev/null || true
@@ -137,6 +152,24 @@ kill "$BOARD" 2>/dev/null || true
 wait "$BOARD" 2>/dev/null || true
 BOARD=
 [ -x "$ROOT/bin/vitalaize" ] || failed "No vitalaize/bin/vitalaize in $1"
+
+# The scratch home is a machine 0.2.0 connected: its Claude settings hold a
+# hook of the owner's and VitalAIze's old upload hook. Setup must take the
+# upload hook out, leave the owner's, and keep a copy of the file.
+CLAUDE="$WORK/home/.claude"
+mkdir -p "$CLAUDE"
+cat >"$CLAUDE/settings.json" <<EOF
+{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "/usr/bin/true"}]},
+      {"hooks": [{"type": "command", "command": "$CLAUDE/wallboard-upload.sh", "async": true}]}
+    ]
+  }
+}
+EOF
+printf '#!/bin/sh\ncurl http://127.0.0.1:%s/ingest/transcript\n' "$PORT" >"$CLAUDE/wallboard-upload.sh"
+
 printf '\n1\nRelease check\n\n\n\n\n\n\n' |
   env -i PATH="$PATH" HOME="$WORK/home" LANG=C.UTF-8 \
     WALLBOARD_SETTINGS="$WORK/settings.exs" \
@@ -145,3 +178,12 @@ printf '\n1\nRelease check\n\n\n\n\n\n\n' |
 grep -q '"name": "Release check"' "$WORK/settings.json" 2>/dev/null ||
   failed "vitalaize setup did not save the board's name in settings.json."
 echo "vitalaize setup from $(basename "$1") saved a setting from scripted answers."
+
+if grep -q 'wallboard-upload' "$CLAUDE/settings.json" || [ -e "$CLAUDE/wallboard-upload.sh" ]; then
+  failed "vitalaize setup left the old upload hook or its script in $CLAUDE."
+fi
+grep -q '"command": "/usr/bin/true"' "$CLAUDE/settings.json" ||
+  failed "vitalaize setup took out a hook that was not VitalAIze's."
+grep -q 'wallboard-upload' "$CLAUDE/settings.json.before-collector" 2>/dev/null ||
+  failed "vitalaize setup kept no copy of the Claude settings it changed."
+echo "vitalaize setup took the old upload hook out and left the other hook alone."

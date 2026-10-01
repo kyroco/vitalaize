@@ -102,6 +102,22 @@ defmodule Wallboard.Setup.Service do
     end
   end
 
+  @doc """
+  Stops the systemd user service and takes it out of what starts at
+  login, with the release's own systemd.sh. Linux only; a Mac's login item
+  is the VitalAIze app's to remove.
+  """
+  def uninstall(opts \\ []) do
+    script =
+      Path.join(Keyword.get(opts, :root) || System.get_env("RELEASE_ROOT") || ".", "systemd.sh")
+
+    cond do
+      kind(opts) != :systemd -> {:error, "this needs systemd"}
+      opts[:run] == nil and not File.regular?(script) -> {:error, "#{script} is missing"}
+      true -> done(run(opts, script, ["off"]))
+    end
+  end
+
   # The login item that is loaded, as {its launchd name, what launchd
   # prints about it}.
   defp loaded(opts) do

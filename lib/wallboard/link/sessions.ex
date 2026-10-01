@@ -36,9 +36,9 @@ defmodule Wallboard.Link.Sessions do
   day.
 
   A wait's alert is sent even if its machine's stream has closed by the
-  time the alert is due. A machine that also runs the old upload hooks
-  has those stand aside while its stream is open (`live?/1`); should the
-  stream close in the moment between, both can alert for the one wait.
+  time the alert is due. Nothing else alerts for a session on another
+  machine: its stream is the only way it reaches the hub, so one wait
+  cannot alert twice.
 
   ## Saved
 
@@ -46,9 +46,10 @@ defmodule Wallboard.Link.Sessions do
   the transcript reader builds (`sessions` and `requests`), under the
   machine named by the collector's certificate, and each status change as
   a row in `status_events`. So Archive and Trends count a remote session
-  like a local one. Saving a session removes the copies of it that came as
-  uploaded transcripts, and the upload path leaves a streamed session
-  alone, so a session that arrives both ways is counted once.
+  like a local one. Before 0.3.0 another machine uploaded its transcripts
+  instead, and the rows saved from those are kept. Saving a session
+  removes the copies of it that came that way, so a session that arrived
+  both ways is counted once.
 
   ## A restart
 
@@ -73,6 +74,9 @@ defmodule Wallboard.Link.Sessions do
   @keep_seconds 10 * 60
   # A stale card comes down after this long.
   @stale_seconds 24 * 3600
+  # At most this many alerts from other machines in this long.
+  @max_alerts 20
+  @alert_window_ms 10 * 60 * 1000
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -83,15 +87,17 @@ defmodule Wallboard.Link.Sessions do
     :exit, _ -> []
   end
 
-  @doc "True when a collector's stream reports this session as live."
-  def live?(session_id) do
-    GenServer.call(__MODULE__, {:live?, session_id}, 2_000)
-  catch
-    :exit, _ -> false
-  end
-
   @doc "Saves every session that changed, now. It happens by itself every few seconds."
   def save, do: GenServer.call(__MODULE__, :save, 60_000)
+
+  @doc """
+  Whether another alert may go out at `now` given the times of the ones
+  sent (newest first, in milliseconds). Returns {ok?, times to keep}.
+  """
+  def alert_allowed?(sent, now, max \\ @max_alerts) do
+    recent = Enum.take_while(sent, &(now - &1 < @alert_window_ms))
+    if length(recent) < max, do: {true, [now | recent]}, else: {false, recent}
+  end
 
   # ---------------------------------------------------------------------------
 
@@ -148,17 +154,6 @@ defmodule Wallboard.Link.Sessions do
 
   @impl true
   def handle_call(:cards, _from, state), do: {:reply, build_cards(state), state}
-
-  # Live, and its machine's stream open: a collector that is cut off
-  # reports nothing, so its word no longer stands in for anyone else's.
-  def handle_call({:live?, id}, _from, state) do
-    live? =
-      Enum.any?(state.sessions, fn {{machine, sid}, e} ->
-        sid == id and Session.live?(e.s) and MapSet.member?(state.connected, machine)
-      end)
-
-    {:reply, live?, state}
-  end
 
   def handle_call(:save, _from, state), do: {:reply, :ok, save_changed(state)}
 
@@ -227,8 +222,7 @@ defmodule Wallboard.Link.Sessions do
 
     with %{s: s} <- state.sessions[key],
          true <- Session.waiting?(s) and Session.since(s) == since do
-      {ok?, sent} =
-        Wallboard.Remote.alert_allowed?(state.sent, System.os_time(:millisecond))
+      {ok?, sent} = alert_allowed?(state.sent, System.os_time(:millisecond))
 
       name = "#{Session.name(s)} on #{machine}"
 

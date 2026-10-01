@@ -56,7 +56,6 @@ struct Choices: Codable {
     var phone: String = ""
     var textVia: String = "iMessage"
     var hubURL: String = ""
-    var hubKey: String = ""
     var importedSettings: String? = nil
     /// The Gate, dev and prod workflows the earlier file had. While these
     /// stay the same, its own timeline rows and deploy list are kept.
@@ -68,6 +67,9 @@ struct Choices: Codable {
 /// change it and take it away again.
 struct Installed: Codable {
     var choices: Choices
+    /// The Claude folders, and the Codex folder, an earlier version added
+    /// upload hooks to. The board's own code reads them from this record
+    /// to take those hooks out (Wallboard.Setup.OldHooks).
     var hookedFolders: [String]
     // Optional so records saved before Codex uploads still load.
     var hookedCodex: String? = nil
@@ -404,14 +406,22 @@ enum Setup {
 
     /// Installs everything the choices ask for. `say` reports each step.
     static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws {
-        // Kept from an earlier setup, so Uninstall still finds Codex's hooks
-        // when this run could not reach them. The earlier record stays
+        // Kept from an earlier setup, so the hooks it added are still found
+        // when this run could not take them out. The earlier record stays
         // where Uninstall looks until this run has written its own: the
         // remembered data folder moves only at the end.
-        let hookedCodex: String? = installed()?.hookedCodex
+        let earlier = installed()
+        let hookedCodex: String? = earlier?.hookedCodex
+        let hooked: [String] = earlier?.hookedFolders ?? []
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
-        var hooked: [String] = []
+        // Where the board's code looks for the folders an earlier setup
+        // hooked. A reinstall into another data folder carries it along.
+        if let earlier, let folder = dataFolder, folder != c.dataFolder {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            try? enc.encode(earlier).write(to: data.appendingPathComponent("install.json"))
+        }
 
         if c.role.runsBoard {
             if let imported = c.importedSettings {
@@ -425,6 +435,7 @@ enum Setup {
             // has changed yet.
             try forgetWizardKeys(c)
             try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+            retireOldHooks(dataFolder: c.dataFolder, say: say)
 
             if c.replaceOldBoard && Detect.oldLoginItemInstalled {
                 say("Stopping the board you started by hand before")
@@ -447,6 +458,9 @@ enum Setup {
             say("Writing the collector's settings")
             try forgetWizardKeys(c)
             try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+            // Before the collector starts, so it never runs beside the hooks
+            // an earlier version sent sessions with.
+            retireOldHooks(dataFolder: c.dataFolder, say: say)
 
             say("Starting the collector, and setting it to start when you log in")
             try startBoard(c)
@@ -454,10 +468,6 @@ enum Setup {
                 throw Failure.step("The collector did not start. Its log is at \(logFile.path).")
             }
             say("The collector is running")
-
-            // Hooks from an earlier setup stay recorded, so Remove still
-            // takes them out.
-            hooked = installed()?.hookedFolders ?? []
 
             if c.hubURL.isEmpty && paired(dataFolder: c.dataFolder) != nil {
                 say("This Mac is already paired with its hub")
@@ -478,9 +488,7 @@ enum Setup {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = .prettyPrinted
-        var saved = record
-        saved.choices.hubKey = ""   // the key lives in the upload script, not here
-        try enc.encode(saved).write(to: data.appendingPathComponent("install.json"))
+        try enc.encode(record).write(to: data.appendingPathComponent("install.json"))
         dataFolder = c.dataFolder
         say("Done")
     }
@@ -632,60 +640,36 @@ enum Setup {
 
     // MARK: Hooks from before the streaming collector
 
-    // The app no longer adds upload hooks: a collector is a login item now.
-    // What follows only takes out the hooks an earlier version added.
+    // The app no longer adds upload hooks: a collector is a login item now,
+    // and the hub takes no uploads. What an earlier version added is taken
+    // out by the board's own code (Wallboard.Setup.OldHooks), the same code
+    // `vitalaize setup` runs: only VitalAIze's upload hooks go, every other
+    // hook stays as it was, and each file changed is copied first.
 
-    /// The Claude Code hooks an earlier version's upload script ran from.
-    /// The same list is Wallboard.Archive.Ingest.hooks/0 on the board.
-    static let uploadHooks: [(event: String, matcher: String?)] = [
-        ("Stop", nil),
-        ("SessionEnd", nil),
-        ("Notification", "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input"),
-        ("PreToolUse", "AskUserQuestion"),
-        ("PostToolUse", nil),
-        ("UserPromptSubmit", nil),
-    ]
-
-    /// Codex's upload script sent transcripts only, so it had two hooks.
-    static let codexHooks: [(event: String, matcher: String?)] = [("Stop", nil), ("SessionEnd", nil)]
-
-    /// Takes the hooks back out; everything else in the file stays.
-    static func unhook(folder: String, file: String = "settings.json",
-                       wanted: [(event: String, matcher: String?)] = uploadHooks) {
-        let dir = URL(fileURLWithPath: folder)
-        let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
-        let settingsURL = dir.appendingPathComponent(file)
-        if let data = try? Data(contentsOf: settingsURL),
-           var settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           var hooks = settings["hooks"] as? [String: Any] {
-            for (event, _) in wanted {
-                let list = (hooks[event] as? [[String: Any]] ?? []).filter { m in
-                    !((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path }
-                }
-                hooks[event] = list.isEmpty ? nil : list
-            }
-            settings["hooks"] = hooks.isEmpty ? nil : hooks
-            if let out = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
-                try? out.write(to: settingsURL, options: .atomic)
-            }
+    /// Takes the upload hooks an earlier version added out of this Mac's
+    /// Claude and Codex settings, and says what it did.
+    static func retireOldHooks(dataFolder folder: String? = nil, say: (String) -> Void) {
+        guard let data = engine(["retire"], dataFolder: folder),
+              let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok else {
+            say("Could not look for upload hooks from an earlier version. The log is at \(logFile.path).")
+            return
         }
-        try? fm.removeItem(at: scriptURL)
+        answer.lines?.forEach(say)
     }
 
     // MARK: Uninstalling
 
     static func uninstall(deleteData: Bool, say: (String) -> Void) {
-        let record = installed()
-        say("Stopping the board")
+        say("Stopping VitalAIze")
         Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
         try? fm.removeItem(at: agentPlist)
-        for folder in record?.hookedFolders ?? [] {
-            say("Disconnecting \(folder)")
-            unhook(folder: folder)
-        }
-        if let folder = record?.hookedCodex {
-            say("Disconnecting \(folder)")
-            unhook(folder: folder, file: "hooks.json", wanted: codexHooks)
+        // The old upload hooks and this Mac's certificate for its hub, by
+        // the board's own code, while the data folder is still there.
+        if let data = engine(["remove"]),
+           let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok {
+            answer.lines?.forEach(say)
+        } else {
+            say("Could not take out this Mac's certificate or look for old upload hooks. The log is at \(logFile.path).")
         }
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")

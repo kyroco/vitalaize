@@ -26,8 +26,7 @@ enum CLI {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         switch args.first {
         case "--detect":
-            var c = Setup.detect()
-            c.hubKey = ""
+            let c = Setup.detect()
             print(String(decoding: try! enc.encode(c), as: UTF8.self))
             return 0
         case "--install":

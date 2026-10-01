@@ -609,7 +609,7 @@ defmodule Wallboard.RepoPromptsTest do
             settings: settings,
             values: SettingsLive.values(settings),
             errors: %{},
-            key: nil,
+            machines: [],
             ignored_repos: RepoPrompts.ignored()
           })
         )

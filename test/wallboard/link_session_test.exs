@@ -170,4 +170,20 @@ defmodule Wallboard.LinkSessionTest do
       assert {row.requests, row.output_tokens, request.output_tokens} == {1, 9, 9}
     end
   end
+
+  test "at most 20 alerts from other machines in 10 minutes" do
+    allowed? = &Wallboard.Link.Sessions.alert_allowed?/2
+    minute = 60_000
+
+    sent =
+      Enum.reduce(1..20, [], fn n, sent ->
+        assert {true, sent} = allowed?.(sent, n * 1_000)
+        sent
+      end)
+
+    assert {false, ^sent} = allowed?.(sent, 21_000)
+    # Ten minutes after the first one, there is room for one more.
+    assert {true, [_ | rest]} = allowed?.(sent, 10 * minute + 1_000)
+    assert length(rest) == 19
+  end
 end
