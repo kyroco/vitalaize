@@ -18,11 +18,15 @@ struct RootView: View {
 // MARK: - Looking around
 
 struct DetectingView: View {
+    @EnvironmentObject var state: AppState
+
     var body: some View {
         VStack(spacing: 14) {
             ProgressView()
             Text("Looking at this Mac to fill in the setup…").font(.headline)
-            Text("Claude folders, the GitHub repository you work in, Korium, AWS profiles, and any board set up before.")
+            Text(state.choices.settingsRead == nil && Setup.installed() != nil
+                 ? "Reading the settings in use now, so the setup starts from them."
+                 : "Claude folders, the GitHub repository you work in, Korium, AWS profiles, and any board set up before.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .padding(40)
@@ -323,8 +327,10 @@ struct FeaturesPage: View {
             }
             Section("Korium") {
                 Toggle("Show Korium numbers (searches, saves, indexing)", isOn: $state.choices.korium)
-                Text(state.choices.korium ? "Your recent sessions use Korium." : "Your recent sessions do not seem to use Korium.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let found = state.koriumFound {
+                    Text(found ? "Your recent sessions use Korium." : "Your recent sessions do not seem to use Korium.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Codex") {
                 Toggle("Show and save Codex sessions", isOn: Binding(
@@ -456,8 +462,8 @@ struct WorkingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                if state.failure == nil { ProgressView().controlSize(.small) }
-                Text(state.failure == nil ? "Setting up…" : "That did not work").font(.title2.bold())
+                if state.failure == nil && state.removed == nil { ProgressView().controlSize(.small) }
+                Text(title).font(.title2.bold())
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -477,8 +483,22 @@ struct WorkingView: View {
                     Button("Open the log") { Shell.open(Setup.logFile) }
                 }
             }
+            if let removed = state.removed {
+                if !removed.isEmpty {
+                    Text(removed).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                Text("The app itself is still in Applications. Drag it to the Trash to take it off this Mac.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Set up again") { state.removed = nil; state.detect() }
+            }
         }
         .padding(24)
+    }
+
+    private var title: String {
+        if state.failure != nil { return "That did not work" }
+        if state.removed != nil { return "VitalAIze was removed from this Mac" }
+        return state.removing ? "Removing VitalAIze…" : "Setting up…"
     }
 }
 
@@ -560,6 +580,9 @@ struct StatusView: View {
             }
         }
         .padding(24)
+        // Keeps the first line true while the screen shows: a board that
+        // stops, or comes back after a restart, is seen without a click.
+        .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in state.quickCheck() }
         .sheet(isPresented: $showPair) { PairSheet(shown: $showPair) }
         .sheet(isPresented: $confirmRemove) {
             VStack(alignment: .leading, spacing: 14) {
@@ -590,7 +613,7 @@ struct MendBox: View {
                 if state.mending {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(state.mendLines.isEmpty ? "Checking how VitalAIze starts on this Mac…" : "Mending how VitalAIze starts on this Mac…")
+                        Text(state.mendLines.isEmpty ? "Checking how VitalAIze starts on this Mac…" : "Working on it…")
                     }
                 }
                 ForEach(Array(state.mendLines.enumerated()), id: \.offset) { _, line in
@@ -601,9 +624,8 @@ struct MendBox: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Text("Use Show the log to see why, then Reconfigure to set it up again. Your settings and database are where they were.")
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                } else if !state.mending && !state.mendLines.isEmpty {
-                    Label("Mended. Your settings and database are where they were.", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                } else if !state.mending, let done = state.mendDone {
+                    Label(done, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 }
             }
             .padding(6)
@@ -733,7 +755,14 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(state.saveLines, id: \.self) { Text($0).fixedSize(horizontal: false, vertical: true) }
                 if !state.saveErrors.isEmpty {
-                    Text("Nothing was saved. Fix what is marked above and save again.").foregroundStyle(.red)
+                    Text("Nothing was saved. Fix these and save again:").foregroundStyle(.red)
+                    // Named here too: the setting itself may be scrolled out of sight.
+                    ForEach(state.saveErrors.sorted { $0.key < $1.key }, id: \.key) { key, message in
+                        Text("\(label(key)): \(message)").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if let failure = state.saveFailure {
+                    Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack {
                     Button("Back") { state.screen = .status; state.refreshStatus() }
@@ -747,6 +776,13 @@ struct SettingsView: View {
             }
             .padding(16)
         }
+    }
+}
+
+extension SettingsView {
+    /// A setting's name as the screen shows it, for a message about it.
+    func label(_ key: String) -> String {
+        state.doc?.sections.flatMap { $0.fields }.first { $0.key == key }?.label ?? key
     }
 }
 

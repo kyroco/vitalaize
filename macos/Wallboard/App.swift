@@ -124,6 +124,9 @@ final class AppState: ObservableObject {
     @Published var step = 0
     @Published var log: [String] = []
     @Published var failure: String?
+    /// While Remove is working, and what it left behind once it is done.
+    @Published var removing = false
+    @Published var removed: String?
     @Published var running = false
     @Published var workflows: [String] = []
     /// Look up on the wizard's GitHub step: whether it is asking now, and
@@ -132,6 +135,9 @@ final class AppState: ObservableObject {
     @Published var lookupNote: Note?
     @Published var awsProfiles: [String] = []
     @Published var tools: [(String, Bool)] = []
+    /// Whether the recent sessions were found to use Korium, when this run
+    /// looked (a first setup does; Reconfigure does not).
+    @Published var koriumFound: Bool?
 
     /// The settings as the board's own code gives them, and what has been
     /// typed over them on the Settings screen (by setting key).
@@ -139,6 +145,8 @@ final class AppState: ObservableObject {
     @Published var edits: [String: String] = [:]
     @Published var saveLines: [String] = []
     @Published var saveErrors: [String: String] = [:]
+    /// Said in red under a save: the board did not come back after it.
+    @Published var saveFailure: String?
     @Published var busy = false
 
     /// Pairing with a hub: the code to show while the hub's owner decides,
@@ -151,6 +159,7 @@ final class AppState: ObservableObject {
     /// did about it, for the first screen; and what it could not mend.
     @Published var mendLines: [String] = []
     @Published var mendFailure: String?
+    @Published var mendDone: String?
     @Published var mending = false
 
     /// Said on the wizard's second step when the earlier settings file the
@@ -176,33 +185,56 @@ final class AppState: ObservableObject {
 
     /// Looks at how VitalAIze starts on this Mac and mends it when it
     /// cannot: an app installed over an older one finds a login item that
-    /// names the older app. `restart` asks for a restart when nothing
-    /// needed mending.
+    /// names the older app. With nothing to mend, it restarts what runs
+    /// when `restart` asks for it, or when what runs is older than this
+    /// app. Each thing it does is a line on the first screen.
     func checkStart(restart: Bool = false) {
         mending = true
         mendFailure = nil
+        mendDone = nil
+        mendLines = []
         DispatchQueue.global(qos: .userInitiated).async {
             var lines: [String] = []
             var failure: String?
-            if let record = Setup.installed(), let fault = Setup.startFault(record) {
-                lines.append(fault)
-                DispatchQueue.main.async { self.mendLines = lines }
-                do {
-                    try Setup.mend(record) { line in
-                        lines.append(line)
-                        let now = lines
-                        DispatchQueue.main.async { self.mendLines = now }
+            var done: String?
+            func say(_ line: String) {
+                lines.append(line)
+                let now = lines
+                DispatchQueue.main.async { self.mendLines = now }
+            }
+            if let record = Setup.installed() {
+                let board = record.choices.role.runsBoard
+                let what = board ? "The board" : "The collector"
+                if let fault = Setup.startFault(record) {
+                    say(fault)
+                    do {
+                        try Setup.mend(record, say: say)
+                        done = "Mended. Your settings and database are where they were."
+                    } catch {
+                        failure = error.localizedDescription
                     }
-                } catch {
-                    failure = error.localizedDescription
+                } else {
+                    let older = !restart && Setup.runningIsOlder()
+                    if restart || older {
+                        say(older
+                            ? "\(what) that was running was started before this version of the app was installed. Restarting it…"
+                            : "Restarting \(what.lowercased())…")
+                        Setup.restartBoard()
+                        // Time to stop before asking whether it is back.
+                        sleep(4)
+                        let back = board ? Setup.waitForBoard(port: Setup.currentPort(record.choices), seconds: 60) : Setup.waitForService(seconds: 30)
+                        if back {
+                            done = board ? "The board restarted and is answering." : "The collector restarted and is running."
+                        } else {
+                            failure = "\(what) did not come back within a minute. Its log is at \(Setup.logFile.path)."
+                        }
+                    }
                 }
-            } else if restart {
-                Setup.restartBoard()
-                sleep(6)
             }
             DispatchQueue.main.async {
                 self.mending = false
                 self.mendFailure = failure
+                self.mendDone = done
                 self.refreshStatus()
             }
         }
@@ -228,6 +260,7 @@ final class AppState: ObservableObject {
                          ("op (1Password)", Shell.which("op") != nil)]
             DispatchQueue.main.async {
                 self.choices = found
+                self.koriumFound = found.korium
                 self.workflows = flows
                 self.awsProfiles = profiles
                 self.tools = tools
@@ -238,16 +271,27 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Opens the wizard on what is installed, with the lists it offers.
+    /// Opens the wizard on what is installed, with the lists it offers. It
+    /// starts from the settings in use now, so what was changed in
+    /// Settings since the first setup shows, and is not put back.
     func reconfigure() {
         let checked = Setup.checkedImport(choices)
         choices = checked.choices
         if let note = checked.note { importNote = note }
         step = 0
-        screen = .wizard
+        screen = .detecting
+        lookupNote = nil
+        koriumFound = nil
         finder.start()
-        let repo = choices.repo
+        let before = choices
         DispatchQueue.global().async {
+            let doc = Setup.settingsDoc()
+            var now = before
+            // Without the settings the wizard starts from the setup's own
+            // record, and an answer left empty changes nothing saved.
+            now.settingsRead = nil
+            if let doc { now = Setup.prefill(now, from: doc) }
+            let repo = now.repo
             let flows = repo.isEmpty ? [] : Detect.workflows(repo: repo)
             let profiles = Detect.awsProfiles()
             let tools = [("claude", Shell.which("claude") != nil),
@@ -255,9 +299,11 @@ final class AppState: ObservableObject {
                          ("aws", Shell.which("aws") != nil),
                          ("op (1Password)", Shell.which("op") != nil)]
             DispatchQueue.main.async {
+                self.choices = now
                 self.workflows = flows
                 self.awsProfiles = profiles
                 self.tools = tools
+                self.screen = .wizard
             }
         }
     }
@@ -294,6 +340,8 @@ final class AppState: ObservableObject {
     func install() {
         log = []
         failure = nil
+        removing = false
+        removed = nil
         screen = .working
         let c = choices
         DispatchQueue.global(qos: .userInitiated).async {
@@ -311,12 +359,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Removes VitalAIze from this Mac, and then says so: the screen stays
+    /// on what was done until the person goes on.
     func uninstall(deleteData: Bool) {
         log = []
+        failure = nil
+        removing = true
+        removed = nil
         screen = .working
+        let folder = Setup.dataFolder
         DispatchQueue.global().async {
             Setup.uninstall(deleteData: deleteData) { line in DispatchQueue.main.async { self.log.append(line) } }
-            DispatchQueue.main.async { self.detect() }
+            DispatchQueue.main.async {
+                self.removing = false
+                self.running = false
+                self.doc = nil
+                self.mendLines = []
+                self.mendDone = nil
+                self.mendFailure = nil
+                let kept = folder.map { "Its database and settings are still in \($0). Setting up again with the same folder picks them up." }
+                self.removed = deleteData ? "Its database and settings were deleted too." : (kept ?? "")
+            }
         }
     }
 
@@ -354,6 +417,10 @@ final class AppState: ObservableObject {
     func openSettings() {
         saveLines = []
         saveErrors = [:]
+        saveFailure = nil
+        mendLines = []
+        mendDone = nil
+        mendFailure = nil
         screen = .settings
         loadSettings()
     }
@@ -385,20 +452,54 @@ final class AppState: ObservableObject {
         busy = true
         saveLines = []
         saveErrors = [:]
+        saveFailure = nil
+        let runsBoard = choices.role.runsBoard
         DispatchQueue.global(qos: .userInitiated).async {
             let answer = Setup.save(changed)
             let doc = answer.ok ? Setup.settingsDoc() : nil
             DispatchQueue.main.async {
-                self.busy = false
                 self.saveLines = answer.lines ?? []
                 self.saveErrors = answer.errors ?? [:]
                 if answer.ok {
                     if let doc { self.take(doc) }
                     self.edits = [:]
-                    // A restarted board takes a few seconds to answer again.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.refreshStatus() }
+                } else {
+                    self.busy = false
                 }
             }
+            // Only a save that restarted the board or the collector has
+            // anything to wait for.
+            guard answer.ok, (answer.lines ?? []).contains(where: { $0.hasPrefix("Restarted ") }) else {
+                DispatchQueue.main.async { self.busy = false; self.refreshStatus() }
+                return
+            }
+            // Say whether it came back, so nobody leaves this screen with
+            // it down and unsaid. A restart takes a few seconds to begin.
+            sleep(3)
+            let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
+            let board = doc.map { $0.role != "collector" } ?? runsBoard
+            let back = board ? Setup.waitForBoard(port: port ?? self.choices.port, seconds: 60) : Setup.waitForService(seconds: 30)
+            DispatchQueue.main.async {
+                self.busy = false
+                if back {
+                    self.saveLines.append(board ? "The board is answering at http://localhost:\(String(port ?? self.choices.port))." : "The collector is running.")
+                } else {
+                    self.saveFailure = "\(board ? "The board has not answered" : "The collector has not started") for a minute since the save. Go back and use Show the log to see why; your settings are saved."
+                }
+                self.refreshStatus()
+            }
+        }
+    }
+
+    /// A light look at whether the board answers or the collector runs,
+    /// for the first screen to keep itself true while it shows.
+    func quickCheck() {
+        guard screen == .status, !mending else { return }
+        let board = choices.role.runsBoard
+        let port = choices.port
+        DispatchQueue.global(qos: .utility).async {
+            let up = board ? Setup.boardRunning(port: port) : Setup.serviceRunning()
+            DispatchQueue.main.async { if self.screen == .status, self.running != up { self.refreshStatus() } }
         }
     }
 

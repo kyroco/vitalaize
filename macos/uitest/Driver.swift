@@ -12,6 +12,8 @@ import AppKit
 ///   expect "text" / absent "text"
 ///   snap NAME                    NAME.png of the window, NAME.txt of its controls
 ///   click "Button" [N]           a real mouse click on the Nth such button
+///   press "Button"               the button's accessibility press, for a
+///                                button that removes things (see `mouse`)
 ///   enabled "Button" / disabled "Button"
 ///   type "Label" "text"          into the field labelled so (or with that prompt)
 ///   toggle "Label"               a real mouse click on the switch
@@ -160,6 +162,13 @@ enum UITest {
 
     /// A real click: mouse down and up at the middle of the element, through
     /// the app's own event queue.
+    ///
+    /// One kind of button it cannot click: one marked as removing things
+    /// (`role: .destructive`). The test window stays behind the person's
+    /// own work, and macOS does not pass a click through to such a button
+    /// in a window that is not in front: the first click only brings the
+    /// window forward, so nothing is removed by a stray click. Those
+    /// buttons use `press`, and are on the list of clicks for a person.
     static func mouse(_ element: Element) -> Bool {
         let frame = element.frame
         guard frame.width > 0, frame.height > 0 else { return false }
@@ -202,6 +211,14 @@ enum UITest {
     /// clicks for a person.
     static func choose(_ label: String, _ value: String) -> Bool {
         guard let state else { return false }
+        // On the Settings screen a picker is one of the settings listed there.
+        if state.screen == .settings {
+            let fields = state.doc?.sections.flatMap { $0.fields } ?? []
+            guard let field = fields.first(where: { $0.type == "choice" && ($0.label == label || $0.label + " (restarts)" == label) }),
+                  field.options.contains(value) else { return false }
+            state.edits[field.key] = value
+            return true
+        }
         switch label {
         case "Gate workflow (checks each change)": state.choices.gateWorkflow = value
         case "Dev deploy workflow": state.choices.devWorkflow = value
@@ -209,11 +226,7 @@ enum UITest {
         case "Dev: awake or asleep": state.choices.devProfile = value
         case "Prod: same build as dev?": state.choices.prodProfile = value
         case "Send as": state.choices.textVia = value
-        default:
-            let fields = state.doc?.sections.flatMap { $0.fields } ?? []
-            guard let field = fields.first(where: { $0.type == "choice" && ($0.label == label || $0.label + " (restarts)" == label) }),
-                  field.options.contains(value) else { return false }
-            state.edits[field.key] = value
+        default: return false
         }
         return true
     }
@@ -222,18 +235,42 @@ enum UITest {
 
     static func snap(_ name: String) -> Bool {
         guard let window = front().first, let view = window.contentView?.superview ?? window.contentView,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        guard let png = rep.representation(using: .png, properties: [:]) else { return false }
+              let png = picture(of: view, scale: window.backingScaleFactor) else { return false }
         try? png.write(to: out.appendingPathComponent(name + ".png"))
         let shown: Set<String> = ["AXButton", "AXRadioButton", "AXLink", "AXMenuButton", "AXTextField", "AXTextArea", "AXCheckBox", "AXPopUpButton", "AXStaticText", "AXProgressIndicator"]
-        let lines = elements().filter { shown.contains($0.role) }.map { e -> String in
+        let lines = elements().filter { shown.contains($0.role) && !(pressable.contains($0.role) && $0.name.isEmpty) }.map { e -> String in
             let kind = e.role.replacingOccurrences(of: "AX", with: "")
             let words = [e.name, e.value].filter { !$0.isEmpty }.joined(separator: " = ").replacingOccurrences(of: "\n", with: " ")
             return "\(kind)\t\(words)\(e.role == "AXStaticText" || e.enabled ? "" : "\t(off)")"
         }
         try? lines.joined(separator: "\n").appending("\n").write(to: out.appendingPathComponent(name + ".txt"), atomically: true, encoding: .utf8)
         return true
+    }
+
+    /// The view as it is on screen. Drawn from its layers, which hold what
+    /// a switch or a progress wheel shows now; asking the view to draw
+    /// itself gives every switch as off.
+    static func picture(of view: NSView, scale: CGFloat) -> Data? {
+        let size = view.bounds.size
+        guard let layer = view.layer,
+              let context = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            return rep.representation(using: .png, properties: [:])
+        }
+        // What changed a moment ago (a switch just clicked) is in the layers
+        // only once the pending changes are sent.
+        CATransaction.flush()
+        context.scaleBy(x: scale, y: scale)
+        if !layer.isGeometryFlipped && view.isFlipped {
+            context.translateBy(x: 0, y: size.height)
+            context.scaleBy(x: 1, y: -1)
+        }
+        layer.render(in: context)
+        guard let image = context.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
     }
 
     // MARK: The run
@@ -352,6 +389,10 @@ enum UITest {
             done(true)
         case "opened":
             done(opened.contains { $0.contains(args[0]) }, "opened: \(opened.joined(separator: ", "))")
+        case "press":
+            guard let button = buttons(args[0]).first else { return done(false, "no such button") }
+            guard button.enabled else { return done(false, "it is greyed out") }
+            done((button.object as AnyObject).accessibilityPerformPress?() ?? false, "it would not press", settle: 0.5)
         case "scroll":
             for window in front() {
                 for case let scroll as NSScrollView in views(window.contentView!) {

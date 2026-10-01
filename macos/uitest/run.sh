@@ -108,7 +108,7 @@ app() { "$APP" "$@"; }
 # in braces in a step file are filled in here.
 drive() {
   local steps="$OUT/$1.steps"
-  sed -e "s|{PORT}|$PORT|g" -e "s|{HOME}|$H|g" -e "s|{DATA}|$DATA|g" -e "s|{HUB}|${HUB:-}|g" "$HERE/steps/$1.txt" >"$steps"
+  sed -e "s|{PORT}|$PORT|g" -e "s|{HOME}|$H|g" -e "s|{PORT2}|${PORT2:-}|g" -e "s|{DATA}|$DATA|g" -e "s|{HUB}|${HUB:-}|g" "$HERE/steps/$1.txt" >"$steps"
   VITALAIZE_UITEST="$steps" VITALAIZE_UITEST_OUT="$OUT" "$APP" >"$OUT/$1.log" 2>&1
   local status=$?
   if [ -f "$OUT/results.txt" ]; then

@@ -62,6 +62,11 @@ struct Choices: Codable {
     /// stay the same, its own timeline rows and deploy list are kept.
     var importedWorkflows: [String]? = nil
     var replaceOldBoard: Bool = true
+    /// True when the wizard started from the settings as they are now: a
+    /// first setup, or a Reconfigure that read what is saved. An answer
+    /// left empty is then the person's choice, not a question nobody
+    /// asked. Optional so choices saved before this still load.
+    var settingsRead: Bool? = nil
 }
 
 /// What was installed, kept in the data folder so the app can show it,
@@ -181,6 +186,7 @@ enum Setup {
         var c = installed()?.choices ?? Choices()
         if installed() != nil { return c }
 
+        c.settingsRead = true
         c.claudeFolders = Detect.claudeFolders()
         c.korium = Detect.usesKorium(folders: c.claudeFolders)
         c.codex = Detect.usesCodex()
@@ -271,10 +277,14 @@ enum Setup {
             .joined(separator: ", ")
         let deploys = [c.devWorkflow, c.prodWorkflow].filter { !$0.isEmpty }.map(ex).joined(separator: ", ")
 
+        // "None" is written as nil only when it is the person's choice (see
+        // `settingsRead`); else a workflow left empty is left out, and the
+        // base file's or the board's own stays.
+        let all = c.settingsRead == true
         var github = ["repo: \(ex(c.repo))", "branch: \(ex(c.branch))"]
-        if !c.gateWorkflow.isEmpty { github.append("gate_workflow: \(ex(c.gateWorkflow))") }
-        if !c.devWorkflow.isEmpty { github.append("dev_deploy: \(ex(c.devWorkflow))") }
-        if !c.prodWorkflow.isEmpty { github.append("prod_deploy: \(ex(c.prodWorkflow))") }
+        if all || !c.gateWorkflow.isEmpty { github.append("gate_workflow: \(exOrNil(c.gateWorkflow))") }
+        if all || !c.devWorkflow.isEmpty { github.append("dev_deploy: \(exOrNil(c.devWorkflow))") }
+        if all || !c.prodWorkflow.isEmpty { github.append("prod_deploy: \(exOrNil(c.prodWorkflow))") }
         let keepOldRows = c.importedSettings != nil &&
             c.importedWorkflows == [c.gateWorkflow, c.devWorkflow, c.prodWorkflow]
         if !keepOldRows {
@@ -369,14 +379,19 @@ enum Setup {
     /// out with nothing to replace it. Kept, the saved one goes on winning
     /// over that nil; it is cleared in the app's Settings. Empty is tested
     /// here the way `settingsFile` tests it.
+    ///
+    /// When the wizard started from the settings as they are now
+    /// (`settingsRead`), every one of them is named: what the person sees
+    /// in the wizard is what is saved, so an empty answer is theirs.
     static func wizardKeys(_ c: Choices) -> [String] {
         if c.role == .collector { return ["role", "collector.claude_dirs"] }
+        let all = c.settingsRead == true
         let answered = [("github.gate_workflow", c.gateWorkflow),
                         ("github.dev_deploy", c.devWorkflow),
                         ("github.prod_deploy", c.prodWorkflow),
                         ("new_relic.account_id", c.newRelicAccount.trimmingCharacters(in: .whitespaces)),
                         ("new_relic.api_key_ref", c.newRelicKeyRef.trimmingCharacters(in: .whitespaces))]
-            .filter { !$0.1.isEmpty }
+            .filter { all || !$0.1.isEmpty }
             .map { $0.0 }
         return ["role", "port", "brand.name", "claude.config_dirs", "github.repos", "github.branch",
                 "korium.enabled", "codex.enabled", "new_relic.enabled",
@@ -577,7 +592,76 @@ enum Setup {
         return checked
     }
 
+    /// The choices as the settings in use now have them, for Reconfigure:
+    /// the wizard then starts from what the board uses, with whatever was
+    /// changed in Settings or with `vitalaize setup` since the first setup,
+    /// and not from the first setup's answers.
+    static func prefill(_ c: Choices, from doc: SettingsDoc) -> Choices {
+        var c = c
+        let values = Dictionary(doc.sections.flatMap { $0.fields }.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        func lines(_ key: String) -> [String]? {
+            values[key].map { $0.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+        }
+        c.role = doc.role == "collector" ? .collector : (doc.role == "hub" ? .hub : .hubAndCollector)
+        if c.role == .collector {
+            if let dirs = lines("collector.claude_dirs"), !dirs.isEmpty { c.claudeFolders = dirs }
+            c.settingsRead = true
+            return c
+        }
+        if let v = values["port"].flatMap({ Int($0) }) { c.port = v }
+        if let v = values["brand.name"] { c.boardName = v }
+        if let dirs = lines("claude.config_dirs"), !dirs.isEmpty { c.claudeFolders = dirs }
+        if let repos = lines("github.repos"), let first = repos.first {
+            c.repo = first
+            c.otherRepos = Array(repos.dropFirst())
+        }
+        if let v = values["github.branch"] { c.branch = v }
+        if let v = values["github.gate_workflow"] { c.gateWorkflow = v }
+        if let v = values["github.dev_deploy"] { c.devWorkflow = v }
+        if let v = values["github.prod_deploy"] { c.prodWorkflow = v }
+        if let v = values["korium.enabled"] { c.korium = v == "true" }
+        if let v = values["codex.enabled"] { c.codex = v == "true" }
+        if let v = values["new_relic.enabled"] { c.newRelic = v == "true" }
+        if let v = values["new_relic.account_id"] { c.newRelicAccount = v }
+        if let v = values["new_relic.api_key_ref"] { c.newRelicKeyRef = v }
+        if let v = values["dev_power.aws_profile"] { c.devProfile = v }
+        if let v = values["builds.prod_profile"] { c.prodProfile = v }
+        if let v = values["alerts.phone"] { c.phone = v }
+        if let v = values["alerts.via"] { c.textVia = v }
+        c.settingsRead = true
+        return c
+    }
+
     // MARK: Mending how it starts
+
+    /// True when the board or collector that is running was started before
+    /// the copy of it inside this app was put in place: a new version of
+    /// the app was installed over the old one, and what runs is still the
+    /// old one, with its files replaced under it.
+    static func runningIsOlder() -> Bool {
+        let print = Shell.run("/bin/launchctl", ["print", "gui/\(getuid())/\(label)"], timeout: 5)
+        guard print.ok, let match = print.output.range(of: #"\bpid = (\d+)"#, options: .regularExpression) else { return false }
+        let pid = print.output[match].filter { $0.isNumber }
+        // The process's age in seconds, which needs no date to be read.
+        let age = Shell.run("/bin/ps", ["-o", "etime=", "-p", String(pid)], timeout: 5)
+        guard age.ok, let seconds = elapsed(age.output) else { return false }
+        var info = stat()
+        guard stat(release.appendingPathComponent("bin/wallboard").path, &info) == 0 else { return false }
+        // When the file was put there (its change time), not when it was built.
+        let placed = Date(timeIntervalSince1970: TimeInterval(info.st_ctimespec.tv_sec))
+        return Date().addingTimeInterval(-seconds) < placed
+    }
+
+    /// Seconds from ps's elapsed time, [[days-]hours:]minutes:seconds.
+    static func elapsed(_ text: String) -> TimeInterval? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let dayParts = trimmed.split(separator: "-")
+        let days = dayParts.count == 2 ? Double(dayParts[0]) : 0
+        let clock = (dayParts.last ?? "").split(separator: ":").map { Double($0) }
+        guard let days, !clock.isEmpty, clock.count <= 3, !clock.contains(where: { $0 == nil }) else { return nil }
+        let seconds = clock.compactMap { $0 }.reduce(0) { $0 * 60 + $1 }
+        return days * 86400 + seconds
+    }
 
     /// What stops VitalAIze from starting on this Mac as it was set up, in
     /// words for the person, or nil when nothing does. An app installed
@@ -859,7 +943,14 @@ enum Setup {
 
     static func uninstall(deleteData: Bool, say: (String) -> Void) {
         let record = installed()
-        say("Stopping the board")
+        // Kept in the backup folder unless everything is being deleted, so
+        // a Remove by mistake can be put back by hand.
+        if !deleteData, let folder = dataFolder {
+            let backups = backupFolder(URL(fileURLWithPath: folder))
+            try? keep(agentPlist, in: backups)
+            try? keep(URL(fileURLWithPath: folder + "/install.json"), in: backups)
+        }
+        say(record?.choices.role.runsBoard == false ? "Stopping the collector" : "Stopping the board")
         Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
         try? fm.removeItem(at: agentPlist)
         for folder in record?.hookedFolders ?? [] {
