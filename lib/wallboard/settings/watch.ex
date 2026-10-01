@@ -114,6 +114,11 @@ defmodule Wallboard.Settings.Watch do
             Enum.map_join(waiting, ", ", & &1.label)
         )
 
+    # A repository added by hand, in the app or with `vitalaize setup`,
+    # takes its ask out of the mailbox, and open boards are told now, not
+    # at the next round.
+    if [:github, :repos] in paths, do: Wallboard.RepoPrompts.refresh()
+
     if state.listener, do: send(state.listener, {:settings, :reloaded})
   rescue
     e ->

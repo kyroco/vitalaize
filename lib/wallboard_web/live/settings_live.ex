@@ -4,12 +4,12 @@ defmodule WallboardWeb.SettingsLive do
   machines that stream to this hub (and a button to disconnect one), and
   how to connect another Mac.
 
-  It shows settings and cannot change them. What it can still do takes
-  access away and changes no setting: disconnect a machine, and make a new
-  key for the Macs that upload. They are changed on the
-  machine itself, in the VitalAIze app or with `vitalaize setup` (see
-  `Wallboard.Setup`), which save them and restart only what a change
-  needs.
+  It shows settings and cannot change them. What it can still do changes
+  no setting: disconnect a machine, make a new key for the Macs that
+  upload, and let the mailbox ask again about a repository that was
+  ignored there. Settings are changed on the machine itself, in the
+  VitalAIze app or with `vitalaize setup` (see `Wallboard.Setup`), which
+  save them and restart only what a change needs.
 
   Who may open it: anyone on this Mac itself, or, when the board has a
   password, anyone who gave it (the router already checked). Without a
@@ -63,6 +63,7 @@ defmodule WallboardWeb.SettingsLive do
       machines: machines(settings),
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+      ignored_repos: Wallboard.RepoPrompts.ignored(),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
   end
@@ -122,12 +123,20 @@ defmodule WallboardWeb.SettingsLive do
 
   def handle_info(_, socket), do: {:noreply, socket}
 
-  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket),
-    do:
-      assign(socket,
-        linked: linked(settings),
-        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings)
-      )
+  # The settings are read again too: a repo tracked from the mailbox while
+  # this page is open shows in its list at once. The page sends no
+  # settings back, so one drawn before a Track cannot undo it.
+  defp relist(%{assigns: %{allowed?: true}} = socket) do
+    settings = Settings.get()
+
+    assign(socket,
+      settings: settings,
+      values: values(settings),
+      linked: linked(settings),
+      linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+      ignored_repos: Wallboard.RepoPrompts.ignored()
+    )
+  end
 
   defp relist(socket), do: socket
 
@@ -194,6 +203,17 @@ defmodule WallboardWeb.SettingsLive do
 
         {:noreply, socket |> relist() |> assign(confirm_disconnect: nil, notice: notice)}
     end
+  end
+
+  # Undoes an Ignore from the mailbox: work in that repo asks again.
+  defp event("ask_again", %{"repo" => repo}, socket) do
+    notice =
+      case Wallboard.RepoPrompts.ask_again(repo) do
+        :ok -> "The mailbox will ask about #{repo} the next time someone works in it."
+        _ -> "That did not work just now. Try again in a moment."
+      end
+
+    {:noreply, assign(socket, ignored_repos: Wallboard.RepoPrompts.ignored(), notice: notice)}
   end
 
   defp event("refresh_archive", _params, socket) do
@@ -283,6 +303,21 @@ defmodule WallboardWeb.SettingsLive do
           <div :for={{path, label, type, _restart, _help} <- fields} class="settings-value">
             <dt>{label}</dt>
             <dd>{shown(type, @values[Enum.join(path, ".")])}</dd>
+          </div>
+          <%!-- Ask again changes what the mailbox asks, not a setting, so it stays here. --%>
+          <div :if={section == "GitHub" and @ignored_repos != []} class="settings-value">
+            <dt>Ignored repositories</dt>
+            <dd>
+              <div :for={repo <- @ignored_repos} class="row ignored-repo">
+                <span>{repo}</span>
+                <button type="button" class="link-button" phx-click="ask_again" phx-value-repo={repo}>
+                  Ask again
+                </button>
+              </div>
+              <p class="detail-note">
+                You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
+              </p>
+            </dd>
           </div>
         </dl>
       </section>

@@ -893,6 +893,51 @@ defmodule Wallboard.Settings do
   defp put_path(map, [k], v), do: Map.put(map, k, v)
   defp put_path(map, [k | rest], v), do: Map.put(map, k, put_path(Map.get(map, k, %{}), rest, v))
 
+  @doc """
+  Adds a repository to the end of the list the board follows, and takes
+  the new list up at once. This is the one setting the board itself
+  saves: its owner said Track in the mailbox (`Wallboard.RepoPrompts`).
+  The list goes into the saved settings (settings.json) the way a save
+  from the VitalAIze app does, so it is still there after a restart and
+  the app or `vitalaize setup` can change it later.
+
+  `:ok`, also when the board follows it already. `{:error, :not_a_repo}`
+  when the name is not owner/name. `{:error, :unreadable}` when the
+  settings cannot be read (the saved settings are left as they are), and
+  `{:error, :unavailable}` when they cannot be written.
+  """
+  def track_repo(name) do
+    # The example name a board with no repositories set starts with is not
+    # one to keep in front of a real one.
+    names = repo_names(get()) -- [@defaults.github.repo]
+
+    cond do
+      not repo_name?(name) or Enum.any?(String.split(name, "/"), &(&1 in [".", ".."])) ->
+        {:error, :not_a_repo}
+
+      Enum.any?(names, &(String.downcase(&1) == String.downcase(name))) ->
+        :ok
+
+      true ->
+        save_repos(names ++ [name])
+    end
+  end
+
+  defp save_repos(names) do
+    with {:ok, saved} <- change(%{"github.repos" => Enum.join(names, "\n")}) do
+      write_saved!(saved)
+      # The board is running: what is only read at the start stays.
+      reload!()
+      :ok
+    else
+      {:error, _} -> {:error, :not_a_repo}
+    end
+  rescue
+    # Our own errors say the settings cannot be read (see read_saved!/0).
+    ArgumentError -> {:error, :unreadable}
+    _ -> {:error, :unavailable}
+  end
+
   # What an older board's settings page saved, read straight from the
   # database file: the settings are loaded before the database process
   # starts. Nothing writes these any more.
@@ -1022,7 +1067,7 @@ defmodule Wallboard.Settings do
   def repo_names(settings), do: settings |> github_repos() |> Enum.map(& &1.repo)
 
   @doc "True for an owner/name repository name."
-  def repo_name?(name), do: is_binary(name) and name =~ ~r{^[\w.-]+/[\w.-]+$}
+  def repo_name?(name), do: is_binary(name) and name =~ ~r{\A[\w.-]+/[\w.-]+\z}
 
   defp has_path?(map, [k]), do: is_map(map) and Map.has_key?(map, k)
   defp has_path?(map, [k | rest]), do: is_map(map) and has_path?(Map.get(map, k), rest)

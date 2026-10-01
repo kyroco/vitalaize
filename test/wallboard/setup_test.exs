@@ -849,7 +849,8 @@ defmodule Wallboard.SetupTest do
         key: nil,
         show_key?: false,
         hub_url: "http://hub:4747",
-        machines: []
+        machines: [],
+        ignored_repos: []
       }
 
       assigns |> SettingsLive.render() |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
