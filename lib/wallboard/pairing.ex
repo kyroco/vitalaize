@@ -137,17 +137,10 @@ defmodule Wallboard.Pairing do
 
   @doc "Where a collector keeps what pairing gave it, for these settings."
   def dir(settings) do
-    case get_in(settings, [:collector, :dir]) do
-      dir when is_binary(dir) and dir != "" ->
-        Path.join(Path.expand(dir), "link")
-
-      _ ->
-        settings
-        |> get_in([:archive, :path])
-        |> Wallboard.Settings.db_path()
-        |> Path.dirname()
-        |> Path.join("collector-link")
-    end
+    settings
+    |> get_in([:collector, :dir])
+    |> Wallboard.Settings.collector_dir()
+    |> Path.join("link")
   end
 
   @doc """
@@ -507,7 +500,8 @@ defmodule Wallboard.Pairing do
   defp listen(wait_ms, tool, args) do
     exe = System.find_executable(tool) || "/usr/bin/#{tool}"
     secs = Float.to_string(max(wait_ms, 100) / 1000)
-    script = ~s("$0" "$@" 2>/dev/null & p=$!; sleep "$WAIT"; kill $p 2>/dev/null; wait $p)
+    # The shell's own note that it stopped the tool goes nowhere either.
+    script = ~s(exec 2>/dev/null; "$0" "$@" & p=$!; sleep "$WAIT"; kill $p; wait $p)
 
     case System.cmd("/bin/sh", ["-c", script, exe | args], env: [{"WAIT", secs}]) do
       {out, _} -> out

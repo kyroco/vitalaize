@@ -120,8 +120,8 @@ defmodule Wallboard.Link.Authority do
   Makes a key and a certificate for a machine. Returns `{:ok, files}` with
   `cert_pem`, `key_pem`, `ca_pem` and `serial`, or `{:error, reason}`.
 
-  For tests and for setting one machine up by hand. Pairing (VIT-39) uses
-  `sign/4`, so a machine's key never leaves it.
+  For tests and for setting one machine up by hand. Pairing
+  (`Wallboard.Pairing`) uses `sign/4`, so a machine's key never leaves it.
   """
   def issue(dir, machine, opts \\ []) do
     key = new_key()

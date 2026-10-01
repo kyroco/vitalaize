@@ -16,6 +16,10 @@ defmodule Wallboard.Link do
       open, sends events from a buffer on disk, and reconnects by itself.
     * `Wallboard.Link.Buffer`: that buffer.
     * `Wallboard.Link.Backoff`: how long to wait between tries.
+    * `Wallboard.Pairing`: how a new machine gets its certificate, by a
+      code the owner approves in the mailbox.
+    * `Wallboard.Link.Machines`: the connected machines, for the settings
+      page, where one can be disconnected.
 
   ## Who may connect
 

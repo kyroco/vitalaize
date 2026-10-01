@@ -468,7 +468,7 @@ defmodule WallboardWeb.BoardLive do
         facts={repo_facts(@github, @open_repo)}
         meta={@github_meta}
       />
-      <.mailbox
+      <WallboardWeb.MailboxPanel.panel
         :if={@mailbox_open?}
         items={@mailbox}
         note={@mailbox_note}
@@ -605,62 +605,6 @@ defmodule WallboardWeb.BoardLive do
     </header>
     """
   end
-
-  attr :items, :list, required: true
-  attr :note, :string, default: nil
-  attr :may_decide?, :boolean, required: true
-  attr :cannot, :string, required: true
-
-  # The open mailbox, over the board: administrative decisions only (see
-  # Wallboard.Mailbox). Each kind of item brings its own words and buttons.
-  defp mailbox(assigns) do
-    ~H"""
-    <div class="mailbox-scrim" phx-click="mailbox_close">
-      <div class="mailbox-panel" role="dialog" aria-label="Mailbox" phx-click="noop">
-        <div class="mailbox-head">
-          <b>Mailbox</b>
-          <span class="mailbox-sub">{mailbox_count(@items)}</span>
-          <span class="grow"></span>
-          <button class="close" phx-click="mailbox_close" aria-label="Close">×</button>
-        </div>
-        <p :if={@note} class="mailbox-note">{@note}</p>
-        <p :if={@items != [] and not @may_decide? and !@note} class="mailbox-note">{@cannot}</p>
-        <div :for={item <- @items} class="mailbox-item">
-          <div class="mailbox-title">{item.title}</div>
-          <div class="mailbox-body">
-            <%= for piece <- item.body do %>
-              <%= case piece do %>
-                <% {:code, text} -> %>
-                  <span class="mailbox-code">{text}</span>
-                <% {:strong, text} -> %>
-                  <b>{text}</b>
-                <% {_, text} -> %>
-                  {text}
-              <% end %>
-            <% end %>
-          </div>
-          <div class="mailbox-actions">
-            <button
-              :for={{{key, label}, i} <- Enum.with_index(item.actions)}
-              class={["mailbox-act", i == 0 && "primary"]}
-              phx-click="mailbox_act"
-              phx-value-id={item.id}
-              phx-value-action={key}
-              disabled={not @may_decide?}
-            >
-              {label}
-            </button>
-          </div>
-        </div>
-        <p :if={@items == []} class="mailbox-empty">Nothing to decide.</p>
-      </div>
-    </div>
-    """
-  end
-
-  defp mailbox_count([]), do: "nothing waiting"
-  defp mailbox_count([_]), do: "1 thing to decide"
-  defp mailbox_count(items), do: "#{length(items)} things to decide"
 
   # The oldest "last good data" among the sources on a page.
   defp oldest(metas) do

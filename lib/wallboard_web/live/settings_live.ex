@@ -273,32 +273,6 @@ defmodule WallboardWeb.SettingsLive do
         <button class="link-button" phx-click="restart">Restart now</button>
       </div>
 
-      <form phx-submit="save" class="settings-form">
-        <section :for={{section, fields} <- Settings.editable()} class="settings-section">
-          <h2 class="kicker">{section}</h2>
-          <label :for={{path, label, type, restart, help} <- fields} class="settings-field">
-            <span class="settings-label">
-              {label}<span :if={restart} class="muted-ink"> · after restart</span>
-            </span>
-            <.field
-              name={"s[#{Enum.join(path, ".")}]"}
-              type={type}
-              value={@values[Enum.join(path, ".")]}
-            />
-            <span :if={help} class="stat-note">{help}</span>
-            <span :if={@errors[Enum.join(path, ".")]} class="bad-ink stat-note">
-              {@errors[Enum.join(path, ".")]}
-            </span>
-          </label>
-        </section>
-        <div class="row">
-          <button type="submit" class="settings-save">Save</button>
-          <span class="stat-note">
-            Values saved here win over settings.exs.
-          </span>
-        </div>
-      </form>
-
       <section :if={@linked} class="settings-section">
         <div class="heading-row">
           <h2 class="kicker">Connected machines</h2>
@@ -328,6 +302,32 @@ defmodule WallboardWeb.SettingsLive do
           Disconnect takes a machine's certificate away at once.
         </p>
       </section>
+
+      <form phx-submit="save" class="settings-form">
+        <section :for={{section, fields} <- Settings.editable()} class="settings-section">
+          <h2 class="kicker">{section}</h2>
+          <label :for={{path, label, type, restart, help} <- fields} class="settings-field">
+            <span class="settings-label">
+              {label}<span :if={restart} class="muted-ink"> · after restart</span>
+            </span>
+            <.field
+              name={"s[#{Enum.join(path, ".")}]"}
+              type={type}
+              value={@values[Enum.join(path, ".")]}
+            />
+            <span :if={help} class="stat-note">{help}</span>
+            <span :if={@errors[Enum.join(path, ".")]} class="bad-ink stat-note">
+              {@errors[Enum.join(path, ".")]}
+            </span>
+          </label>
+        </section>
+        <div class="row">
+          <button type="submit" class="settings-save">Save</button>
+          <span class="stat-note">
+            Values saved here win over settings.exs.
+          </span>
+        </div>
+      </form>
 
       <section :if={@key} class="settings-section">
         <h2 class="kicker">Connect another Mac</h2>
