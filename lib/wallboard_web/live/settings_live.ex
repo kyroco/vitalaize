@@ -112,7 +112,7 @@ defmodule WallboardWeb.SettingsLive do
     do: {:noreply, relist(socket)}
 
   def handle_info({:link, :hello, _machine, _info}, socket), do: {:noreply, relist(socket)}
-  def handle_info({:mailbox, :changed}, socket), do: {:noreply, relist(socket)}
+  def handle_info({:mailbox, :changed}, socket), do: {:noreply, socket |> reread() |> relist()}
 
   # Only the latest question's own timer ends it.
   def handle_info({:forget_disconnect, ref}, socket) do
@@ -123,15 +123,8 @@ defmodule WallboardWeb.SettingsLive do
 
   def handle_info(_, socket), do: {:noreply, socket}
 
-  # The settings are read again too: a repo tracked from the mailbox while
-  # this page is open shows in its list at once. The page sends no
-  # settings back, so one drawn before a Track cannot undo it.
-  defp relist(%{assigns: %{allowed?: true}} = socket) do
-    settings = Settings.get()
-
+  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket) do
     assign(socket,
-      settings: settings,
-      values: values(settings),
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       ignored_repos: Wallboard.RepoPrompts.ignored()
@@ -139,6 +132,16 @@ defmodule WallboardWeb.SettingsLive do
   end
 
   defp relist(socket), do: socket
+
+  # A repo tracked from the mailbox while this page is open shows in its
+  # list at once. The page sends no settings back, so one drawn before a
+  # Track cannot undo it.
+  defp reread(%{assigns: %{allowed?: true}} = socket) do
+    settings = Settings.get()
+    assign(socket, settings: settings, values: values(settings))
+  end
+
+  defp reread(socket), do: socket
 
   # Every change on this page is the owner's to make, and that is asked
   # again each time: the board password may have changed since the page

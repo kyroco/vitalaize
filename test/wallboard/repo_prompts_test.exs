@@ -506,6 +506,11 @@ defmodule Wallboard.RepoPromptsTest do
       names = ["acme/shop", "acme/billing-api"]
       assert Settings.repo_names(Settings.get()) == names
       assert saved_json(c) == %{"github" => %{"repos" => names}}
+
+      # The open page hears the mailbox changed and shows the new list.
+      assert {:noreply, page} = SettingsLive.handle_info({:mailbox, :changed}, page)
+      assert Settings.repo_names(page.assigns.settings) == names
+      assert page.assigns.values["github.repos"] == Enum.join(names, "\n")
     end
 
     test "saved settings that cannot be read are left alone", c do
