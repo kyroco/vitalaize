@@ -366,20 +366,6 @@ defmodule Wallboard.Store do
     end)
   end
 
-  @doc """
-  When each machine last sent a line of a session file, and how many of its
-  sessions sent one since `since`: `%{machine => %{last, sessions}}`.
-  """
-  def collector_activity(since) do
-    """
-    SELECT machine, max(updated_at) AS last,
-           count(DISTINCT CASE WHEN updated_at >= ?1 THEN session_id END) AS sessions
-    FROM collector_positions GROUP BY machine
-    """
-    |> query([since])
-    |> Map.new(&{&1.machine, %{last: &1.last, sessions: &1.sessions}})
-  end
-
   @doc "True when a collector's stream has saved this session, under any machine."
   def streamed?(session_id) do
     query("SELECT 1 AS n FROM sessions WHERE session_id = ?1 AND source = 'stream' LIMIT 1", [
@@ -401,6 +387,20 @@ defmodule Wallboard.Store do
       "SELECT DISTINCT machine, session_id FROM collector_events WHERE received_at >= ?1",
       [since]
     )
+  end
+
+  @doc """
+  When each machine last sent a line of a session file, and how many of its
+  sessions sent one since `since`: `%{machine => %{last, sessions}}`.
+  """
+  def collector_activity(since) do
+    """
+    SELECT machine, max(updated_at) AS last,
+           count(DISTINCT CASE WHEN updated_at >= ?1 THEN session_id END) AS sessions
+    FROM collector_positions GROUP BY machine
+    """
+    |> query([since])
+    |> Map.new(&{&1.machine, %{last: &1.last, sessions: &1.sessions}})
   end
 
   @doc "The newest saved sessions, most recently active first, without their details."

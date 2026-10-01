@@ -52,6 +52,7 @@ defmodule WallboardWeb.PairController do
       case state do
         :waiting -> json(conn, 200, %{state: "waiting"})
         :refused -> json(conn, 200, %{state: "refused"})
+        :failed -> json(conn, 200, %{state: "failed"})
         {:approved, cert} -> json(conn, 200, %{state: "approved", cert: cert})
       end
     else

@@ -77,10 +77,20 @@ defmodule Wallboard.StreamTest do
   # The two sides
 
   defp start_hub(c) do
-    start_supervised!({Store, path: Path.join(c.dir, "wallboard.db")})
-    start_supervised!({Sessions, save_ms: 100, reap_ms: c[:reap_ms] || 300_000})
-    start_supervised!({Hub, dir: c.link, port: c.port})
+    once({Store, path: Path.join(c.dir, "wallboard.db")})
+    once({Sessions, save_ms: 100})
+    once({Hub, dir: c.link, port: c.port})
     :ok
+  end
+
+  # Started under the test's supervisor, which must not start it again
+  # when the test kills it. Left to restart, the hub can find its port
+  # still held by the one just killed; it is then neither running nor
+  # stopped, and `stop_supervised/1` fails on it. These tests say when
+  # each side comes back.
+  defp once(child, opts \\ []) do
+    spec = Supervisor.child_spec(child, Keyword.put(opts, :restart, :temporary))
+    start_supervised!(spec)
   end
 
   # The hub, its sessions and its database, gone at once.
@@ -120,10 +130,10 @@ defmodule Wallboard.StreamTest do
   defp start_collector(c) do
     dir = c.collector.collector.dir
     world = c.world
-    outbox = start_supervised!({Outbox, dir: Path.join(dir, "outbox"), name: nil}, id: :outbox)
+    outbox = once({Outbox, dir: Path.join(dir, "outbox"), name: nil}, id: :outbox)
 
     watcher =
-      start_supervised!(
+      once(
         {Watcher,
          name: nil,
          outbox: outbox,
@@ -135,7 +145,7 @@ defmodule Wallboard.StreamTest do
       )
 
     sender =
-      start_supervised!(
+      once(
         {Sender,
          name: nil,
          dir: dir,
@@ -736,8 +746,7 @@ defmodule Wallboard.StreamTest do
 
     test "a new wait that follows an old one in the same batch still alerts, once", c do
       start_hub(c)
-      # As if its stream were open: a cut-off machine's wait is left to
-      # its hooks, and looked at again when it is back.
+      # As if its stream were open.
       Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       at = &DateTime.add(now, &1)
@@ -792,62 +801,50 @@ defmodule Wallboard.StreamTest do
       assert Process.whereis(Sessions) == pid
     end
 
-    @tag reap_ms: 400
-    test "a session its collector leaves out when it speaks of the others has ended", c do
+    test "a wait whose machine is cut off before the alert is due still alerts, once", c do
+      start_hub(c)
+      Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      tell([status_row("s-4", :needs, why: :question, since: now, at: now)])
+      wait_until(fn -> Sessions.cards() != [] end)
+
+      Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :down, "mama"})
+      wait_until(fn -> hd(Sessions.cards()).stale end)
+      assert_receive {:alert, "/slack", _}, 4_000
+      assert_receive {:alert, "/topic", _}, 4_000
+
+      # Back, and saying the same wait again: nothing more.
+      Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
+      later = DateTime.add(now, 30)
+      tell([status_row("s-4", :needs, why: :question, since: later, at: later)])
+      refute_receive {:alert, _, _}, 1_800
+    end
+
+    test "only a collector ends a session: one it stops speaking of keeps its card", c do
       other = "0b0b0b0b-1111-4222-8333-444444444444"
       start_hub(c)
       pair(c)
       w = start_collector(c)
-      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
       busy = %{"status" => "busy"}
       agents(c, [{@claude_id, busy}, {other, busy}])
       look(w)
       wait_until(fn -> card(@claude_id) != nil and card(other) != nil end)
       drained(w)
 
-      # The collector loses its place while one session ends: it has no
-      # memory of that session, so it sends no end for it.
+      # The collector loses its place while one session ends, so it sends
+      # no end for it. The hub does not guess.
       kill_collector(w)
       File.rm_rf!(Path.join(c.collector.collector.dir, "outbox"))
       agents(c, [{other, busy}])
       w = start_collector(c)
       look(w)
-      wait_until(fn -> card(@claude_id) == nil end)
-      # The one it does speak of stays.
-      assert %{status: :working, stale: false} = card(other)
-
-      # The end is an event like any other, so it holds after a restart.
-      assert Enum.any?(Store.collector_events("papa", @claude_id), &(&1.kind == "end"))
-      :ok = Sessions.save()
-      assert "gone" in Enum.map(Store.get_session("papa", @claude_id).events, & &1.status)
+      wait_until(fn -> not card(other).stale end)
       drained(w)
-      kill_collector(w)
-      kill_hub()
-      start_hub(c)
-      wait_until(fn -> card(other) != nil end)
-      assert card(@claude_id) == nil
-    end
-
-    @tag reap_ms: 400
-    test "a collector that has not spoken yet takes no card down", c do
-      start_hub(c)
-      pair(c)
-      w = start_collector(c)
-      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
-      agents(c, [{@claude_id, %{"status" => "busy"}}])
-      look(w)
-      wait_until(fn -> card(@claude_id) != nil end)
-      drained(w)
-
-      # Back, and saying nothing: no look, as with a long backlog ahead.
-      kill_collector(w)
-      start_collector(c)
-      wait_until(fn -> not card(@claude_id).stale end)
-      Process.sleep(900)
+      Process.sleep(500)
       assert %{status: :working, stale: false} = card(@claude_id)
+      assert Enum.all?(Store.collector_events("papa", @claude_id), &(&1.kind == "status"))
     end
 
-    @tag reap_ms: 400
     test "a session that is still running keeps its card through a reconnect", c do
       start_hub(c)
       pair(c)
@@ -866,6 +863,30 @@ defmodule Wallboard.StreamTest do
       Process.sleep(900)
       assert %{status: :idle, stale: false} = card(@claude_id)
     end
+  end
+
+  test "a status said again after a connect is in the session's history once", c do
+    start_hub(c)
+    # The collector sees the session before it is connected, so its first
+    # status is already made when the hub says where it is.
+    w = start_collector(c)
+    add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+    agents(c, [{@claude_id, %{"status" => "busy"}}])
+    look(w)
+
+    pair(c)
+    wait_until(fn -> card(@claude_id) != nil end)
+    # A later second, so a status said again carries a later time.
+    Process.sleep(1_100)
+    look(w)
+    drained(w)
+
+    :ok = Sessions.save()
+    history = Store.get_session("papa", @claude_id).events |> Enum.map(& &1.status)
+    assert history == ["working"]
+    # The hub still got it twice: that is how it would learn of it anew.
+    statuses = Enum.filter(Store.collector_events("papa", @claude_id), &(&1.kind == "status"))
+    assert length(statuses) == 2
   end
 
   test "a collector that is not paired sends nothing, and starts once it is", c do

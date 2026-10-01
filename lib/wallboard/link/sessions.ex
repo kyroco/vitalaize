@@ -27,15 +27,18 @@ defmodule Wallboard.Link.Sessions do
   has its cards taken down.
 
   A collector says every live session's status again each time it
-  connects, all in one go. So a hub that restarted or lost its data has
-  its cards back once the machine is. And a session the collector leaves
-  out has ended without the hub being told (the collector lost its own
-  place, say): five minutes after the machine first spoke of another
-  session of the same tool, and still nothing of this one, the hub notes
-  the end itself, as an event like any other, and the card comes down. A
-  collector that is slow to speak at all (a long backlog) takes no card
-  down. A machine's only session is never taken down this way: there is
-  no other for it to speak of.
+  connects. So a hub that restarted or lost its data has its cards back
+  once the machine is.
+
+  Only a collector ends a session. The hub never guesses that one is
+  over: a session whose collector lost its own place, and so never said
+  it ended, keeps its card until that machine has been disconnected for a
+  day.
+
+  A wait's alert is sent even if its machine's stream has closed by the
+  time the alert is due. A machine that also runs the old upload hooks
+  has those stand aside while its stream is open (`live?/1`); should the
+  stream close in the moment between, both can alert for the one wait.
 
   ## Saved
 
@@ -70,9 +73,6 @@ defmodule Wallboard.Link.Sessions do
   @keep_seconds 10 * 60
   # A stale card comes down after this long.
   @stale_seconds 24 * 3600
-  # How long after a machine first says a session's status again a
-  # session of the same tool that it left out counts as ended.
-  @reap_ms 5 * 60 * 1000
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -101,17 +101,12 @@ defmodule Wallboard.Link.Sessions do
     now = System.os_time(:second)
 
     state = %{
-      # {machine, session id} =>
-      #   %{s: session, dirty?: bool, heard: seconds, said: time or nil}
-      # `heard` is when any event last came. `said` is when a status last
-      # did, on this program's steady clock, to set against `up`.
+      # {machine, session id} => %{s: session, dirty?: bool, heard: seconds}
+      # `heard` is when any event last came.
       sessions: %{},
       connected: connected(),
-      # machine => when its stream closed, and when it last opened
+      # machine => when its stream closed
       down: %{},
-      up: %{},
-      # {machine, tool} => when it first said a status since it connected
-      spoke: %{},
       started: now,
       # {machine, session id} => the start of the wait an alert was last
       # asked for, so no wait alerts twice
@@ -119,7 +114,6 @@ defmodule Wallboard.Link.Sessions do
       sent: [],
       publish: nil,
       save_ms: Keyword.get(opts, :save_ms, @save_ms),
-      reap_ms: Keyword.get(opts, :reap_ms, @reap_ms),
       alerts: Keyword.get(opts, :alerts, &Wallboard.Alerts.needs_you/2)
     }
 
@@ -134,7 +128,7 @@ defmodule Wallboard.Link.Sessions do
     sessions =
       for %{machine: machine, session_id: id} <- Store.collector_sessions(now - @load_seconds),
           into: %{} do
-        {{machine, id}, %{s: read(machine, id), dirty?: true, heard: now, said: nil}}
+        {{machine, id}, %{s: read(machine, id), dirty?: true, heard: now}}
       end
 
     # A wait that was on before the hub stopped has had its alert.
@@ -179,34 +173,25 @@ defmodule Wallboard.Link.Sessions do
       |> Enum.reduce(state, fn {id, events}, state ->
         key = {machine, id}
         # A session not in memory is read from the database, which already
-        # holds these events.
-        entry = state.sessions[key] || %{s: read(machine, id), said: nil}
+        # holds these events; what it was before them is then not known,
+        # and is taken as nothing.
+        {entry, before} =
+          case state.sessions[key] do
+            nil -> {%{s: read(machine, id)}, Session.new(machine, id)}
+            entry -> {entry, entry.s}
+          end
+
         s = Enum.reduce(events, entry.s, &take(&2, &1))
-        record_statuses(s, events)
-        status? = Enum.any?(events, &status?/1)
-        said = if status?, do: steady(), else: entry.said
-
-        spoke =
-          if status?,
-            do: Map.put_new(state.spoke, {machine, tool(s)}, said),
-            else: state.spoke
-
-        state = maybe_alert(%{state | spoke: spoke}, key, s)
-        put_in(state.sessions[key], %{s: s, dirty?: true, heard: now, said: said})
+        record_statuses(before, s, events)
+        state = maybe_alert(state, key, s)
+        put_in(state.sessions[key], %{s: s, dirty?: true, heard: now})
       end)
 
     {:noreply, publish(state)}
   end
 
   def handle_info({:link, :up, machine}, state) do
-    state = %{
-      state
-      | connected: MapSet.put(state.connected, machine),
-        up: Map.put(state.up, machine, steady()),
-        # What it has said since is counted from here.
-        spoke: Map.reject(state.spoke, fn {{m, _tool}, _} -> m == machine end)
-    }
-
+    state = %{state | connected: MapSet.put(state.connected, machine)}
     {:noreply, publish(state)}
   end
 
@@ -232,19 +217,16 @@ defmodule Wallboard.Link.Sessions do
 
   def handle_info(:save, state) do
     Process.send_after(self(), :save, state.save_ms)
-    {:noreply, state |> reap() |> save_changed() |> tidy()}
+    {:noreply, state |> save_changed() |> tidy()}
   end
 
   # The alert for a wait that began at `since`, sent only if that same wait
-  # is still on.
+  # is still on, whether or not its machine's stream is still open.
   def handle_info({:alert, key, since}, state) do
     {machine, _} = key
 
     with %{s: s} <- state.sessions[key],
-         true <- Session.waiting?(s) and Session.since(s) == since,
-         # A machine cut off since: the old hooks alert for it if it has
-         # them, and the wait is looked at again when it is back.
-         true <- MapSet.member?(state.connected, machine) || :cut_off do
+         true <- Session.waiting?(s) and Session.since(s) == since do
       {ok?, sent} =
         Wallboard.Remote.alert_allowed?(state.sent, System.os_time(:millisecond))
 
@@ -259,7 +241,6 @@ defmodule Wallboard.Link.Sessions do
 
       {:noreply, %{state | sent: sent}}
     else
-      :cut_off -> {:noreply, %{state | alerted: Map.delete(state.alerted, key)}}
       _ -> {:noreply, state}
     end
   end
@@ -276,47 +257,6 @@ defmodule Wallboard.Link.Sessions do
   end
 
   # ---------------------------------------------------------------------------
-
-  defp steady, do: System.monotonic_time(:millisecond)
-
-  defp tool(s), do: s.tool || "claude"
-
-  # Ends the sessions a connected machine has left out (see the module
-  # doc). The end is saved as an event under the machine, a second after
-  # the session's last status, so it is there after a restart too and
-  # comes back through the database like any other.
-  defp reap(state) do
-    now = steady()
-
-    for {{machine, id}, %{s: s, said: said}} <- state.sessions,
-        MapSet.member?(state.connected, machine),
-        Session.live?(s),
-        up = state.up[machine],
-        up != nil and (said == nil or said < up),
-        first = state.spoke[{machine, tool(s)}],
-        first != nil and now - first >= state.reap_ms do
-      event = Wallboard.Collector.Filter.ended(%{session_id: id}, nil)
-      at = s.status.at + 1
-      event = %{event | at: at}
-
-      Store.put_collector_events(
-        machine,
-        [
-          %{
-            session_id: id,
-            file: "",
-            position: 0,
-            at: at,
-            kind: "end",
-            event: Proto.Event.encode(event)
-          }
-        ],
-        System.os_time(:second)
-      )
-    end
-
-    state
-  end
 
   defp connected do
     Wallboard.Link.Hub.connected() |> Map.keys() |> MapSet.new()
@@ -337,30 +277,42 @@ defmodule Wallboard.Link.Sessions do
     |> Enum.reduce(Session.new(machine, id), &take(&2, &1))
   end
 
-  # Each status a collector sent, and each end, as the archive words them.
-  # A row sent again lands on the one already there.
-  defp record_statuses(s, events) do
+  # Each change of status a collector sent, and each end, as the archive
+  # words them. `before` is the session as it stood ahead of these events.
+  # A collector says a status again, unchanged, each time it connects: that
+  # is no change, and adds nothing to the history. A row sent again lands
+  # on the one already there.
+  defp record_statuses(before, s, events) do
     name = Session.name(s)
 
-    for %Proto.Event{file: ""} = event <- events, %Proto.Item{body: body} <- event.items do
-      case body do
-        {:status, %Proto.Status{state: state}} ->
-          word =
-            case state do
-              :WAITING -> :needs
-              :WORKING -> :working
-              _ -> :idle
-            end
+    Enum.reduce(events, before, fn event, was ->
+      if event.file == "" do
+        for %Proto.Item{body: body} <- event.items do
+          case body do
+            {:status, %Proto.Status{state: state}} ->
+              word =
+                case state do
+                  :WAITING -> :needs
+                  :WORKING -> :working
+                  _ -> :idle
+                end
 
-          Store.put_status(s.machine, s.session_id, name, word, event.at)
+              if not (Session.live?(was) and Session.state(was) == word),
+                do: Store.put_status(s.machine, s.session_id, name, word, event.at)
 
-        {:ended, _} ->
-          Store.put_status(s.machine, s.session_id, name, :gone, event.at)
+            {:ended, _} ->
+              Store.put_status(s.machine, s.session_id, name, :gone, event.at)
 
-        _ ->
-          :ok
+            _ ->
+              :ok
+          end
+        end
       end
-    end
+
+      take(was, event)
+    end)
+
+    :ok
   end
 
   # One alert for each wait: asked for when a session waits and no alert
@@ -377,11 +329,6 @@ defmodule Wallboard.Link.Sessions do
       state
     end
   end
-
-  defp status?(%Proto.Event{file: "", items: items}),
-    do: Enum.any?(items, &match?(%Proto.Item{body: {:status, _}}, &1))
-
-  defp status?(_), do: false
 
   # One event that cannot be taken in costs that event, not the hub.
   defp take(s, event) do

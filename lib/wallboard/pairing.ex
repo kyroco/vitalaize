@@ -210,6 +210,8 @@ defmodule Wallboard.Pairing do
 
     * `{:ok, %{dir, machine, code}}`: approved, and the files are saved
     * `{:error, :refused}`, `{:error, :expired}`
+    * `{:error, :hub_failed}`: approved, but the hub could not make the
+      certificate; nothing was saved
     * `{:error, :busy}`: the hub's mailbox is full, this machine already
       has a request waiting, or it asked too often; try again in a while
     * `{:error, :bad_name}`: the hub cannot put this name in a certificate
@@ -330,6 +332,9 @@ defmodule Wallboard.Pairing do
 
       {:ok, %{"state" => "refused"}} ->
         {:error, :refused}
+
+      {:ok, %{"state" => "failed"}} ->
+        {:error, :hub_failed}
 
       {:ok, %{"state" => "waiting"}} ->
         if now() >= deadline do
@@ -517,6 +522,11 @@ defmodule Wallboard.Pairing do
   @doc "Why a pairing failed, as a sentence for the person who asked."
   def why(:refused), do: "The hub refused this machine."
   def why(:expired), do: "Nobody approved the code in time. Ask again for a new one."
+
+  def why(:hub_failed),
+    do:
+      "The hub approved this machine but could not make the certificate. " <>
+        "Look at the hub's log, then ask again."
 
   def why(:busy),
     do:
