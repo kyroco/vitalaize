@@ -415,6 +415,23 @@ defmodule Wallboard.RepoPromptsTest do
       assert Settings.repo_names(Settings.load!()) == names
     end
 
+    test "does not load an open board again: the mailbox stays open under the owner's hand", c do
+      start_hub(c)
+      shown = Settings.get()
+      assert :ok = Settings.track_repo("acme/billing-api")
+      tracked = Settings.get()
+      assert tracked != shown
+      refute WallboardWeb.BoardLive.reload_for?(shown, tracked)
+
+      # Any other setting saved since still loads an open board again.
+      saved_now = Map.put(saved_json(c), "rotate_seconds", 7)
+      File.write!(saved(c), Jason.encode!(saved_now))
+      later = Settings.load!()
+      assert WallboardWeb.BoardLive.reload_for?(shown, later)
+      assert WallboardWeb.BoardLive.reload_for?(tracked, later)
+      refute WallboardWeb.BoardLive.reload_for?(later, later)
+    end
+
     test "takes up nothing that waits for a restart", c do
       start_hub(c)
       assert Settings.get().token == nil

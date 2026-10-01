@@ -55,10 +55,24 @@ defmodule WallboardWeb.BoardLive do
   # the page, its clock and its page turning all start from the new
   # settings together.
   defp take_up_settings(socket) do
-    if Settings.get() == socket.assigns.settings,
-      do: socket,
-      else: redirect(socket, to: "/")
+    now = Settings.get()
+
+    cond do
+      now == socket.assigns.settings -> socket
+      reload_for?(socket.assigns.settings, now) -> redirect(socket, to: "/")
+      true -> assign(socket, settings: now)
+    end
   end
+
+  @doc """
+  Whether a board drawn from the settings `shown` must load again for the
+  settings as they are `now`. A change to the list of repositories alone
+  needs none: the Git tab reads that list on every check (see
+  `derive_github/1`). So a Track in the mailbox does not reload the board
+  under the owner's hand, with more asks still waiting there.
+  """
+  def reload_for?(shown, now),
+    do: now != shown and put_in(now, [:github, :repos], shown.github.repos) != shown
 
   defp mount_board(socket, session) do
     settings = Settings.get()
