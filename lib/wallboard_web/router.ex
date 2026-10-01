@@ -28,6 +28,15 @@ defmodule WallboardWeb.Router do
     get "/codex-upload.sh", IngestController, :codex_upload
   end
 
+  # A machine with no certificate yet asks for one here (see
+  # Wallboard.Pairing). No cookies, no password: it has neither, and the
+  # door's own limits and the owner's Approve are what guard it.
+  scope "/pair", WallboardWeb do
+    post "/start", PairController, :start
+    post "/confirm", PairController, :confirm
+    post "/wait", PairController, :wait
+  end
+
   scope "/", WallboardWeb do
     pipe_through :browser
 

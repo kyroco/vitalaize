@@ -10,7 +10,7 @@ defmodule WallboardWeb.BoardLive do
   """
   use WallboardWeb, :live_view
 
-  alias Wallboard.{Poller, Settings, Store}
+  alias Wallboard.{Mailbox, Poller, Settings, Store}
   alias Wallboard.Archive.{Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
 
@@ -39,22 +39,23 @@ defmodule WallboardWeb.BoardLive do
   end
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     # A screen left open across an update reconnects on its own but keeps the
     # old app.css and app.js, so it gets a full reload to fetch the new ones.
     if connected?(socket) and
          get_connect_params(socket)["asset_version"] != WallboardWeb.Layouts.asset_version() do
       {:ok, redirect(socket, to: "/")}
     else
-      mount_board(socket)
+      mount_board(socket, session)
     end
   end
 
-  defp mount_board(socket) do
+  defp mount_board(socket, session) do
     settings = Settings.get()
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Poller.topic())
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
       :timer.send_interval(@tick_ms, :tick)
     end
 
@@ -91,6 +92,18 @@ defmodule WallboardWeb.BoardLive do
         back_ref: nil,
         trends: nil,
         trend_days: 14
+      )
+      # Who is looking decides whether the mailbox's buttons work (see
+      # WallboardWeb.Auth.may_decide?/1). Only a live connection knows.
+      |> assign(
+        who:
+          if(connected?(socket),
+            do: WallboardWeb.Auth.who(socket, session),
+            else: %{local?: false, token_hash: nil}
+          ),
+        mailbox: Mailbox.items(),
+        mailbox_open?: false,
+        mailbox_note: nil
       )
       |> derive_sessions()
       |> derive_github()
@@ -154,11 +167,24 @@ defmodule WallboardWeb.BoardLive do
     end
   end
 
+  # Something in the mailbox came or went.
+  def handle_info({:mailbox, :changed}, socket),
+    do: {:noreply, assign(socket, mailbox: Mailbox.items())}
+
   # Nobody touched the Archive tab for a while: back to the live sessions,
-  # so a wall screen never hides a session that needs you.
+  # so a wall screen never hides a session that needs you. An open mailbox
+  # closes with it.
   def handle_info({:back_to_live, ref}, %{assigns: %{back_ref: ref}} = socket),
     do:
-      {:noreply, assign(socket, session_tab: :live, selected: nil, open_repo: nil, back_ref: nil)}
+      {:noreply,
+       assign(socket,
+         session_tab: :live,
+         selected: nil,
+         open_repo: nil,
+         back_ref: nil,
+         mailbox_open?: false,
+         mailbox_note: nil
+       )}
 
   def handle_info(_, socket), do: {:noreply, socket}
 
@@ -219,7 +245,40 @@ defmodule WallboardWeb.BoardLive do
      socket |> assign(archive_progress: %{Collector.progress() | running: true}) |> touched()}
   end
 
+  def handle_event("mailbox_open", _params, socket),
+    do:
+      {:noreply,
+       socket
+       |> assign(mailbox_open?: true, mailbox_note: nil, mailbox: Mailbox.items())
+       |> touched()}
+
+  def handle_event("mailbox_close", _params, socket),
+    do: {:noreply, socket |> assign(mailbox_open?: false, mailbox_note: nil) |> touched()}
+
+  # Approve, Refuse and the like. Looking at the mailbox is for anyone who
+  # can see the board; deciding is for its owner.
+  def handle_event("mailbox_act", %{"id" => id, "action" => action}, socket) do
+    note =
+      if WallboardWeb.Auth.may_decide?(socket.assigns.who) do
+        case Mailbox.act(id, action) do
+          :ok -> nil
+          {:error, :gone} -> "That one was already decided, or it ran out."
+          {:error, _} -> "That did not work just now. Try again in a moment."
+        end
+      else
+        cannot_decide()
+      end
+
+    {:noreply, socket |> assign(mailbox: Mailbox.items(), mailbox_note: note) |> touched()}
+  end
+
   def handle_event(_, _params, socket), do: {:noreply, socket}
+
+  defp cannot_decide do
+    if Settings.get().token,
+      do: "Open the board with its password to decide.",
+      else: "Decide on the hub's own machine, or give the board a password in Settings first."
+  end
 
   # Sessions still being saved show as loading under Claude and Codex, so a
   # half-filled chart never looks broken.
@@ -239,8 +298,11 @@ defmodule WallboardWeb.BoardLive do
   end
 
   # Any tap keeps the Archive tab and the details open a while longer.
-  defp touched(%{assigns: %{session_tab: :live, selected: nil, open_repo: nil}} = socket),
-    do: assign(socket, back_ref: nil)
+  defp touched(
+         %{assigns: %{session_tab: :live, selected: nil, open_repo: nil, mailbox_open?: false}} =
+           socket
+       ),
+       do: assign(socket, back_ref: nil)
 
   defp touched(socket) do
     ref = make_ref()
@@ -337,6 +399,7 @@ defmodule WallboardWeb.BoardLive do
           tabs={@tabs}
           metas={[@claude_meta, @github_meta]}
           release={@release}
+          mailbox={length(@mailbox)}
         />
         <.needs_banner needs={@needs} />
         <.tiles
@@ -405,6 +468,13 @@ defmodule WallboardWeb.BoardLive do
         facts={repo_facts(@github, @open_repo)}
         meta={@github_meta}
       />
+      <.mailbox
+        :if={@mailbox_open?}
+        items={@mailbox}
+        note={@mailbox_note}
+        may_decide?={WallboardWeb.Auth.may_decide?(@who)}
+        cannot={cannot_decide()}
+      />
     </div>
     """
   end
@@ -425,6 +495,8 @@ defmodule WallboardWeb.BoardLive do
   attr :metas, :list, required: true
   # A newer release than this board runs, or nil (see Wallboard.Sources.Release).
   attr :release, :map, default: nil
+  # How many things wait in the mailbox.
+  attr :mailbox, :integer, default: 0
 
   # The name, then the switches and the clock. The browser owns which page
   # dot is on and whether Pin is on, so those attributes survive updates.
@@ -506,6 +578,24 @@ defmodule WallboardWeb.BoardLive do
           aria-label={label}
         ></button>
       </nav>
+      <button
+        class="mailbox-button"
+        phx-click="mailbox_open"
+        aria-label={
+          if @mailbox == 0, do: "Mailbox, nothing waiting", else: "Mailbox, #{@mailbox} waiting"
+        }
+      >
+        <svg
+          width="26"
+          height="22"
+          viewBox="0 0 26 22"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          aria-hidden="true"
+        ><rect x="1" y="5" width="24" height="16" rx="2" /><path d="M1 7l12 8 12-8" /></svg>
+        <span :if={@mailbox > 0} class="mailbox-count">{@mailbox}</span>
+      </button>
       <div class="clockbox" data-fullscreen>
         <div class="clock" data-clock></div>
         <div class="dateline">
@@ -515,6 +605,62 @@ defmodule WallboardWeb.BoardLive do
     </header>
     """
   end
+
+  attr :items, :list, required: true
+  attr :note, :string, default: nil
+  attr :may_decide?, :boolean, required: true
+  attr :cannot, :string, required: true
+
+  # The open mailbox, over the board: administrative decisions only (see
+  # Wallboard.Mailbox). Each kind of item brings its own words and buttons.
+  defp mailbox(assigns) do
+    ~H"""
+    <div class="mailbox-scrim" phx-click="mailbox_close">
+      <div class="mailbox-panel" role="dialog" aria-label="Mailbox" phx-click="noop">
+        <div class="mailbox-head">
+          <b>Mailbox</b>
+          <span class="mailbox-sub">{mailbox_count(@items)}</span>
+          <span class="grow"></span>
+          <button class="close" phx-click="mailbox_close" aria-label="Close">×</button>
+        </div>
+        <p :if={@note} class="mailbox-note">{@note}</p>
+        <p :if={@items != [] and not @may_decide? and !@note} class="mailbox-note">{@cannot}</p>
+        <div :for={item <- @items} class="mailbox-item">
+          <div class="mailbox-title">{item.title}</div>
+          <div class="mailbox-body">
+            <%= for piece <- item.body do %>
+              <%= case piece do %>
+                <% {:code, text} -> %>
+                  <span class="mailbox-code">{text}</span>
+                <% {:strong, text} -> %>
+                  <b>{text}</b>
+                <% {_, text} -> %>
+                  {text}
+              <% end %>
+            <% end %>
+          </div>
+          <div class="mailbox-actions">
+            <button
+              :for={{{key, label}, i} <- Enum.with_index(item.actions)}
+              class={["mailbox-act", i == 0 && "primary"]}
+              phx-click="mailbox_act"
+              phx-value-id={item.id}
+              phx-value-action={key}
+              disabled={not @may_decide?}
+            >
+              {label}
+            </button>
+          </div>
+        </div>
+        <p :if={@items == []} class="mailbox-empty">Nothing to decide.</p>
+      </div>
+    </div>
+    """
+  end
+
+  defp mailbox_count([]), do: "nothing waiting"
+  defp mailbox_count([_]), do: "1 thing to decide"
+  defp mailbox_count(items), do: "#{length(items)} things to decide"
 
   # The oldest "last good data" among the sources on a page.
   defp oldest(metas) do
