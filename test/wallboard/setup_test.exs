@@ -638,9 +638,15 @@ defmodule Wallboard.SetupTest do
       folder = Path.join(dir, "claude")
       collector = Path.join(dir, "collector")
       File.mkdir_p!(collector)
-      # A fresh machine, but for where the collector keeps its own files:
-      # those go in this test's folder.
-      File.write!(Path.join(dir, "settings.exs"), "%{collector: %{dir: #{inspect(collector)}}}")
+      # A fresh machine, but for where it keeps its own files: the
+      # collector's, and the database a board would read, go in this test's
+      # folder, never the real ones under the home folder.
+      File.write!(Path.join(dir, "settings.exs"), """
+      %{
+        archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}},
+        collector: %{dir: #{inspect(collector)}}
+      }
+      """)
 
       owner = approve_when_asked()
 
@@ -775,14 +781,15 @@ defmodule Wallboard.SetupTest do
       dir: dir,
       saved: saved
     } do
-      # Set up with `vitalaize setup` alone: no settings.exs, and the
-      # password is in settings.json.
+      # A password set in the app or with `vitalaize setup` is in
+      # settings.json, not in the settings file.
+      settings_file(dir)
       File.write!(saved, Jason.encode!(%{token: "hunter2", rotate_seconds: 9}))
       assert %{token: "hunter2", rotate_seconds: 9} = Settings.load!()
       start_supervised!({Watch, name: :watch_removed, every_ms: 20, listener: self()})
 
-      # The folder is removed, or replaced by a newer download.
-      File.rm_rf!(dir)
+      # The saved settings go away under the running board.
+      File.rm!(saved)
       assert_receive {:settings, :reloaded}, 2_000
 
       # What is read as it goes follows the files. The password is only
