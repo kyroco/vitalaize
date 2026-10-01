@@ -305,18 +305,16 @@ defmodule Wallboard.OldCollectorTest do
 
       assert File.read!(settings) == broken
       refute File.exists?(settings <> ".before-collector")
-      # Its hooks still run the script, so the script stays too.
+      # The script goes all the same, and the person is told what that
+      # means for the hooks left in the file.
       script = Path.join(folders.claude, "wallboard-upload.sh")
-
-      assert results == [
-               %{file: settings, error: :not_json},
-               %{script: script, kept_for: settings}
-             ]
-
-      assert File.exists?(script)
+      assert results == [%{file: settings, error: :not_json}, %{script: script}]
+      refute File.exists?(script)
       assert [first, second] = OldHooks.report(results)
-      assert first =~ "Take out the hooks that run wallboard-upload.sh"
-      assert second =~ "Left the old upload script #{script} where it is"
+      assert first =~ "Could not take the old upload hooks out of #{settings}"
+      assert first =~ "Remove the hooks that run wallboard-upload.sh from it by hand"
+      assert first =~ "they show an error on each turn until you do"
+      assert second == "Deleted the old upload script #{script}."
     end
 
     test "only the upload script in the file's own folder, alone on its line, is VitalAIze's" do
@@ -354,7 +352,7 @@ defmodule Wallboard.OldCollectorTest do
       assert OldHooks.strip("{ nope", script) == {:error, :not_json}
     end
 
-    test "a hook that runs the owner's own command is not taken, and the report says so",
+    test "a hook that runs the owner's own command is not taken; the script still goes",
          %{home: home} do
       claude = Path.join(home, ".claude")
       File.mkdir_p!(claude)
@@ -367,112 +365,55 @@ defmodule Wallboard.OldCollectorTest do
 
       File.write!(settings, text)
 
+      # The owner's hook is theirs, untouched. The script is VitalAIze's,
+      # and it always goes.
       results = OldHooks.retire(%{claude: [claude], codex: []})
-      assert results == [%{script: script, kept_for: settings}]
+      assert results == [%{script: script}]
       assert File.read!(settings) == text
-      assert File.exists?(script)
+      refute File.exists?(script)
     end
 
-    test "a script stays while a hooks file in another folder still runs it", %{home: home} do
-      one = Path.join(home, ".claude")
-      two = Path.join(home, ".claude-two")
-      for folder <- [one, two], do: File.mkdir_p!(folder)
-      script = Path.join(two, "wallboard-upload.sh")
-      File.write!(script, "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n")
-      settings = Path.join(one, "settings.json")
-
-      File.write!(
-        settings,
-        ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{script} 2>/dev/null"}]}]}}\n)
-      )
-
-      results = OldHooks.retire(%{claude: [one, two], codex: []})
-      assert results == [%{script: script, kept_for: settings}]
-      assert File.exists?(script)
-    end
-
-    test "a file that cannot be written is left with no copy beside it", %{home: home} do
+    test "a file that cannot be written is left with no copy beside it, and said so",
+         %{home: home} do
       folders = connected_machine(home)
       settings = Path.join(folders.claude, "settings.json")
+      script = Path.join(folders.claude, "wallboard-upload.sh")
       before = File.read!(settings)
       File.chmod!(settings, 0o444)
 
-      for _ <- 1..2 do
-        assert [%{file: ^settings, error: _} | rest] =
-                 OldHooks.retire(%{claude: [folders.claude], codex: []})
+      assert [%{file: ^settings, error: _}, %{script: ^script}] =
+               results = OldHooks.retire(%{claude: [folders.claude], codex: []})
 
-        # Its hooks still run the script, so the script stays.
-        assert Enum.any?(rest, &match?(%{kept_for: ^settings}, &1))
-      end
+      assert hd(OldHooks.report(results)) =~ "Remove the hooks that run wallboard-upload.sh"
+
+      # A second run finds the same file, and still leaves nothing behind.
+      assert [%{file: ^settings, error: _}] =
+               OldHooks.retire(%{claude: [folders.claude], codex: []})
 
       assert File.read!(settings) == before
       assert Path.wildcard(settings <> ".*") == []
-      assert File.exists?(Path.join(folders.claude, "wallboard-upload.sh"))
+      refute File.exists?(script)
     end
 
-    test "a hook its owner changed stays, and so does the script it runs", %{home: home} do
-      claude = Path.join(home, ".claude")
-      File.mkdir_p!(claude)
-      settings = Path.join(claude, "settings.json")
-      script = Path.join(claude, "wallboard-upload.sh")
-      File.write!(script, "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n")
-
-      text =
-        ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{script} >/dev/null 2>&1"}]}]}}\n)
-
-      File.write!(settings, text)
-
-      results = OldHooks.retire(%{claude: [claude], codex: []})
-      assert results == [%{script: script, kept_for: settings}]
-      assert File.read!(settings) == text
-      assert File.exists?(script)
-      assert hd(OldHooks.report(results)) =~ "still mentions wallboard-upload.sh"
-    end
-
-    test "a hook that spells its folder another way keeps its script", %{dir: dir, home: home} do
-      script_text = "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n"
-
-      # The folder is reached through a link, and the hook names the real one.
-      real = Path.join(dir, "dotfiles/claude")
-      File.mkdir_p!(real)
-      linked = Path.join(home, ".claude")
-      File.ln_s!(real, linked)
-      File.write!(Path.join(real, "wallboard-upload.sh"), script_text)
-      text = ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{real}/wallboard-upload.sh"}]}]}}\n)
-      File.write!(Path.join(real, "settings.json"), text)
-
-      results = OldHooks.retire(%{claude: [linked], codex: []})
-      settings = Path.join(linked, "settings.json")
-      assert results == [%{script: Path.join(linked, "wallboard-upload.sh"), kept_for: settings}]
-      assert File.read!(settings) == text
-      assert File.exists?(Path.join(real, "wallboard-upload.sh"))
-
-      # A doubled slash, as 0.2.0 wrote it when the folder was given with
-      # one at its end, in a file that cannot be written.
+    test "a doubled slash in the old hook's path is still the script in its own folder",
+         %{home: home} do
+      # As 0.2.0 wrote it when the Claude folder was given with a slash at its end.
       work = Path.join(home, ".claude-work")
       File.mkdir_p!(work)
-      File.write!(Path.join(work, "wallboard-upload.sh"), script_text)
-      work_settings = Path.join(work, "settings.json")
+      script = Path.join(work, "wallboard-upload.sh")
+      File.write!(script, "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n")
+      settings = Path.join(work, "settings.json")
 
       File.write!(
-        work_settings,
+        settings,
         ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{work}//wallboard-upload.sh"}]}]}}\n)
       )
 
-      File.chmod!(work_settings, 0o444)
-
-      assert [%{file: ^work_settings, error: _}, %{kept_for: ^work_settings}] =
+      assert [%{file: ^settings, hooks: 1}, %{script: ^script}] =
                OldHooks.retire(%{claude: [work], codex: []})
 
-      assert File.exists?(Path.join(work, "wallboard-upload.sh"))
-
-      # Writable, that spelling is the script in its own folder: both go.
-      File.chmod!(work_settings, 0o644)
-
-      assert [%{file: ^work_settings, hooks: 1}, %{script: _}] =
-               OldHooks.retire(%{claude: [work], codex: []})
-
-      refute File.exists?(Path.join(work, "wallboard-upload.sh"))
+      assert File.read!(settings) == "{}\n"
+      refute File.exists?(script)
     end
 
     test "odd but valid files: null values are kept, a name given twice is left alone" do

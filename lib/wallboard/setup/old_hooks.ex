@@ -24,7 +24,11 @@ defmodule Wallboard.Setup.OldHooks do
   settings with those hooks gone, or the file is left alone and the
   report says so. A file that is not JSON is left alone too.
 
-  The script itself holds the hub's old key, so it is deleted, not kept.
+  The script itself holds the hub's old key, so it is deleted, always,
+  and not kept. A hook this could not safely take out (its file was left
+  alone, or its owner changed its command) then runs a script that is
+  gone, and shows an error on each turn until its owner removes it. The
+  report names each file that was left alone and says so.
   """
 
   alias Wallboard.Settings
@@ -100,8 +104,6 @@ defmodule Wallboard.Setup.OldHooks do
 
     * `%{file: path, hooks: count, backup: path}`: hooks taken out
     * `%{script: path}`: the upload script deleted
-    * `%{script: path, kept_for: file}`: the script left, because that
-      hooks file still names it
     * `%{file: path, error: why}`: a file left as it was
 
   A folder with nothing of VitalAIze's adds nothing to the list.
@@ -113,14 +115,11 @@ defmodule Wallboard.Setup.OldHooks do
       |> Enum.uniq()
       |> Enum.filter(fn {dir, file} -> allowed?(Path.join(dir, file)) end)
 
-    files = for {dir, file} <- folders, do: Path.join(dir, file)
     scripts = folders |> Enum.map(fn {dir, _} -> Path.join(dir, @script) end) |> Enum.uniq()
 
-    # Every hooks file first, then the scripts: a script goes only when no
-    # hooks file, in any folder, still names it.
     Enum.flat_map(folders, fn {dir, file} ->
       file(Path.join(dir, file), Path.join(dir, @script))
-    end) ++ Enum.flat_map(scripts, &script(&1, files))
+    end) ++ Enum.flat_map(scripts, &script/1)
   end
 
   # Tests name the one place they may change files (config/test.exs), so no
@@ -165,39 +164,6 @@ defmodule Wallboard.Setup.OldHooks do
     # A copy or a write that failed: the file is as it was, or whole and new.
     e -> [%{file: path, error: Map.get(e, :reason, :failed)}]
   end
-
-  # True when a hooks file still has a hook that mentions an upload
-  # script, or may have: a hook its owner changed (more on its command
-  # line, say), one that spells its folder another way (through a link,
-  # with a doubled slash), a file that was left alone, or one that cannot
-  # be opened to look. Any mention counts, whichever folder it names: two
-  # spellings of one folder cannot be told apart from here, and a script
-  # kept for nothing costs less than a hook left running a missing one.
-  defp names?(file, _script) do
-    case File.read(file) do
-      {:ok, text} ->
-        case Jason.decode(text) do
-          {:ok, data} -> Enum.any?(commands(data), &String.contains?(&1, @script))
-          _ -> String.contains?(text, @script)
-        end
-
-      {:error, :enoent} ->
-        false
-
-      {:error, _} ->
-        true
-    end
-  end
-
-  # Every hook's command in a decoded hooks file.
-  defp commands(%{"hooks" => %{} = hooks}) do
-    for {_, groups} when is_list(groups) <- hooks,
-        %{"hooks" => list} when is_list(list) <- groups,
-        %{"command" => command} when is_binary(command) <- list,
-        do: command
-  end
-
-  defp commands(_), do: []
 
   # A file this cannot read is worth a word only when it names the script.
   defp mentions?(path) do
@@ -265,15 +231,12 @@ defmodule Wallboard.Setup.OldHooks do
   end
 
   # Only a script that is the upload script: it names the hub's old
-  # address. While a hooks file still names it, it stays: a hook whose
-  # command is missing fails on every turn.
-  defp script(path, files) do
+  # address. It always goes, whatever became of the hooks that ran it.
+  defp script(path) do
     with {:ok, text} <- File.read(path),
-         true <- String.contains?(text, "/ingest/") do
-      case Enum.find(files, &names?(&1, path)) do
-        nil -> if File.rm(path) == :ok, do: [%{script: path}], else: []
-        file -> [%{script: path, kept_for: file}]
-      end
+         true <- String.contains?(text, "/ingest/"),
+         :ok <- File.rm(path) do
+      [%{script: path}]
     else
       _ -> []
     end
@@ -598,20 +561,18 @@ defmodule Wallboard.Setup.OldHooks do
           "Took #{n} old VitalAIze upload #{if n == 1, do: "hook", else: "hooks"} out of " <>
             "#{file}. Every other hook is as it was, and the file from before is #{backup}."
 
-        %{script: script, kept_for: file} ->
-          "Left the old upload script #{script} where it is, because a hook in #{file} " <>
-            "still mentions #{@script}. Take that hook out by hand, then delete the script."
-
         %{script: script} ->
           "Deleted the old upload script #{script}."
 
         %{file: file, error: :changed} ->
           "#{file} was saved by something else just then, so it was left as it is. " <>
-            "Run this again to take the old upload hooks out of it."
+            "Run this again to take the old upload hooks out of it. Until then they " <>
+            "show an error on each turn, since the script they run is deleted."
 
         %{file: file, error: _} ->
           "Could not take the old upload hooks out of #{file}, so it is as it was. " <>
-            "Take out the hooks that run #{@script} there by hand."
+            "Remove the hooks that run #{@script} from it by hand: that script is " <>
+            "deleted, so they show an error on each turn until you do."
       end
     end
   end
