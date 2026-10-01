@@ -197,6 +197,13 @@ defmodule Wallboard.Collector.Filter do
   def position(state), do: state.position
 
   @doc """
+  The reader's tally of the file so far. It holds the session's text, so it
+  is for the collector's own use on its machine (working out a Codex
+  session's live status) and is never sent.
+  """
+  def tally(state), do: state.tally
+
+  @doc """
   Reads the next bytes of the file and returns `{events, state}`: one event
   for each line that told something new. A last line with no line break yet
   is kept until the rest of it arrives.

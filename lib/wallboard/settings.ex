@@ -21,7 +21,33 @@ defmodule Wallboard.Settings do
 
   @key {__MODULE__, :settings}
 
+  @roles %{"hub" => :hub, "collector" => :collector, "both" => :both}
+
   @defaults %{
+    # What this machine does:
+    #   "both"       runs the board and saves this machine's own sessions
+    #   "hub"        runs the board and saves only what other machines send
+    #   "collector"  runs no board: it watches this machine's sessions for a
+    #                hub (see Wallboard.Collector.Watcher)
+    # The WALLBOARD_ROLE environment variable, when set, wins over the file.
+    role: "both",
+    # Only read in the collector role.
+    collector: %{
+      # nil finds them: ~/.claude and every ~/.claude-something that holds
+      # sessions, and ~/.codex. A list here is used as written.
+      claude_dirs: nil,
+      codex_dirs: nil,
+      # Where the collector keeps its place and its unsent events. nil picks
+      # a "collector" folder beside the database's usual place.
+      dir: nil,
+      # The most the unsent events may take on disk, in megabytes.
+      outbox_mb: 64,
+      # On the first start, sessions that changed in this many days are
+      # reported. An older one is reported once it changes again.
+      backfill_days: 14,
+      # How often to look for new lines in the session files.
+      poll_seconds: 2
+    },
     port: 4747,
     token: nil,
     rotate_seconds: 30,
@@ -287,10 +313,13 @@ defmodule Wallboard.Settings do
           merge(@defaults, value)
       end
 
+    settings = env_role(settings)
+
+    # A collector has no database, so no values saved from a settings page.
     settings =
-      settings
-      |> apply_overrides(saved_overrides(settings))
-      |> normalize()
+      if role(settings) == :collector,
+        do: normalize(settings),
+        else: settings |> apply_overrides(saved_overrides(settings)) |> normalize()
 
     :persistent_term.put(@key, settings)
     settings
@@ -300,11 +329,35 @@ defmodule Wallboard.Settings do
   def base do
     case path() do
       nil ->
-        normalize(@defaults)
+        @defaults |> env_role() |> normalize()
 
       path ->
         {value, _} = Code.eval_file(path)
-        @defaults |> merge(value) |> normalize()
+        @defaults |> merge(value) |> env_role() |> normalize()
+    end
+  end
+
+  @doc """
+  The role in a settings map, as :hub, :collector or :both. Raises on
+  anything else, so a misspelled role never starts the wrong thing.
+  """
+  def role(%{role: role}) when role in [:hub, :collector, :both], do: role
+
+  def role(%{role: role}) do
+    case is_binary(role) && Map.fetch(@roles, String.trim(role)) do
+      {:ok, role} ->
+        role
+
+      _ ->
+        raise ArgumentError,
+              ~s(role must be "hub", "collector" or "both", not #{inspect(role)})
+    end
+  end
+
+  defp env_role(settings) do
+    case System.get_env("WALLBOARD_ROLE") do
+      role when is_binary(role) and role != "" -> Map.put(settings, :role, role)
+      _ -> settings
     end
   end
 
@@ -642,7 +695,28 @@ defmodule Wallboard.Settings do
 
   @doc false
   def normalize(settings) do
+    role = role(settings)
+
     settings
+    |> Map.put(:role, role)
+    # A hub keeps only what other machines send.
+    |> update_in([:archive, :collect_local], &(&1 && role != :hub))
+    |> update_in([:claude, :poll_seconds], &whole(&1, @defaults.claude.poll_seconds))
+    |> update_in([:codex, :idle_minutes], fn
+      n when is_integer(n) and n >= 0 -> n
+      _ -> @defaults.codex.idle_minutes
+    end)
+    |> update_in([:collector], fn c ->
+      %{
+        c
+        | poll_seconds: whole(c[:poll_seconds], @defaults.collector.poll_seconds),
+          backfill_days: whole(c[:backfill_days], @defaults.collector.backfill_days),
+          outbox_mb: whole(c[:outbox_mb], @defaults.collector.outbox_mb),
+          claude_dirs: c.claude_dirs && Enum.map(List.wrap(c.claude_dirs), &Path.expand/1),
+          codex_dirs: c.codex_dirs && Enum.map(List.wrap(c.codex_dirs), &Path.expand/1),
+          dir: collector_dir(c.dir)
+      }
+    end)
     |> update_in([:claude, :config_dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:codex, :dirs], fn dirs -> Enum.map(List.wrap(dirs), &Path.expand/1) end)
     |> update_in([:alerts], fn alerts ->
@@ -685,6 +759,20 @@ defmodule Wallboard.Settings do
         Path.join([base, "vitalaize", "wallboard.db"])
     end
   end
+
+  @doc """
+  Where a collector keeps its place and its unsent events: the setting when
+  there is one, otherwise a "collector" folder beside the database's usual
+  place (see `db_path/1`).
+  """
+  def collector_dir(dir) when is_binary(dir) and dir != "", do: Path.expand(dir)
+  def collector_dir(_), do: nil |> db_path() |> Path.dirname() |> Path.join("collector")
+
+  # A whole number of 1 or more, or the default: timers and date sums use
+  # these, and a fraction or a nil there would stop the poller or the
+  # collector on every round.
+  defp whole(n, _default) when is_integer(n) and n >= 1, do: n
+  defp whole(_, default), do: default
 
   # The file may say `updates: false` or leave `check` out; the rest of the
   # board only ever sees %{check: true} or %{check: false}.

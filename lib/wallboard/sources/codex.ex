@@ -140,7 +140,8 @@ defmodule Wallboard.Sources.Codex do
   end
 
   # Codex's own names for its threads. Read again only when the file changed.
-  defp titles(settings, {stamp, titles}) do
+  @doc false
+  def titles(settings, {stamp, titles}) do
     paths = Enum.map(settings.codex.dirs, &Path.join(&1, "session_index.jsonl"))
 
     now_stamp =
@@ -168,7 +169,8 @@ defmodule Wallboard.Sources.Codex do
   # Codex folder that exists, so the path in hooks.json survives an upgrade.
   # Never makes a Codex folder. Runs every poll, so a Codex folder made later
   # or a deleted copy is put right without a restart; it is one small read.
-  defp install_hook(settings) do
+  @doc false
+  def install_hook(settings) do
     script = hook_script()
 
     for dir <- settings.codex.dirs, File.dir?(dir) do
@@ -452,7 +454,9 @@ defmodule Wallboard.Sources.Codex do
     |> Enum.sort_by(&DateTime.to_unix(&1.started_at || now))
   end
 
-  # The session, or one of its helper agents, waiting on you: {why, since}.
+  # The session, or one of its helper agents, waiting on you: {why, since,
+  # kind, tool}. The kind (:permission or :question) and the tool's name are
+  # what a collector sends in place of the words.
   # A helper's calls come under the session's id with its `agent_id`, or,
   # should Codex give them the helper's own thread id, under that. Only a
   # helper's approval requests reach the person; its questions go to the
@@ -472,8 +476,12 @@ defmodule Wallboard.Sources.Codex do
           approval?(mark),
           do: {k, mark, list}
 
-    Enum.find_value(own ++ helpers, {nil, nil}, fn {who, mark, others} ->
-      if why = waiting(mark, who, others -- [mark]), do: {why, DateTime.from_unix!(mark["at"])}
+    Enum.find_value(own ++ helpers, {nil, nil, nil, nil}, fn {who, mark, others} ->
+      if why = waiting(mark, who, others -- [mark]) do
+        asks? = approval?(mark)
+        tool = if asks? and is_binary(mark["tool_name"]), do: mark["tool_name"]
+        {why, DateTime.from_unix!(mark["at"]), if(asks?, do: :permission, else: :question), tool}
+      end
     end)
   end
 
@@ -486,7 +494,7 @@ defmodule Wallboard.Sources.Codex do
   """
   def card(t, kids, title, now_s, marks \\ %{}) do
     working? = t.running and now_s - t.mtime < @stale_turn_seconds
-    {why, waiting_since} = waiting_on(t, kids, marks)
+    {why, waiting_since, waiting_kind, waiting_tool} = waiting_on(t, kids, marks)
     updated = DateTime.from_unix!(t.mtime)
 
     status =
@@ -513,6 +521,8 @@ defmodule Wallboard.Sources.Codex do
       status: status,
       task: short_prompt(t.last_prompt) || t.cwd,
       why: why,
+      waiting_kind: waiting_kind,
+      waiting_tool: waiting_tool,
       waiting_since: waiting_since,
       updated_at: updated,
       started_at: t.first_at,
