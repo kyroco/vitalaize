@@ -221,6 +221,29 @@ defmodule Wallboard.CodexCopyTest do
     end
   end
 
+  test "a quick turn someone starts three seconds after the copy makes it a session" do
+    at = @copied |> DateTime.add(3) |> DateTime.truncate(:second)
+    ended = DateTime.to_unix(@copied) - 1
+    lines = Fixtures.codex_copy(@one, @copied, [{@began, @began + 42}, {ended - 100, ended}])
+
+    turn =
+      for {kind, key, s} <- [
+            {"task_started", :started_at, 0},
+            {"task_complete", :completed_at, 4}
+          ] do
+        stamp = DateTime.add(at, s)
+
+        Jason.encode!(%{
+          timestamp: DateTime.to_iso8601(stamp),
+          type: "event_msg",
+          payload: %{:type => kind, key => DateTime.to_unix(stamp)}
+        })
+      end
+
+    assert CodexTranscript.copy?(CodexTranscript.read_lines(Enum.join(lines, "\n")))
+    refute CodexTranscript.copy?(CodexTranscript.read_lines(Enum.join(lines ++ turn, "\n")))
+  end
+
   test "a reply written before any turn line keeps its time" do
     at = ~U[2026-10-01 18:40:00Z]
 

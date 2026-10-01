@@ -198,9 +198,11 @@ defmodule Wallboard.Archive.CodexTranscript do
 
         cond do
           # A chat can be copied in the very second its last turn ended: a
-          # line stamped with copied ones is one of them however near its
-          # clock.
-          behind > @copied_seconds or near?(stamp, t.copied_at) ->
+          # line stamped in the same second as copied ones is one of them
+          # however near its clock (each real copy was written within a
+          # tenth of a second). A turn someone starts a few seconds after
+          # the copy is not.
+          behind > @copied_seconds or same_copy?(stamp, t.copied_at) ->
             %{t | copied_at: stamp, clock: own}
 
           behind <= @lived_seconds ->
@@ -230,6 +232,9 @@ defmodule Wallboard.Archive.CodexTranscript do
 
   defp near?(%DateTime{} = a, %DateTime{} = b), do: abs(DateTime.diff(a, b)) <= @burst_seconds
   defp near?(_, _), do: false
+
+  defp same_copy?(%DateTime{} = a, %DateTime{} = b), do: abs(DateTime.diff(a, b)) <= 1
+  defp same_copy?(_, _), do: false
 
   defp unix(s) when is_integer(s) do
     case DateTime.from_unix(s) do
