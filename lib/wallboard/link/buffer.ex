@@ -8,11 +8,19 @@ defmodule Wallboard.Link.Buffer do
   event up to a number once the hub says it stored them.
 
   The buffer is bounded. When it passes `max_bytes` it sheds, in this order:
-  a status that a later status of the same session replaced, then the oldest
-  events that came from a file. A session's latest status and its end are
-  never shed. A shed file event is not lost: its line is still in the
-  session file, and the hub's `Resume` says where to read on from.
-  `take_shed/1` tells the caller it happened.
+  a status that a later status of the same session replaced, then the
+  newest events that came from a file. A session's latest status and its
+  end are never shed.
+
+  It sheds the newest of a file, never the oldest, because the hub only
+  remembers the furthest position it has seen in each file. What is kept of
+  a file is then always an unbroken run from where the hub left off, and
+  the hub's position can never jump over a line it does not have. A file
+  that lost events takes no more until `drop_stored/2` is called with the
+  hub's next `Resume`: its later lines are still in the session file, and
+  whoever reads the files sends them again from the hub's position. Which
+  files those are is written in the buffer's file too, so a restart of the
+  collector does not forget it. `take_shed/1` tells the caller it happened.
 
   The file is a run of records: the event's size, a checksum, its seq and
   the event. A confirmation from the hub adds a short record that says
@@ -26,11 +34,26 @@ defmodule Wallboard.Link.Buffer do
 
   alias Wallboard.Collector.Proto
 
-  defstruct [:path, :io, :max_bytes, :entries, :bytes, :file_bytes, :next_seq, shed: false]
+  defstruct [
+    :path,
+    :io,
+    :max_bytes,
+    :entries,
+    :bytes,
+    :file_bytes,
+    :next_seq,
+    shed: false,
+    # The files that lost events to a shed, as {session_id, file}.
+    holes: MapSet.new(),
+    # The bytes of the file that are notes, not events, after a rewrite.
+    notes: 0
+  ]
 
   @header 16
   # In place of a size, this marks a record that forgets events.
   @forget 0xFFFFFFFF
+  # And this one a record that names a file that lost events to a shed.
+  @hole 0xFFFFFFFE
   @default_max 20_000_000
   # Rewriting the file is put off until this much of it is dead weight.
   @slack 1_000_000
@@ -46,7 +69,7 @@ defmodule Wallboard.Link.Buffer do
     File.chmod!(path, 0o600)
 
     data = File.read!(path)
-    {entries, last, good} = parse(data, :gb_trees.empty(), 0, 0)
+    {entries, last, good, holes} = parse(data, :gb_trees.empty(), 0, 0, MapSet.new())
     if good < byte_size(data), do: truncate!(path, good)
     bytes = entries |> :gb_trees.values() |> Enum.reduce(0, &(&1.size + &2))
 
@@ -59,7 +82,8 @@ defmodule Wallboard.Link.Buffer do
       file_bytes: good,
       # Past every seq the file has seen, forgotten ones too, so none is
       # ever given out twice.
-      next_seq: last + 1
+      next_seq: last + 1,
+      holes: holes
     }
     |> tidy()
   end
@@ -70,6 +94,9 @@ defmodule Wallboard.Link.Buffer do
   @doc """
   Adds events, each with the next seq, and returns the buffer. They are on
   disk when this returns: one write and one flush for the whole list.
+
+  An event of a file that lost events to a shed is not taken (see the
+  module doc); it is read from its file again after the next `Resume`.
   """
   def push(%__MODULE__{} = b, %Proto.Event{} = event), do: push(b, [event])
 
@@ -80,14 +107,18 @@ defmodule Wallboard.Link.Buffer do
         payload = Proto.Event.encode(event)
         entry = entry(seq, event, payload)
 
-        b = %{
-          b
-          | bytes: b.bytes + entry.size,
-            file_bytes: b.file_bytes + entry.size,
-            next_seq: seq + 1
-        }
+        if entry.kind == :file and MapSet.member?(b.holes, {entry.session_id, entry.file}) do
+          {entries, records, b}
+        else
+          b = %{
+            b
+            | bytes: b.bytes + entry.size,
+              file_bytes: b.file_bytes + entry.size,
+              next_seq: seq + 1
+          }
 
-        {:gb_trees.insert(seq, entry, entries), [record(seq, payload) | records], b}
+          {:gb_trees.insert(seq, entry, entries), [record(seq, payload) | records], b}
+        end
       end)
 
     if records != [] do
@@ -115,15 +146,19 @@ defmodule Wallboard.Link.Buffer do
 
   @doc """
   Forgets the file events the hub already has. `points` maps
-  `{session_id, file}` to the hub's position in that file.
+  `{session_id, file}` to the hub's position in that file. Call it with
+  each `Resume`: it also lets files that lost events to a shed take events
+  again, since their reader now starts over from the hub's position.
   """
   def drop_stored(%__MODULE__{} = b, points) when is_map(points) do
-    case drop(b, fn e ->
-           e.kind == :file and e.position <= Map.get(points, {e.session_id, e.file}, -1)
-         end) do
-      ^b -> b
-      dropped -> rewrite(dropped)
-    end
+    opened = %{b | holes: MapSet.new()}
+
+    dropped =
+      drop(opened, fn e ->
+        e.kind == :file and e.position <= Map.get(points, {e.session_id, e.file}, -1)
+      end)
+
+    if dropped == b, do: b, else: rewrite(dropped)
   end
 
   @doc "Up to `limit` events with a seq after `seq`, oldest first, as `{seq, encoded event}`."
@@ -173,12 +208,27 @@ defmodule Wallboard.Link.Buffer do
   # Stops at the first record that is cut short or fails its checksum.
   # Returns the events still wanted, the highest seq seen and how many
   # bytes of the file were good.
-  defp parse(<<@forget::32, crc::32, seq::64, rest::binary>>, acc, last, at) do
+  defp parse(<<@forget::32, crc::32, seq::64, rest::binary>>, acc, last, at, holes) do
     if :erlang.crc32(<<seq::64>>) == crc do
       kept = for {s, e} <- :gb_trees.to_list(acc), s > seq, do: {s, e}
-      parse(rest, :gb_trees.from_orddict(kept), max(last, seq), at + @header)
+      parse(rest, :gb_trees.from_orddict(kept), max(last, seq), at + @header, holes)
     else
-      {acc, last, at}
+      {acc, last, at, holes}
+    end
+  end
+
+  defp parse(
+         <<@hole::32, crc::32, size::64, name::binary-size(size), rest::binary>>,
+         acc,
+         last,
+         at,
+         holes
+       ) do
+    with true <- :erlang.crc32(name) == crc,
+         [session_id, file] <- :binary.split(name, <<0>>) do
+      parse(rest, acc, last, at + @header + size, MapSet.put(holes, {session_id, file}))
+    else
+      _ -> {acc, last, at, holes}
     end
   end
 
@@ -186,18 +236,19 @@ defmodule Wallboard.Link.Buffer do
          <<size::32, crc::32, seq::64, payload::binary-size(size), rest::binary>>,
          acc,
          last,
-         at
+         at,
+         holes
        ) do
     with true <- :erlang.crc32(payload) == crc,
          %Proto.Event{} = event <- decode(payload) do
       acc = :gb_trees.enter(seq, entry(seq, event, payload), acc)
-      parse(rest, acc, max(last, seq), at + @header + size)
+      parse(rest, acc, max(last, seq), at + @header + size, holes)
     else
-      _ -> {acc, last, at}
+      _ -> {acc, last, at, holes}
     end
   end
 
-  defp parse(_rest, acc, last, at), do: {acc, last, at}
+  defp parse(_rest, acc, last, at, holes), do: {acc, last, at, holes}
 
   defp decode(payload) do
     Proto.Event.decode(payload)
@@ -216,19 +267,27 @@ defmodule Wallboard.Link.Buffer do
     # Down to three quarters, so one more event does not shed again at once.
     target = div(b.max_bytes * 3, 4)
 
-    {_, doomed} =
+    # Newest first. Every file event met on the way goes, so whatever is
+    # kept of a file has nothing missing before it.
+    {_, doomed, holes} =
       b.entries
       |> :gb_trees.to_list()
-      |> Enum.reduce_while({b.bytes, []}, fn {seq, e}, {bytes, doomed} ->
+      |> Enum.reverse()
+      |> Enum.reduce_while({b.bytes, [], b.holes}, fn {seq, e}, {bytes, doomed, holes} ->
         cond do
-          bytes <= target -> {:halt, {bytes, doomed}}
-          e.kind == :file -> {:cont, {bytes - e.size, [seq | doomed]}}
-          true -> {:cont, {bytes, doomed}}
+          bytes <= target ->
+            {:halt, {bytes, doomed, holes}}
+
+          e.kind == :file ->
+            {:cont, {bytes - e.size, [seq | doomed], MapSet.put(holes, {e.session_id, e.file})}}
+
+          true ->
+            {:cont, {bytes, doomed, holes}}
         end
       end)
 
     doomed = MapSet.new(doomed)
-    b = if MapSet.size(doomed) > 0, do: %{b | shed: true}, else: b
+    b = if MapSet.size(doomed) > 0, do: %{b | shed: true, holes: holes}, else: b
     b |> drop(fn e -> MapSet.member?(doomed, e.seq) end) |> rewrite()
   end
 
@@ -247,7 +306,7 @@ defmodule Wallboard.Link.Buffer do
   # is written again.
   defp tidy(b) do
     dead = b.file_bytes - b.bytes
-    if dead > @slack or (b.bytes == 0 and dead > @header), do: rewrite(b), else: b
+    if dead > @slack or (b.bytes == 0 and dead > max(b.notes, @header)), do: rewrite(b), else: b
   end
 
   # Written beside the file and moved over it, so a crash leaves the old
@@ -263,6 +322,15 @@ defmodule Wallboard.Link.Buffer do
     last = b.next_seq - 1
     :ok = :file.write(io, <<@forget::32, :erlang.crc32(<<last::64>>)::32, last::64>>)
 
+    # Then the files that take no events for now.
+    holes =
+      for {session_id, file} <- b.holes do
+        name = session_id <> <<0>> <> file
+        <<@hole::32, :erlang.crc32(name)::32, byte_size(name)::64, name::binary>>
+      end
+
+    :ok = :file.write(io, holes)
+
     for {seq, e} <- :gb_trees.to_list(b.entries) do
       :ok = :file.write(io, record(seq, e.payload))
     end
@@ -270,7 +338,8 @@ defmodule Wallboard.Link.Buffer do
     :ok = :file.datasync(io)
     :ok = :file.close(io)
     File.rename!(tmp, b.path)
-    %{b | io: append!(b.path), file_bytes: b.bytes + @header}
+    notes = @header + IO.iodata_length(holes)
+    %{b | io: append!(b.path), file_bytes: b.bytes + notes, notes: notes}
   end
 
   defp truncate!(path, size) do

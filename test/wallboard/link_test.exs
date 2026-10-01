@@ -332,6 +332,108 @@ defmodule Wallboard.LinkTest do
     end
   end
 
+  describe "what the hub keeps" do
+    test "a session's end and a status of the same second are both kept, and a repeat changes nothing",
+         %{dir: dir, link: link} do
+      port = start_hub(dir)
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa)
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      at = ~U[2026-09-30 12:00:00Z]
+      waiting = status("s1", :needs, why: :question, at: at)
+      ended = Filter.ended(%{session_id: "s1"}, at)
+      idle = status("s1", :idle, at: at)
+      # With no time at all, the same.
+      timeless = [Filter.ended(%{session_id: "s2"}, nil), status("s2", :working, [])]
+
+      :ok = Client.push(client, [event(1), waiting, ended, idle] ++ timeless ++ [event(2)])
+      assert_receive {:wallboard_link, {:stored, 7}}, 5_000
+
+      rows = Store.collector_events("papa")
+      assert Enum.map(rows, & &1.kind) == ["file", "status", "end", "end", "status", "file"]
+      # Of two statuses in one second, the later is the one kept.
+      assert Proto.Event.decode(Enum.at(rows, 1).event) == idle
+      assert Proto.Event.decode(Enum.at(rows, 2).event) == ended
+
+      # The first event again, as after a cut stream: same place, same time
+      # of arrival, no new row.
+      :ok =
+        Store.put_collector_events(
+          "papa",
+          [
+            %{
+              session_id: "s1",
+              file: "s1.jsonl",
+              position: 100,
+              at: 1_790_000_001,
+              kind: "file",
+              event: Proto.Event.encode(event(1))
+            }
+          ],
+          System.os_time(:second) + 500
+        )
+
+      assert Store.collector_events("papa") == rows
+    end
+
+    test "a certificate replaced from outside the hub closes its open stream",
+         %{dir: dir, link: link} do
+      port = start_hub(dir, limits: %{recheck_ms: 50})
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa, pace: %{keepalive_ms: 100})
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      # What `mix wallboard.link.issue papa --replace` does, from another
+      # program: the hub's own process is told nothing.
+      {:ok, _newer} = Authority.issue(link, "papa", replace: true)
+
+      assert_receive {:wallboard_link, :removed}, 5_000
+      wait_until(fn -> Hub.connected() == %{} end)
+      assert %{phase: :removed} = Client.status(client)
+    end
+
+    test "a buffer that overflowed while the hub was away still delivers every line, in order",
+         %{dir: dir, link: link} do
+      port = free_port()
+      {:ok, papa} = Authority.issue_offline(link, "papa")
+
+      # No hub yet. The buffer holds about a third of what is pushed.
+      client = start_client(dir, port, papa, max_bytes: 6_000)
+      lines = Enum.map(1..300, &event/1)
+      :ok = Client.push(client, lines)
+      assert Client.status(client).waiting < 300
+
+      start_hub(dir, port: port)
+
+      # What a reader of the session file does: on every Resume, go back to
+      # the hub's position and push the file's lines from there.
+      reader = fn reader, resumes ->
+        receive do
+          {:wallboard_link, {:resume, points}} ->
+            from = div(Map.get(points, {"s1", "s1.jsonl"}, 0), 100)
+            :ok = Client.push(client, Enum.drop(lines, from))
+            reader.(reader, resumes + 1)
+
+          _ ->
+            reader.(reader, resumes)
+        after
+          200 ->
+            cond do
+              length(saved("papa")) == 300 -> resumes
+              resumes > 20 -> flunk("the hub never caught up")
+              true -> reader.(reader, resumes)
+            end
+        end
+      end
+
+      # More than one Resume: the buffer could not carry it all at once.
+      assert reader.(reader, 0) > 1
+      wait_until(fn -> Client.status(client).waiting == 0 end)
+      assert Enum.map(saved("papa"), & &1.position) == Enum.map(1..300, &(&1 * 100))
+    end
+  end
+
   describe "losing the hub" do
     test "a hub killed mid-stream comes back, and nothing is lost or doubled",
          %{dir: dir, link: link} do
@@ -468,6 +570,26 @@ defmodule Wallboard.LinkTest do
       assert log =~ "papa sent too much too fast"
       # What arrived before the cut may be saved; the flood is not.
       assert length(saved("papa")) <= 20
+      before = length(saved("papa"))
+
+      # Connecting again buys nothing: the limit is the machine's, not the
+      # stream's. A second flood right away is cut off at once.
+      capture_log(fn ->
+        {channel, stream} = raw_stream(port, papa)
+
+        quietly(fn ->
+          for n <- 201..400 do
+            message = %Proto.FromCollector{seq: n, body: {:event, event(n)}}
+            GRPC.Stub.send_request(stream, message)
+          end
+        end)
+
+        wait_until(fn -> Hub.connected() == %{} end)
+        quietly(fn -> GRPC.Stub.disconnect(channel) end)
+      end)
+
+      # At most what one second refills (5), never another burst of 20.
+      assert length(saved("papa")) - before <= 6
     end
 
     test "the first message must be a hello", %{dir: dir, link: link} do

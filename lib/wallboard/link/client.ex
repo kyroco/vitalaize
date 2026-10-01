@@ -19,7 +19,10 @@ defmodule Wallboard.Link.Client do
     * `:up`: the stream is open
     * `{:resume, points}`: the hub's position in each session file, as
       `%{{session_id, file} => position}`. Whoever reads the session files
-      sends what lies past these; the buffer has already dropped the rest.
+      must, on every one of these, go back to these positions and push each
+      file's lines from there, in order, before any later line of that
+      file. The buffer has already dropped what the hub has, and while it
+      was full it may have refused a file's newer lines.
     * `{:stored, seq}`: the hub saved everything up to this seq
     * `:back_soon`: the hub is restarting on purpose
     * `{:down, wait_ms}`: the stream is gone; the next try is in `wait_ms`
@@ -103,7 +106,9 @@ defmodule Wallboard.Link.Client do
       in_flight: 0,
       heard: 0,
       back_soon: false,
-      pump: nil
+      pump: nil,
+      # True from a shed until the next Resume.
+      shed: false
     }
 
     send(self(), :connect)
@@ -114,19 +119,11 @@ defmodule Wallboard.Link.Client do
   def handle_call({:push, events}, _from, s) do
     buffer = Buffer.push(s.buffer, events)
     {shed?, buffer} = Buffer.take_shed(buffer)
-    s = %{s | buffer: buffer}
 
-    # Shed events must be read from their files again, and only a new
-    # stream brings the Resume that says from where.
-    s =
-      if shed? and s.phase in [:resuming, :live] do
-        Logger.warning("Link: the buffer is full; older events will be read again from disk.")
-        down(s, :shed)
-      else
-        pump(s)
-      end
+    if shed? and not s.shed,
+      do: Logger.warning("Link: the buffer is full; newer lines wait in their files for now.")
 
-    {:reply, :ok, s}
+    {:reply, :ok, pump(%{s | buffer: buffer, shed: s.shed or shed?})}
   end
 
   def handle_call(:status, _from, s) do
@@ -204,7 +201,8 @@ defmodule Wallboard.Link.Client do
       %{s | points: points}
     else
       notify(s, {:resume, points})
-      pump(%{s | phase: :live, points: %{}, buffer: Buffer.drop_stored(s.buffer, points)})
+      buffer = Buffer.drop_stored(s.buffer, points)
+      pump(%{s | phase: :live, points: %{}, buffer: buffer, shed: false})
     end
   end
 
@@ -213,7 +211,12 @@ defmodule Wallboard.Link.Client do
     buffer = Buffer.ack(s.buffer, min(seq, s.sent))
     {left, _} = Buffer.size(buffer)
     notify(s, {:stored, seq})
-    pump(%{s | buffer: buffer, in_flight: max(s.in_flight - (before - left), 0)})
+    s = %{s | buffer: buffer, in_flight: max(s.in_flight - (before - left), 0)}
+
+    # The buffer shed and has now emptied. The lines it refused are still
+    # in their files, and only a new stream brings the Resume that tells
+    # the reader where to pick them up.
+    if s.shed and left == 0, do: down(s, :shed), else: pump(s)
   end
 
   defp hub({:back_soon, _}, s) do

@@ -159,8 +159,10 @@ defmodule Wallboard.Store do
     # Codex was read are all Claude.
     "ALTER TABLE sessions ADD COLUMN tool TEXT DEFAULT 'claude'",
     # What collectors stream to the hub (see Wallboard.Link). One row per
-    # event, as it arrived; a repeat lands on the same row. `at` is part of
-    # the key because a status comes from no file and has no position.
+    # event, as it arrived; a repeat lands on the same row. `kind` is file,
+    # status or end. A status and an end come from no file and have no
+    # position, so `kind` and `at` are part of the key: an end never shares
+    # a row with a status, and two statuses of one second leave the later.
     """
     CREATE TABLE collector_events (
       machine TEXT NOT NULL,
@@ -168,9 +170,10 @@ defmodule Wallboard.Store do
       file TEXT NOT NULL,
       position INTEGER NOT NULL,
       at INTEGER NOT NULL,
+      kind TEXT NOT NULL,
       received_at INTEGER NOT NULL,
       event BLOB NOT NULL,
-      PRIMARY KEY (machine, session_id, file, position, at)
+      PRIMARY KEY (machine, session_id, file, position, at, kind)
     )
     """,
     # How far the hub got in each session file of each machine: what it
@@ -284,8 +287,9 @@ defmodule Wallboard.Store do
   @doc """
   Saves events a collector sent, under the machine its certificate names,
   and moves that machine's position in each file forward. All of them or
-  none. `events` are maps with `session_id`, `file`, `position`, `at` and
-  `event` (the encoded message).
+  none, and on the disk before this returns. `events` are maps with
+  `session_id`, `file`, `position`, `at`, `kind` ("file", "status" or
+  "end") and `event` (the encoded message).
   """
   def put_collector_events(machine, events, now),
     do: GenServer.call(__MODULE__, {:put_collector_events, machine, events, now}, 30_000)
@@ -319,10 +323,13 @@ defmodule Wallboard.Store do
     )
   end
 
-  @doc "A machine's saved events, in the order they were first saved."
+  @doc """
+  A machine's saved events, in the order they were first saved. An event
+  sent again keeps its place and the time it first arrived.
+  """
   def collector_events(machine) do
     query(
-      "SELECT session_id, file, position, at, received_at, event FROM collector_events WHERE machine = ?1 ORDER BY rowid",
+      "SELECT session_id, file, position, at, kind, received_at, event FROM collector_events WHERE machine = ?1 ORDER BY rowid",
       [machine]
     )
   end
@@ -467,17 +474,24 @@ defmodule Wallboard.Store do
   end
 
   def handle_call({:put_collector_events, machine, events, now}, _from, %{conn: c} = state) do
+    # The collector forgets these once it is told they are saved, so this
+    # one write waits for the disk. Everything else the board saves can be
+    # read again from its source and keeps the faster setting.
+    :ok = Sqlite3.execute(c, "PRAGMA synchronous = FULL")
+
     result =
       transaction(c, fn ->
         Enum.each(events, fn e ->
           run(
             c,
             """
-            INSERT OR REPLACE INTO collector_events
-              (machine, session_id, file, position, at, received_at, event)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO collector_events
+              (machine, session_id, file, position, at, kind, received_at, event)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT (machine, session_id, file, position, at, kind)
+              DO UPDATE SET event = excluded.event
             """,
-            [machine, e.session_id, e.file, e.position, e.at, now, {:blob, e.event}]
+            [machine, e.session_id, e.file, e.position, e.at, e.kind, now, {:blob, e.event}]
           )
 
           if e.file != "" do
@@ -495,6 +509,7 @@ defmodule Wallboard.Store do
         end)
       end)
 
+    :ok = Sqlite3.execute(c, "PRAGMA synchronous = NORMAL")
     {:reply, result, state}
   end
 

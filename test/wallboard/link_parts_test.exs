@@ -60,7 +60,10 @@ defmodule Wallboard.LinkPartsTest do
 
       hub = String.upcase(Authority.hub_name())
 
-      for bad <- ["", "a/b", "../x", " lead", String.duplicate("a", 64), "new\nline", nil, hub] do
+      odd = ["papa.", "papa ", hub <> "."]
+
+      for bad <-
+            ["", "a/b", "../x", " lead", String.duplicate("a", 64), "new\nline", nil, hub] ++ odd do
         assert {:error, :bad_name} = Authority.issue(dir, bad)
       end
     end
@@ -103,10 +106,14 @@ defmodule Wallboard.LinkPartsTest do
       assert {:ok, []} = Authority.revoke(here, "papa")
       assert {:error, :revoked} = Authority.machine(here, der(papa.cert_pem))
 
-      # A list of machines that cannot be read vouches for nobody.
+      # A list of machines that cannot be read vouches for nobody, and is
+      # never written over: that would forget everyone on it.
       {:ok, mama} = Authority.issue(here, "mama")
       File.write!(Path.join(here, "machines.json"), "{broken")
       assert {:error, :unknown} = Authority.machine(here, der(mama.cert_pem))
+      assert_raise RuntimeError, ~r/cannot be read/, fn -> Authority.issue(here, "nana") end
+      assert_raise RuntimeError, ~r/cannot be read/, fn -> Authority.revoke(here, "mama") end
+      assert File.read!(Path.join(here, "machines.json")) == "{broken"
     end
   end
 
@@ -241,7 +248,7 @@ defmodule Wallboard.LinkPartsTest do
       assert seqs(Buffer.open(path)) == [1, 2]
     end
 
-    test "when full it sheds old file events, never a session's last status or its end",
+    test "when full it sheds the newest file events, never a session's last status or its end",
          %{dir: dir} do
       path = Path.join(dir, "link.buffer")
       buffer = Buffer.open(path, max_bytes: 4_000)
@@ -261,12 +268,48 @@ defmodule Wallboard.LinkPartsTest do
       # The older status of s1 went; its latest and s2's end stayed.
       assert status("s1", 2) in kept and ended("s2", 3) in kept
       refute status("s1", 1) in kept
-      # The newest file events stayed, the oldest went.
-      assert event(60) in kept
-      refute event(4) in kept
-      # What is left on disk is what is left in memory.
+
+      # What is kept of the file is an unbroken run from its start: the
+      # hub's position can never pass a line it was not sent.
+      positions = for %{file: "s1.jsonl", position: p} <- kept, do: p
+      assert positions == Enum.map(4..(3 + length(positions)), &(&1 * 10))
+      assert length(positions) > 0 and length(positions) < 57
+
+      # What is left on disk is what is left in memory, and a restart
+      # still knows which file lost events.
       Buffer.close(buffer)
-      assert events(Buffer.open(path, max_bytes: 4_000)) == kept
+      buffer = Buffer.open(path, max_bytes: 4_000)
+      assert events(buffer) == kept
+      assert buffer.holes == MapSet.new([{"s1", "s1.jsonl"}])
+      Buffer.close(buffer)
+
+      # The file takes no more until the hub's next Resume, however much
+      # room there is: its later lines would leave a gap. (Each buffer below
+      # is its own copy of the file, since a buffer writes as it goes.)
+      copy = fn name ->
+        File.cp!(path, Path.join(dir, name))
+        Path.join(dir, name)
+      end
+
+      roomy = copy.("a") |> Buffer.open(max_bytes: 4_000) |> Buffer.ack(2)
+      assert events(Buffer.push(roomy, event(61))) == events(roomy)
+      # Another file, and anything that comes from no file, still gets in.
+      other = event(1, session: "s9", file: "s9.jsonl")
+      assert other in events(Buffer.push(roomy, other))
+      assert status("s1", 70) in events(Buffer.push(roomy, status("s1", 70)))
+
+      # A Resume opens the file again, from wherever the hub got to.
+      resumed =
+        copy.("b")
+        |> Buffer.open(max_bytes: 4_000)
+        |> Buffer.ack(2)
+        |> Buffer.drop_stored(%{{"s1", "s1.jsonl"} => 50})
+
+      assert event(5) not in events(resumed)
+      resumed = Buffer.push(resumed, event(61))
+      assert event(61) in events(resumed)
+      Buffer.close(resumed)
+      assert Buffer.open(Path.join(dir, "b"), max_bytes: 4_000).holes == MapSet.new()
     end
   end
 

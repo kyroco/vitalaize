@@ -41,13 +41,21 @@ defmodule Wallboard.Link do
   On every connect the hub first sends `Resume`: the last position it has
   for each session file. The collector drops what the hub already has and
   sends the rest. A repeat is harmless either way, because the hub keeps
-  one row per machine, session, file, position and time.
+  one row per machine, session, file, position, time and kind, and saves
+  each batch to the disk before it answers.
 
-  When the buffer is full the oldest events that came from a file are
-  dropped, never a status or an end. They are not lost: the file is still
-  on the collector, and `Resume` tells whoever reads the files where the
-  hub got to. The client restarts the stream when that happens, so a
-  `Resume` arrives.
+  The hub's position in a file is only the furthest it has seen, so the
+  collector must never send a line of a file while an earlier one is
+  missing. That shapes what a full buffer does: it drops the newest events
+  of a file, never an older one, never a status or an end, and takes no
+  more of that file until the next `Resume`. The dropped lines are not
+  lost: they are still in the session file. Once the buffer has emptied,
+  the client restarts the stream, a `Resume` arrives, and whoever reads the
+  files sends each file again from the hub's position.
+
+  An open stream looks its certificate up again every few seconds, so a
+  certificate revoked or replaced by another program (the `mix` task)
+  stops working on a live stream too.
 
   ## Reconnects
 
@@ -68,6 +76,11 @@ defmodule Wallboard.Link do
     * one stream per machine: a second one replaces the first
     * a connection that sends nothing for `idle_ms` is closed; a collector
       says it is alive every 20 seconds
+    * a connection gets three seconds to finish its TLS handshake, and the
+      port holds `max_connections` at once. Someone with no certificate
+      can still fill those places with unfinished handshakes for as long
+      as they keep at it. That delays collectors, which wait and lose
+      nothing; it does not stop the hub.
     * the port takes gRPC over HTTP/2 only: no HTTP/1, no JSON, no
       compression, no reflection
 
@@ -87,7 +100,9 @@ defmodule Wallboard.Link do
     bytes_per_second: 4_000_000,
     byte_burst: 8_000_000,
     idle_ms: 90_000,
-    max_connections: 256,
+    # How often an open stream looks its certificate up again.
+    recheck_ms: 5_000,
+    max_connections: 1_024,
     resume_points: 20_000,
     resume_days: 30
   }

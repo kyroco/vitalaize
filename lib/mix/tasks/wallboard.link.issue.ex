@@ -15,8 +15,8 @@ defmodule Mix.Tasks.Wallboard.Link.Issue do
 
     * `--dir`: the hub's link folder. Unless given, the one beside the
       database in your settings.
-    * `--out`: where to write the files. Unless given, a folder named
-      after the machine in the current folder.
+    * `--out`: where to write the files. It must be given: one of them
+      is a private key, and it should not land in a folder by accident.
     * `--replace`: revoke the machine's older certificate, if it has one.
   """
 
@@ -36,7 +36,7 @@ defmodule Mix.Tasks.Wallboard.Link.Issue do
       end
 
     dir = opts[:dir] || Authority.dir(Wallboard.Settings.base())
-    out = opts[:out] || Path.join(File.cwd!(), machine)
+    out = opts[:out] || Mix.raise("Say where the files go: --out FOLDER")
     :ok = Authority.ensure!(dir)
 
     case Authority.issue(dir, machine, replace: opts[:replace] == true) do

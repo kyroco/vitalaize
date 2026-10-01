@@ -131,6 +131,13 @@ defmodule Wallboard.Link.Authority do
     end
   end
 
+  @doc false
+  # For tests that issue a certificate before any hub has started.
+  def issue_offline(dir, machine) do
+    :ok = ensure!(dir)
+    issue(dir, machine)
+  end
+
   @doc """
   Signs a machine's own public key, given as PEM text. Returns `{:ok, files}`
   with `cert_pem`, `ca_pem` and `serial`.
@@ -150,7 +157,7 @@ defmodule Wallboard.Link.Authority do
   """
   def revoke(dir, machine) when is_binary(machine) do
     locked(dir, fn ->
-      index = read_index(dir)
+      index = read_index!(dir)
       now = System.os_time(:second)
 
       serials = for {serial, %{"machine" => ^machine, "revoked_at" => nil}} <- index, do: serial
@@ -259,7 +266,7 @@ defmodule Wallboard.Link.Authority do
   defp sign_public(dir, machine, point, opts) do
     if machine_name?(machine) do
       locked(dir, fn ->
-        index = read_index(dir)
+        index = read_index!(dir)
         now = System.os_time(:second)
         working = for {s, %{"machine" => ^machine, "revoked_at" => nil}} <- index, do: s
 
@@ -293,7 +300,9 @@ defmodule Wallboard.Link.Authority do
   def machine_name?(name) do
     # Never the hub's own name: a machine's certificate must not read as
     # the hub's.
-    is_binary(name) and name =~ ~r/\A[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}\z/ and
+    # It ends as it starts, on a letter or a digit, so two names never
+    # differ only by a dot or a space at the end.
+    is_binary(name) and name =~ ~r/\A[A-Za-z0-9]([A-Za-z0-9 ._-]{0,61}[A-Za-z0-9])?\z/ and
       String.downcase(name) != @hub_name
   end
 
@@ -447,6 +456,21 @@ defmodule Wallboard.Link.Authority do
     else
       # A list that cannot be read vouches for nobody.
       _ -> %{}
+    end
+  end
+
+  # For a change to the list. A list that is there but cannot be read is
+  # never written over: that would forget every machine in it.
+  defp read_index!(dir) do
+    file = path(dir, "machines.json")
+
+    with true <- File.exists?(file),
+         {:ok, text} <- File.read(file),
+         {:ok, %{} = index} <- Jason.decode(text) do
+      index
+    else
+      false -> %{}
+      _ -> raise "#{file} cannot be read. Mend it or restore it; it is not replaced."
     end
   end
 

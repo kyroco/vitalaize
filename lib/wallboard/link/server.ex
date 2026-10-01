@@ -23,7 +23,7 @@ defmodule Wallboard.Link.Server do
 
   alias GRPC.Server.Adapters.Cowboy
   alias Wallboard.Collector.Proto
-  alias Wallboard.Link.Hub
+  alias Wallboard.Link.{Authority, Hub}
   alias Wallboard.Store
 
   @resume_chunk 1_000
@@ -35,11 +35,16 @@ defmodule Wallboard.Link.Server do
   def stream(_messages, stream) do
     counter = :atomics.new(1, [])
 
-    case Hub.attach(Cowboy.get_cert(stream.payload), stream, counter) do
-      {:ok, machine, limits} ->
+    cert = Cowboy.get_cert(stream.payload)
+
+    case Hub.attach(cert, stream, counter) do
+      {:ok, machine, limits, dir} ->
         now = System.monotonic_time(:millisecond)
 
         loop(%{
+          cert: cert,
+          dir: dir,
+          checked: now,
           machine: machine,
           stream: stream,
           counter: counter,
@@ -47,8 +52,6 @@ defmodule Wallboard.Link.Server do
           rest: "",
           hello?: false,
           seq: 0,
-          messages: limits.message_burst * 1.0,
-          bytes: limits.byte_burst * 1.0,
           at: now
         })
 
@@ -75,13 +78,33 @@ defmodule Wallboard.Link.Server do
       end
 
     {frames, rest} = split(s.rest <> data, s.limits.max_message_bytes, [])
-    s = spend(s, length(frames), byte_size(data))
+    s = s |> still_approved() |> spend(length(frames), byte_size(data))
     s = frames |> Enum.map(&decode/1) |> handle(%{s | rest: rest})
 
     cond do
       not fin? -> loop(s)
       rest == "" -> :ok
       true -> refuse(:invalid_argument, "the stream ended in the middle of a message")
+    end
+  end
+
+  # A certificate can be revoked from outside the hub's own program (the
+  # `mix` task that replaces one does it), so an open stream looks its own
+  # up again now and then. A collector speaks at least every 20 seconds, so
+  # a revoked one is cut off within that.
+  defp still_approved(s) do
+    now = System.monotonic_time(:millisecond)
+
+    cond do
+      now - s.checked < s.limits.recheck_ms ->
+        s
+
+      Authority.machine(s.dir, s.cert) == {:ok, s.machine} ->
+        %{s | checked: now}
+
+      true ->
+        send_to(s.stream, s.counter, {:disconnected, %Proto.Disconnected{}})
+        refuse(:unauthenticated, "this machine is no longer approved")
     end
   end
 
@@ -107,26 +130,34 @@ defmodule Wallboard.Link.Server do
 
   # Two buckets that refill with time, one of messages and one of bytes. A
   # collector that empties either is cut off; its events stay in its own
-  # buffer and it tries again after a wait.
+  # buffer and it tries again after a wait. The buckets belong to the
+  # machine, not the stream (the hub keeps them), so connecting again does
+  # not fill them.
   defp spend(s, messages, bytes) do
     now = System.monotonic_time(:millisecond)
-    secs = (now - s.at) / 1000
     l = s.limits
-    have_m = min(l.message_burst * 1.0, s.messages + secs * l.messages_per_second) - messages
-    have_b = min(l.byte_burst * 1.0, s.bytes + secs * l.bytes_per_second) - bytes
+    {had_m, had_b, at} = Hub.bucket(s.machine, l, now)
+    secs = max(now - at, 0) / 1000
+    have_m = min(l.message_burst * 1.0, had_m + secs * l.messages_per_second) - messages
+    have_b = min(l.byte_burst * 1.0, had_b + secs * l.bytes_per_second) - bytes
+    # Never below empty: a cut-off machine earns its way back at the
+    # usual rate, however much it tried to send.
+    Hub.put_bucket(s.machine, {max(have_m, 0.0), max(have_b, 0.0), now})
 
     if have_m < 0 or have_b < 0 do
       Logger.warning("Link: #{s.machine} sent too much too fast; its stream is closed.")
       refuse(:resource_exhausted, "too many messages too fast")
     end
 
-    %{s | messages: have_m, bytes: have_b, at: now}
+    %{s | at: now}
   end
 
   defp handle([], s), do: s
 
   defp handle([%Proto.FromCollector{body: {:hello, hello}} | rest], %{hello?: false} = s) do
-    Hub.hello(s.machine, hello)
+    info = %{label: hello.machine, os: hello.os, version: hello.version, folders: hello.folders}
+    Store.put_collector_machine(s.machine, info, System.os_time(:second))
+    Hub.hello(s.machine, info)
     resume(s)
     handle(rest, %{s | hello?: true})
   end
@@ -194,12 +225,19 @@ defmodule Wallboard.Link.Server do
           file: e.file,
           position: e.position,
           at: e.at,
+          kind: kind(e),
           event: Proto.Event.encode(e)
         }
       ]
     else
       []
     end
+  end
+
+  defp kind(%Proto.Event{file: file}) when file != "", do: "file"
+
+  defp kind(%Proto.Event{items: items}) do
+    if Enum.any?(items, &match?(%Proto.Item{body: {:ended, _}}, &1)), do: "end", else: "status"
   end
 
   defp refuse(status, message), do: raise(GRPC.RPCError, status: status, message: message)

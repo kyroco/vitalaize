@@ -89,8 +89,10 @@ defmodule Wallboard.Collector.Filter do
     * pull request links on github.com, 50 at most; the number and the
       repo are read from the link
     * the folder's GitHub repository as owner/name
-    * what a session asks its person while it waits on them, so a card on
-      another machine can quote it. Only in a status that says waiting.
+    * what a session asks its person while it waits on an answer, so a
+      card on another machine can quote it. Only in a status that says
+      waiting on a question; the words of a permission request, which name
+      the command or the file, never leave.
 
   What never leaves: any other prompt, the model's other replies and its
   thinking, tool inputs and outputs, commands, file names and file
@@ -220,7 +222,8 @@ defmodule Wallboard.Collector.Filter do
   (`:permission`, `:question`, `:dialog`, `:network`, `:helper`, `:goal`, or
   the word `claude agents` gives in `waitingFor`); `tool`, the name of the
   tool a permission request is for; `question`, what the session asks its
-  person; `since`, when the state began; `at`.
+  person, kept only when `why` is a question; `since`, when the state
+  began; `at`.
   """
   def status(ctx, state, opts \\ []) when state in [:working, :needs, :waiting, :idle] do
     waiting? = state in [:needs, :waiting]
@@ -235,7 +238,9 @@ defmodule Wallboard.Collector.Filter do
       why: if(waiting?, do: why(opts[:why]), else: :WHY_UNKNOWN),
       tool: if(waiting?, do: tool_name(opts[:tool]), else: ""),
       since: unix(opts[:since]),
-      question: if(waiting?, do: text(opts[:question]), else: "")
+      # Only a question the session put to its person. What a permission
+      # request says holds the command or the file it is about.
+      question: if(waiting? and why(opts[:why]) == :QUESTION, do: text(opts[:question]), else: "")
     }
 
     event(ctx, "", 0, unix(opts[:at]), false, status: body)

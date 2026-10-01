@@ -22,9 +22,9 @@ defmodule Wallboard.Link.Hub do
   alias Wallboard.Collector.Proto
   alias Wallboard.Link
   alias Wallboard.Link.{Authority, Server}
-  alias Wallboard.Store
 
   @topic "link"
+  @buckets __MODULE__.Buckets
   # How long a machine gets to read "disconnected" or "back soon" before
   # its stream is closed.
   @close_after_ms 500
@@ -90,7 +90,17 @@ defmodule Wallboard.Link.Hub do
             other, seen? -> {[other], seen?}
           end)
 
-        trans = %{trans | socket_opts: socket_opts}
+        # A connection gets three seconds to finish its handshake. Until it
+        # has, it is a stranger holding one of the port's places.
+        # One counter of connections, so the limit is the limit; left alone
+        # there is one per acceptor and the port takes four times as many.
+        trans =
+          Map.merge(trans, %{
+            socket_opts: socket_opts,
+            handshake_timeout: 3_000,
+            num_conns_sups: 1
+          })
+
         %{spec | start: {m, f, [ref, transport, trans, protocol, proto]}}
 
       other ->
@@ -130,8 +140,21 @@ defmodule Wallboard.Link.Hub do
     do: GenServer.call(__MODULE__, {:attach, cert, stream, counter})
 
   @doc false
-  def hello(machine, %Proto.Hello{} = hello),
+  def hello(machine, %{} = hello),
     do: GenServer.call(__MODULE__, {:hello, machine, hello})
+
+  @doc false
+  # A machine's rate buckets: messages left, bytes left, and when that was.
+  # Full for a machine not seen since the hub started.
+  def bucket(machine, limits, now) do
+    case :ets.lookup(@buckets, machine) do
+      [{_, bucket}] -> bucket
+      [] -> {limits.message_burst * 1.0, limits.byte_burst * 1.0, now}
+    end
+  end
+
+  @doc false
+  def put_bucket(machine, bucket), do: :ets.insert(@buckets, {machine, bucket})
 
   @doc false
   def stored(machine, rows),
@@ -140,7 +163,13 @@ defmodule Wallboard.Link.Hub do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def init({dir, limits}), do: {:ok, %{dir: dir, limits: limits, streams: %{}}}
+  def init({dir, limits}) do
+    # Each machine's rate buckets (see Wallboard.Link.Server). Kept here so
+    # they outlive a stream; each stream's own process reads and writes
+    # them without waiting on this one.
+    :ets.new(@buckets, [:named_table, :public, :set])
+    {:ok, %{dir: dir, limits: limits, streams: %{}}}
+  end
 
   @impl true
   def handle_call(:dir, _from, s), do: {:reply, s.dir, s}
@@ -165,16 +194,16 @@ defmodule Wallboard.Link.Hub do
 
         Logger.info("Link: #{machine} connected.")
         broadcast({:link, :up, machine})
-        {:reply, {:ok, machine, s.limits}, put_in(s.streams[machine], entry)}
+        {:reply, {:ok, machine, s.limits, s.dir}, put_in(s.streams[machine], entry)}
 
       {:error, reason} ->
         {:reply, {:error, reason}, s}
     end
   end
 
-  def handle_call({:hello, machine, hello}, {pid, _}, s) do
-    info = %{label: hello.machine, os: hello.os, version: hello.version, folders: hello.folders}
-    Store.put_collector_machine(machine, info, System.os_time(:second))
+  # The stream's own process saved the hello already: nothing here waits
+  # on the database, so one slow write never holds every machine up.
+  def handle_call({:hello, machine, info}, {pid, _}, s) do
     broadcast({:link, :hello, machine, info})
 
     s =
@@ -187,14 +216,22 @@ defmodule Wallboard.Link.Hub do
   end
 
   def handle_call({:revoke, machine}, _from, s) do
-    result = Authority.revoke(s.dir, machine)
+    # A list of machines that is locked or cannot be read must not take
+    # the port down with it.
+    result =
+      try do
+        Authority.revoke(s.dir, machine)
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
 
-    with %{stream: stream, counter: counter, pid: pid} <- s.streams[machine] do
+    with {:ok, _} <- result,
+         %{stream: stream, counter: counter, pid: pid} <- s.streams[machine] do
       Server.send_to(stream, counter, {:disconnected, %Proto.Disconnected{}})
       Process.send_after(self(), {:close, pid}, @close_after_ms)
     end
 
-    Logger.info("Link: #{machine} was removed.")
+    if match?({:ok, _}, result), do: Logger.info("Link: #{machine} was removed.")
     {:reply, result, s}
   end
 
