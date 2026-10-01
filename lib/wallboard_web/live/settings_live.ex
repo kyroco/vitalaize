@@ -4,7 +4,9 @@ defmodule WallboardWeb.SettingsLive do
   machines that stream to this hub (and a button to disconnect one), and
   how to connect another Mac.
 
-  It shows settings and cannot change them. They are changed on the
+  It shows settings and cannot change them. What it can still do takes
+  access away and changes no setting: disconnect a machine, and make a new
+  key for the Macs that upload. They are changed on the
   machine itself, in the VitalAIze app or with `vitalaize setup` (see
   `Wallboard.Setup`), which save them and restart only what a change
   needs.
@@ -40,6 +42,7 @@ defmodule WallboardWeb.SettingsLive do
         connected?: connected?(socket),
         notice: nil,
         show_key?: false,
+        confirm_new_key?: false,
         confirm_disconnect: nil
       )
 
@@ -148,6 +151,28 @@ defmodule WallboardWeb.SettingsLive do
 
   defp event("toggle_key", _params, socket),
     do: {:noreply, assign(socket, show_key?: !socket.assigns.show_key?)}
+
+  # A new key is to the Macs that upload what Disconnect is to a machine
+  # that streams: it takes their way in away. It changes no setting, so it
+  # stays on this page.
+  defp event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
+    do: {:noreply, assign(socket, confirm_new_key?: true)}
+
+  defp event("new_key", _params, socket) do
+    Store.put_meta(
+      "ingest_token",
+      24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    )
+
+    {:noreply,
+     socket
+     |> load()
+     |> assign(
+       confirm_new_key?: false,
+       show_key?: true,
+       notice: "New key made. Run the connect command again on each other Mac."
+     )}
+  end
 
   # Disconnect takes two taps: the first asks, the second revokes the
   # machine's certificate, which closes its stream at once and refuses it
@@ -278,6 +303,11 @@ defmodule WallboardWeb.SettingsLive do
         <div class="row">
           <button class="link-button" phx-click="toggle_key">
             {if @show_key?, do: "Hide key", else: "Show key"}
+          </button>
+          <button class="link-button" phx-click="new_key">
+            {if @confirm_new_key?,
+              do: "Tap again: other Macs stop sending until reconnected",
+              else: "Make a new key"}
           </button>
         </div>
         <p class="stat-note">

@@ -333,7 +333,7 @@ enum Setup {
         # Written by the VitalAIze app when it set this Mac up. Change settings
         # in the app (Settings) or with `vitalaize setup` in a terminal: both
         # save to settings.json beside this file, and what is saved there wins
-        # over this file. Edits here are kept until the next Reconfigure.
+        # over this file. Reconfigure in the app writes this file again.
 
         """
 
@@ -354,6 +354,51 @@ enum Setup {
         }
 
         """
+    }
+
+    /// The wizard's answers as saved settings, by key. Saving them makes
+    /// settings.json agree with the settings.exs just written: a value
+    /// saved earlier, in the app or with `vitalaize setup`, would otherwise
+    /// win over the wizard's new answer.
+    static func wizardValues(_ c: Choices) -> [String: String] {
+        if c.role == .collector {
+            let found = Set(c.claudeFolders) == Set(Detect.claudeFolders())
+            return ["role": "collector",
+                    "collector.claude_dirs": found ? "" : c.claudeFolders.joined(separator: "\n")]
+        }
+        var v: [String: String] = [
+            "role": c.role == .hub ? "hub" : "both",
+            "port": String(c.port),
+            "brand.name": c.boardName,
+            "claude.config_dirs": c.claudeFolders.joined(separator: "\n"),
+            "github.repos": ([c.repo] + (c.otherRepos ?? []).filter { !$0.isEmpty && $0 != c.repo }).joined(separator: "\n"),
+            "github.branch": c.branch,
+            "korium.enabled": c.korium ? "true" : "false",
+            "codex.enabled": (c.codex ?? false) ? "true" : "false",
+            "new_relic.enabled": c.newRelic ? "true" : "false",
+            "new_relic.account_id": c.newRelicAccount,
+            "dev_power.aws_profile": c.devProfile,
+            "builds.prod_profile": c.prodProfile,
+            "alerts.phone": c.phone,
+            "alerts.via": c.textVia,
+            "archive.collect_local": c.role == .hubAndCollector ? "true" : "false",
+        ]
+        // Left out when empty: the file then keeps what it had.
+        if !c.newRelicKeyRef.isEmpty { v["new_relic.api_key_ref"] = c.newRelicKeyRef }
+        if !c.gateWorkflow.isEmpty { v["github.gate_workflow"] = c.gateWorkflow }
+        if !c.devWorkflow.isEmpty { v["github.dev_deploy"] = c.devWorkflow }
+        if !c.prodWorkflow.isEmpty { v["github.prod_deploy"] = c.prodWorkflow }
+        return v
+    }
+
+    /// Lays the wizard's answers over anything saved before. Stops the
+    /// install when one of them is not accepted.
+    static func saveWizardAnswers(_ c: Choices) throws {
+        let answer = save(wizardValues(c), dataFolder: c.dataFolder)
+        if !answer.ok {
+            let why = (answer.errors ?? [:]).sorted { $0.key < $1.key }.map { $0.value }
+            throw Failure.step((why.isEmpty ? answer.lines ?? [] : why).joined(separator: " "))
+        }
     }
 
     // MARK: Installing
@@ -383,6 +428,7 @@ enum Setup {
             }
             say("Writing the board's settings")
             try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+            try saveWizardAnswers(c)
 
             if c.replaceOldBoard && Detect.oldLoginItemInstalled {
                 say("Stopping the board you started by hand before")
@@ -404,6 +450,7 @@ enum Setup {
         if c.role == .collector {
             say("Writing the collector's settings")
             try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+            try saveWizardAnswers(c)
 
             say("Starting the collector, and setting it to start when you log in")
             try startBoard(c)
@@ -558,9 +605,10 @@ enum Setup {
     /// as there is one; the call returns when the owner has approved or
     /// refused it on the hub, or the code ran out (ten minutes).
     static func pair(hub: String, dataFolder folder: String? = nil, onCode: @escaping (PairCode) -> Void) -> PairAnswer {
-        // The address goes in as one word; an address has no spaces.
-        let address = hub.trimmingCharacters(in: .whitespaces)
-        guard !address.contains(" ") else { return PairAnswer(ok: false, message: "That is not a board's address.", machine: nil) }
+        // The address goes in as one word; an address has no spaces, tabs or
+        // line ends.
+        let address = hub.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard address.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return PairAnswer(ok: false, message: "That is not a board's address.", machine: nil) }
         let data = engine(["pair"] + (address.isEmpty ? [] : [address]), dataFolder: folder, timeout: 660) { line in
             if line.hasPrefix("VITALAIZE_CODE"), let json = line.dropFirst(14).data(using: .utf8),
                let code = try? JSONDecoder().decode(PairCode.self, from: json) {

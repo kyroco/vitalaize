@@ -129,27 +129,24 @@ defmodule Wallboard.Setup.Service do
   # settings file being changed here.
   defp ours?({out, 0}) do
     case Regex.run(~r/WALLBOARD_SETTINGS(?: => |=)(.+?)(?: [A-Z_]+=|$)/m, out) do
-      [_, path] -> Path.expand(String.trim(path)) == settings_file()
+      [_, path] -> real(String.trim(path)) == real(Wallboard.Settings.file_place())
       _ -> false
     end
   end
 
   defp ours?(_), do: false
 
-  # Where the settings file is looked for from here, there or not.
-  defp settings_file do
-    cond do
-      path = env("WALLBOARD_SETTINGS") -> Path.expand(path)
-      root = env("RELEASE_ROOT") -> Path.join(Path.expand(root), "settings.exs")
-      true -> Path.join(File.cwd!(), "settings.exs")
-    end
-  end
+  # A file's path with the links in its folder followed, so one folder
+  # reached by two names is still one folder.
+  defp real(path) do
+    path = Path.expand(path)
 
-  defp env(name) do
-    case System.get_env(name) do
-      value when is_binary(value) and value != "" -> value
-      _ -> nil
+    case System.cmd("/bin/sh", ["-c", ~s(cd "$1" 2>/dev/null && pwd -P), "sh", Path.dirname(path)]) do
+      {dir, 0} -> Path.join(String.trim_trailing(dir, "\n"), Path.basename(path))
+      _ -> path
     end
+  rescue
+    _ -> path
   end
 
   defp done({_, 0}), do: :ok

@@ -234,18 +234,29 @@ final class AppState: ObservableObject {
     /// Looks again at what runs here: the board answering on its port or
     /// the collector's login item, and the settings as they are now.
     func refreshStatus() {
-        let runsBoard = choices.role.runsBoard
+        let wizardRunsBoard = choices.role.runsBoard
+        let knownPort = choices.port
         DispatchQueue.global().async {
             let doc = Setup.settingsDoc()
+            let runsBoard = doc.map { $0.role != "collector" } ?? wizardRunsBoard
             // The port may have been changed here or with vitalaize setup.
             let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
-            let up = runsBoard ? Setup.boardRunning(port: port ?? self.choices.port) : Setup.serviceRunning()
+            let up = runsBoard ? Setup.boardRunning(port: port ?? knownPort) : Setup.serviceRunning()
             DispatchQueue.main.async {
                 if let port { self.choices.port = port }
-                if let doc { self.doc = doc }
+                if let doc { self.take(doc) }
                 self.running = up
             }
         }
+    }
+
+    /// Keeps the settings as read, and with them what this Mac does now:
+    /// the role may have been changed with `vitalaize setup` since the
+    /// wizard ran.
+    func take(_ doc: SettingsDoc) {
+        self.doc = doc
+        let role: Role = doc.role == "collector" ? .collector : (doc.role == "hub" ? .hub : .hubAndCollector)
+        if role != choices.role { choices.role = role }
     }
 
     // MARK: Settings, saved here with no browser
@@ -263,7 +274,7 @@ final class AppState: ObservableObject {
             let doc = Setup.settingsDoc()
             DispatchQueue.main.async {
                 self.busy = false
-                self.doc = doc
+                if let doc { self.take(doc) } else { self.doc = nil }
                 self.edits = [:]
                 if doc == nil { self.saveLines = ["The settings could not be read. The log is at \(Setup.logFile.path)."] }
             }
@@ -292,7 +303,7 @@ final class AppState: ObservableObject {
                 self.saveLines = answer.lines ?? []
                 self.saveErrors = answer.errors ?? [:]
                 if answer.ok {
-                    if let doc { self.doc = doc }
+                    if let doc { self.take(doc) }
                     self.edits = [:]
                     // A restarted board takes a few seconds to answer again.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.refreshStatus() }

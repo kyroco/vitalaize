@@ -638,10 +638,16 @@ struct SettingsView: View {
 
             if let doc = state.doc {
                 Form {
-                    ForEach(doc.sections) { section in
+                    // What this Mac does is changed with Reconfigure, which
+                    // also writes the files that go with a role.
+                    ForEach(doc.sections.filter { $0.title != "This machine" }) { section in
                         Section(section.title) {
                             ForEach(section.fields) { field in SettingRow(field: field) }
                         }
+                    }
+                    Section {
+                        Text("To change what this Mac does (board, collector or both), go back and use Reconfigure.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .formStyle(.grouped)

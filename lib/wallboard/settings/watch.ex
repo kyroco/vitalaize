@@ -71,10 +71,11 @@ defmodule Wallboard.Settings.Watch do
     if state.listener, do: send(state.listener, {:settings, :reloaded})
   rescue
     e ->
-      Logger.warning(
-        "The saved settings could not be read, so the earlier ones stay. " <>
-          Exception.message(e)
-      )
+      # Our own messages name the file and what is wrong with it. Any other
+      # error may quote a line of the settings file, which can hold a
+      # password, so only its kind is logged.
+      why = if is_struct(e, ArgumentError), do: Exception.message(e), else: inspect(e.__struct__)
+      Logger.warning("The settings could not be read, so the earlier ones stay. #{why}")
 
       if state.listener, do: send(state.listener, {:settings, :unreadable})
   end

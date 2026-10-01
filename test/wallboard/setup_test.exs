@@ -305,6 +305,164 @@ defmodule Wallboard.SetupTest do
     end
   end
 
+  describe "a save touches only what it was given" do
+    test "a role changed to hub and back leaves this machine saving its own sessions", %{
+      dir: dir,
+      saved: saved
+    } do
+      settings_file(dir)
+      assert Settings.load!().archive.collect_local
+
+      assert {:ok, _} = Setup.save(%{"role" => "hub"}, mac())
+      assert saved_json(saved) == %{"role" => "hub"}
+
+      # Anything saved while it is a hub does not write the hub's forced
+      # "off" down as the person's choice either.
+      assert {:ok, _} = Setup.save(%{"brand.name" => "Hall"}, mac())
+      assert saved_json(saved) == %{"role" => "hub", "brand" => %{"name" => "Hall"}}
+
+      assert {:ok, result} = Setup.save(%{"role" => "both"}, mac())
+      assert saved_json(saved) == %{"brand" => %{"name" => "Hall"}}
+      assert Settings.get().role == :both
+      assert Settings.get().archive.collect_local
+      assert [:role] in Enum.map(result.changed, & &1.path)
+    end
+
+    test "a value in settings.exs the form would not take does not block a save", %{dir: dir} do
+      settings_file(dir, """
+      alerts: %{via: "sms"},
+      new_relic: %{region: "US", account_id: 1_234_567},
+      brand: %{name: " Acme "},
+      """)
+
+      assert {:ok, result} = Setup.save(%{"rotate_seconds" => "9"}, mac())
+      assert [%{path: [:rotate_seconds]}] = result.changed
+      # And none of them was rewritten.
+      assert %{alerts: %{via: "sms"}, new_relic: %{region: "US", account_id: 1_234_567}} =
+               Settings.get()
+
+      assert Settings.get().brand.name == " Acme "
+    end
+
+    test "a collector told to watch no Claude folder still watches none after another save", %{
+      dir: dir,
+      saved: saved
+    } do
+      File.write!(Path.join(dir, "settings.exs"), """
+      %{role: "collector", collector: %{dir: #{inspect(Path.join(dir, "collector"))}, claude_dirs: []}}
+      """)
+
+      assert {:ok, result} = Setup.save(%{"collector.codex_dirs" => "/tmp/codex"}, mac())
+      assert Settings.get().collector.claude_dirs == []
+      assert saved_json(saved) == %{"collector" => %{"codex_dirs" => ["/tmp/codex"]}}
+      assert [%{path: [:collector, :codex_dirs]}] = result.changed
+    end
+
+    test "saving nothing changes nothing", %{dir: dir, saved: saved} do
+      settings_file(dir, "new_relic: %{account_id: 1_234_567},")
+      assert {:ok, result} = Setup.save(%{}, mac())
+      assert result.changed == []
+      assert Setup.report(result) == ["Nothing changed."]
+      assert saved_json(saved) == %{}
+    end
+
+    test "a value set back to what the file says leaves the saved file", %{dir: dir, saved: saved} do
+      settings_file(dir)
+      assert {:ok, _} = Setup.save(%{"rotate_seconds" => "9", "brand.name" => "Hall"}, mac())
+      assert {:ok, _} = Setup.save(%{"rotate_seconds" => "30"}, mac())
+      assert saved_json(saved) == %{"brand" => %{"name" => "Hall"}}
+    end
+
+    test "a role that WALLBOARD_ROLE overrules is refused, not saved for later", %{
+      dir: dir,
+      saved: saved
+    } do
+      settings_file(dir)
+      System.put_env("WALLBOARD_ROLE", "both")
+      assert {:error, %{"role" => message}} = Setup.save(%{"role" => "collector"}, mac())
+      assert message =~ "WALLBOARD_ROLE is set to both"
+      refute File.exists?(saved)
+      assert {:ok, _} = Setup.save(%{"role" => "both", "rotate_seconds" => "9"}, mac())
+    end
+
+    test "the app's wizard run again wins over what was saved before", %{dir: dir, saved: saved} do
+      settings_file(dir)
+      assert {:ok, _} = Setup.save(%{"role" => "hub", "port" => "5000", "token" => "pw"}, mac())
+
+      # Reconfigure: the app writes settings.exs again, then saves the same
+      # answers, as macos/Wallboard/Setup.swift wizardValues does.
+      File.write!(Path.join(dir, "settings.exs"), """
+      %{
+        role: "collector",
+        collector: %{dir: #{inspect(Path.join(dir, "collector"))}}
+      }
+      """)
+
+      assert Settings.load!().role == :hub
+      answers = %{"role" => "collector", "collector.claude_dirs" => ""}
+      assert {:ok, result} = Setup.save(answers, mac())
+      assert result.role == :collector
+      # What the wizard did not ask about stays saved.
+      assert saved_json(saved) == %{"port" => 5000, "token" => "pw"}
+    end
+
+    test "something that is not a setting is refused", %{dir: dir, saved: saved} do
+      settings_file(dir)
+
+      assert {:error, %{"archive.path" => _}} =
+               Setup.save(%{"archive.path" => "/tmp/x.db"}, mac())
+
+      refute File.exists?(saved)
+    end
+
+    test "the New Relic key itself is not taken where its 1Password address goes", %{dir: dir} do
+      settings_file(dir)
+
+      assert {:error, %{"new_relic.api_key_ref" => message}} =
+               Setup.save(%{"new_relic.api_key_ref" => "NRAK-ABC123"}, mac())
+
+      assert message =~ "op://"
+      assert {:ok, _} = Setup.save(%{"new_relic.api_key_ref" => "op://Private/NR/key"}, mac())
+    end
+  end
+
+  describe "which service is this machine's" do
+    test "a service started through a linked folder is still found and restarted", %{dir: dir} do
+      settings_file(dir)
+      link = dir <> "-link"
+      File.ln_s!(dir, link)
+      on_exit(fn -> File.rm(link) end)
+
+      # The service was set up with the linked name; setup runs with the real one.
+      linked = [os: {:unix, :linux}, run: service(:running, Path.join(link, "settings.exs"))]
+      assert {:ok, result} = Setup.save(%{"port" => "4999"}, linked)
+      assert result.service == :restarted
+      assert restarts() == [{"systemctl", ["--user", "restart", "vitalaize.service"]}]
+    end
+
+    test "run from a release inside a checkout, it saves beside the settings.exs in use", %{
+      dir: dir,
+      saved: saved
+    } do
+      # scripts/systemd.sh in a checkout: the service names the checkout's
+      # settings.exs, and the release's own folder is somewhere under it.
+      settings_file(dir)
+      release = Path.join(dir, "_build/prod/rel/wallboard")
+      File.mkdir_p!(release)
+      System.delete_env("WALLBOARD_SETTINGS")
+      System.put_env("RELEASE_ROOT", release)
+
+      File.cd!(dir, fn ->
+        running = [os: {:unix, :linux}, run: service(:running, Path.join(dir, "settings.exs"))]
+        assert {:ok, result} = Setup.save(%{"port" => "4999"}, running)
+        assert Path.expand(result.path) |> Path.basename() == "settings.json"
+        assert File.exists?(saved)
+        refute File.exists?(Path.join(release, "settings.json"))
+        assert result.service == :restarted
+      end)
+    end
+  end
+
   describe "the app and the terminal command share one format" do
     test "each can change what the other saved", %{dir: dir, saved: saved} do
       settings_file(dir)
@@ -530,7 +688,7 @@ defmodule Wallboard.SetupTest do
         assigns: %{__changed__: %{}, allowed?: true, who: %{local?: true}, settings: settings}
       }
 
-      for event <- ["save", "restart", "new_key"] do
+      for event <- ["save", "restart", "validate"] do
         assert {:noreply, _} =
                  SettingsLive.handle_event(event, %{"s" => %{"brand.name" => "Hacked"}}, socket)
       end

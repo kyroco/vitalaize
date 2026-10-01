@@ -376,25 +376,22 @@ defmodule Wallboard.Settings do
 
   @doc """
   Where the saved settings live: the path in WALLBOARD_SAVED_SETTINGS, or
-  settings.json in the folder the settings file is looked for in (the
-  folder of WALLBOARD_SETTINGS when that is set, else the release folder,
-  else the current folder).
+  settings.json beside the settings file (see `file_place/0`).
   """
   def saved_path do
-    env = fn name ->
-      case System.get_env(name) do
-        value when is_binary(value) and value != "" -> value
-        _ -> nil
-      end
-    end
-
-    cond do
-      path = env.("WALLBOARD_SAVED_SETTINGS") -> Path.expand(path)
-      path = env.("WALLBOARD_SETTINGS") -> path |> Path.expand() |> Path.dirname() |> saved_in()
-      root = env.("RELEASE_ROOT") -> saved_in(root)
-      true -> saved_in(File.cwd!())
+    case System.get_env("WALLBOARD_SAVED_SETTINGS") do
+      path when is_binary(path) and path != "" -> Path.expand(path)
+      _ -> file_place() |> Path.dirname() |> saved_in()
     end
   end
+
+  @doc """
+  The settings file this machine uses: the one `path/0` finds or, when
+  there is none, the first place it would be looked for. The saved
+  settings sit beside it, and a service belongs to these settings when it
+  was started with this file (see `Wallboard.Setup.Service`).
+  """
+  def file_place, do: path() || hd(places())
 
   defp saved_in(dir), do: Path.join(dir, "settings.json")
 
@@ -420,8 +417,64 @@ defmodule Wallboard.Settings do
   end
 
   @doc """
-  Writes the saved settings (what `check/2` returned against
-  `under_saved/0`) and reloads. Only this user can read the file: it may
+  Lays the given values (text, keyed by path, like `"alerts.phone"`) over
+  the saved settings and returns `{:ok, saved}` to hand to `save!/1`, or
+  `{:error, %{path => message}}`.
+
+  Only the fields given are looked at. A value that is the same as what
+  is under the saved settings (`under`, from `under_saved/0`) is taken out
+  of them; any other is put in. Everything else saved stays as it is, and
+  nothing the settings file holds is checked or copied, so a value there
+  that this form would not take never stands in the way of a save. A
+  secret given as `kept/0` (the dots) is left alone.
+  """
+  def change(values, under) do
+    fields = for {_, fs} <- editable(), f <- fs, into: %{}, do: {Enum.join(elem(f, 0), "."), f}
+
+    Enum.reduce(values, {read_saved!(), %{}}, fn {key, raw}, {saved, errors} ->
+      case fields[key] do
+        nil ->
+          {saved, Map.put(errors, key, "#{key} is not a setting")}
+
+        {path, label, type, _, _} ->
+          case if(type == :secret and raw == kept(), do: :kept, else: parse(type, raw, path)) do
+            :kept ->
+              {saved, errors}
+
+            {:ok, value} ->
+              if value == current(under, path, type),
+                do: {drop_path(saved, path), errors},
+                else: {put_path(saved, path, value), errors}
+
+            {:error, msg} ->
+              {saved, Map.put(errors, key, "#{label}: #{msg}")}
+          end
+      end
+    end)
+    |> case do
+      {saved, errors} when errors == %{} -> {:ok, saved}
+      {_, errors} -> {:error, errors}
+    end
+  end
+
+  # Takes a value out, and with it any map left empty above it.
+  defp drop_path(map, [k]), do: Map.delete(map, k)
+
+  defp drop_path(map, [k | rest]) do
+    case Map.get(map, k) do
+      %{} = inner ->
+        case drop_path(inner, rest) do
+          empty when empty == %{} -> Map.delete(map, k)
+          left -> Map.put(map, k, left)
+        end
+
+      _ ->
+        map
+    end
+  end
+
+  @doc """
+  Writes the saved settings (what `change/2` returned) and reloads. Only this user can read the file: it may
   hold the board password and alert keys.
   """
   def save!(overrides) do
@@ -723,6 +776,9 @@ defmodule Wallboard.Settings do
           not (value =~ ~r/^[\w.-]+$/) ->
         {:error, "use a profile name from ~/.aws/config"}
 
+      path == [:new_relic, :api_key_ref] and not String.starts_with?(value, "op://") ->
+        {:error, "use the op:// address from 1Password, not the key itself"}
+
       path == [:archive, :hub_url] and not (value =~ ~r{^https?://[^\s/]+}) ->
         {:error, "use an address like http://192.168.1.20:4747"}
 
@@ -884,13 +940,17 @@ defmodule Wallboard.Settings do
   @doc "Replaces the cached settings. Used by tests."
   def put(settings), do: :persistent_term.put(@key, merge(@defaults, settings) |> normalize())
 
-  def path do
+  def path, do: Enum.find(places(), &File.regular?/1)
+
+  # Where the settings file is looked for, in order.
+  defp places do
     [
       System.get_env("WALLBOARD_SETTINGS"),
       System.get_env("RELEASE_ROOT") && Path.join(System.get_env("RELEASE_ROOT"), "settings.exs"),
       Path.join(File.cwd!(), "settings.exs")
     ]
-    |> Enum.find(&(&1 && File.regular?(&1)))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.map(&Path.expand/1)
   end
 
   @doc "Deep merge, where the file's values win and lists replace lists."

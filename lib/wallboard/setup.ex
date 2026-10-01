@@ -48,6 +48,7 @@ defmodule Wallboard.Setup do
   Saves the given values (text, keyed by path, like `"alerts.phone"`) over
   the settings as they are; anything not given stays. Returns
   `{:ok, result}` or `{:error, %{path => message}}`, with nothing saved.
+  Only the settings given are checked and changed (`Settings.change/2`).
 
   The result is `plan/2`'s map plus `path` (the file written), `role` and
   `service`: `:untouched` (nothing needed a restart), `:restarted`,
@@ -56,10 +57,10 @@ defmodule Wallboard.Setup do
   """
   def save(values, opts \\ []) do
     before = Settings.load!()
-    full = before |> Settings.shown() |> Map.merge(values) |> Settings.unmask(before, before)
 
-    with {:ok, overrides} <- Settings.check(full, Settings.under_saved()) do
-      now = Settings.save!(overrides)
+    with :ok <- role_is_ours(values),
+         {:ok, saved} <- Settings.change(values, Settings.under_saved()) do
+      now = Settings.save!(saved)
       plan = plan(before, now)
 
       service =
@@ -69,6 +70,26 @@ defmodule Wallboard.Setup do
         end
 
       {:ok, Map.merge(plan, %{path: Settings.saved_path(), role: now.role, service: service})}
+    end
+  end
+
+  # WALLBOARD_ROLE wins over anything saved. Saving another role under it
+  # would change nothing here and then surprise a start without it.
+  defp role_is_ours(values) do
+    case {System.get_env("WALLBOARD_ROLE"), values["role"]} do
+      {env, role} when is_binary(env) and env != "" and is_binary(role) ->
+        if String.trim(env) == String.trim(role),
+          do: :ok,
+          else:
+            {:error,
+             %{
+               "role" =>
+                 "What this machine does: WALLBOARD_ROLE is set to #{String.trim(env)} here and " <>
+                   "wins over this. Take it out of the environment to change the role."
+             }}
+
+      _ ->
+        :ok
     end
   end
 
@@ -195,12 +216,19 @@ defmodule Wallboard.Setup do
           _ -> {:error, "Usage: vitalaize setup"}
         end
       rescue
+        # Our own messages say what to do. Anything else may quote a line
+        # of the settings file, which can hold a password.
         e in ArgumentError -> {:error, Exception.message(e)}
+        e -> {:error, "VitalAIze setup stopped: #{inspect(e.__struct__)}"}
       end
 
     case result do
       {:error, message} when is_binary(message) ->
-        IO.puts(:stderr, message)
+        # The app waits for an answer line, so it gets one.
+        if match?(["--json" | _], args),
+          do: emit([], %{ok: false, message: message, lines: [message]}),
+          else: IO.puts(:stderr, message)
+
         System.halt(1)
 
       {:error, _} ->
@@ -596,9 +624,11 @@ defmodule Wallboard.Setup do
 
       {:error, message} when is_binary(message) ->
         emit(opts, %{ok: false, message: message})
+        {:error, :not_paired}
 
       {:error, reason} ->
         emit(opts, %{ok: false, message: Pairing.why(reason)})
+        {:error, :not_paired}
     end
   end
 

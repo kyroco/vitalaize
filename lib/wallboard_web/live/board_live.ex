@@ -50,6 +50,17 @@ defmodule WallboardWeb.BoardLive do
     end
   end
 
+  # The VitalAIze app or `vitalaize setup` saved a setting: a board left
+  # open shows it (its name, its time zone, how fast the pages turn) with
+  # no reload.
+  defp take_up_settings(socket) do
+    settings = Settings.get()
+
+    if settings == socket.assigns.settings,
+      do: socket,
+      else: assign(socket, settings: settings, tabs: tabs(settings))
+  end
+
   defp mount_board(socket, session) do
     settings = Settings.get()
 
@@ -155,8 +166,10 @@ defmodule WallboardWeb.BoardLive do
     {:noreply, if(key, do: assign(socket, key, meta), else: socket)}
   end
 
-  def handle_info(:tick, socket),
-    do: {:noreply, socket |> assign(now: now()) |> derive_sessions() |> derive_github()}
+  def handle_info(:tick, socket) do
+    {:noreply,
+     socket |> take_up_settings() |> assign(now: now()) |> derive_sessions() |> derive_github()}
+  end
 
   # A collector saved a round: an open Archive or Trends tab shows it.
   def handle_info({:archive, _}, socket) do
