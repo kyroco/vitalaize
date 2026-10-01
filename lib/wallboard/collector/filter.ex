@@ -41,7 +41,12 @@ defmodule Wallboard.Collector.Filter do
   ## Positions, and why a repeat is harmless
 
   Every event names its session, its file and the byte just past the line
-  it came from. All of a line's items travel in that one event, so a line
+  it came from, and carries that line's time. Two exceptions, both in Codex
+  files: the lines before a session's first turn carry no time (`at` is
+  0), and the lines of a
+  chat the Codex app copied in carry the time the conversation happened,
+  not the moment of the copy (see `Wallboard.Archive.CodexTranscript`).
+  All of a line's items travel in that one event, so a line
   reaches the hub whole or not at all. The hub keeps the highest position
   per session and file and sends it back in `Resume`, and the collector
   sends only the events past it.
@@ -84,7 +89,8 @@ defmodule Wallboard.Collector.Filter do
 
     * the session title
     * the first and last prompt, clipped the way the readers clip them
-      (300 characters for Claude, 500 for Codex). The last prompt is the
+      (300 characters for Claude, 500 for Codex), including what the
+      person typed in a Codex file of the older shape. The last prompt is the
       latest one so far, so over a live session each prompt leaves once,
       clipped, while it is the latest
     * the folder and the git branch

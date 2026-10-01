@@ -18,6 +18,11 @@ defmodule Wallboard.Collector.Watcher do
       since Codex writes nothing to a session file while it waits
 
   Every session is reported, whatever folder or repository it works in.
+  One kind of Codex file is not a session: a chat the Codex app copied in
+  from another tool. It never gets a live status. When it is the copy of a
+  Claude session in a folder watched here, it is not sent at all, since
+  that session goes out from its own file; it is sent, whole, once someone
+  carries it on in Codex (see `Wallboard.Sources.Codex.claude_copy?/3`).
 
   ## The folders
 
@@ -88,6 +93,8 @@ defmodule Wallboard.Collector.Watcher do
   # How often the folders are searched for files not seen before. Known
   # files that changed lately are checked every `collector.poll_seconds`.
   @search_ms 10_000
+  # How long a chat just copied in waits for Codex's list to name it.
+  @copy_wait 5
   @warm_seconds 30 * 60
 
   def start_link(opts) do
@@ -207,6 +214,10 @@ defmodule Wallboard.Collector.Watcher do
       unready: %{},
       skip: MapSet.new(),
       titles: {nil, %{}},
+      # The chats the Codex app copied in from Claude sessions watched
+      # here, and the time and size of Codex's lists they were read from.
+      copies: %{},
+      copies_stamp: nil,
       # The Codex hook's notes, and the sessions with an approval request out.
       notes: %{},
       notes_read: %{},
@@ -530,6 +541,7 @@ defmodule Wallboard.Collector.Watcher do
 
     state =
       %{look(state, settings, now_s) | full?: false, read?: false}
+      |> copies()
       |> notes(settings, now)
 
     state =
@@ -627,6 +639,28 @@ defmodule Wallboard.Collector.Watcher do
     }
   end
 
+  # Codex's lists of the chats it copied in, read again when one changed.
+  # Looked at on every round, not only on a search: Codex writes its list
+  # just after the files, and a new file waits only a few seconds for it.
+  defp copies(state) do
+    stamp =
+      Enum.map(state.folders.codex, fn dir ->
+        case File.stat(Codex.imports_file(dir), time: :posix) do
+          {:ok, s} -> {s.size, s.mtime}
+          _ -> nil
+        end
+      end)
+
+    if stamp == state.copies_stamp do
+      state
+    else
+      copies = Codex.claude_copies(state.folders.codex, state.folders.claude)
+      %{state | copies: copies, copies_stamp: stamp}
+    end
+  rescue
+    _ -> state
+  end
+
   # The Codex hook's notes, read before the files: a session with an
   # approval request out keeps its file in memory however quiet it is.
   defp notes(%{folders: %{codex: []}} = state, _settings, _now),
@@ -716,6 +750,10 @@ defmodule Wallboard.Collector.Watcher do
       :skip ->
         %{state | skip: MapSet.put(state.skip, path)}
 
+      # Looked at again on the next round.
+      :wait ->
+        state
+
       entry ->
         state = %{state | open: Map.put(state.open, path, entry)}
         pump(state, path, info.size)
@@ -780,21 +818,42 @@ defmodule Wallboard.Collector.Watcher do
     end
   end
 
-  defp context(state, path, %{tool: :codex, dir: dir}) do
+  defp context(state, path, %{tool: :codex, dir: dir, mtime: mtime}) do
     case codex_head(path) do
       {id, parent, _nickname} when is_binary(id) and (is_nil(parent) or is_binary(parent)) ->
-        %{
-          tool: :codex,
-          session_id: parent || id,
-          file: Path.relative_to(path, Path.join(dir, "sessions")),
-          subagent: parent != nil,
-          account: Archive.codex_account(dir),
-          title: if(parent, do: nil, else: elem(state.titles, 1)[id])
-        }
+        cond do
+          # A chat the Codex app copied in from a Claude session this
+          # collector sends anyway is not sent a second time. It is looked
+          # at again once it has grown, which is someone carrying it on in
+          # Codex.
+          Codex.claude_copy?(state.copies, id, mtime) ->
+            nil
+
+          # Codex writes its list just after the files. A copy only just
+          # written waits until the list has had time to name it.
+          DateTime.to_unix(state.now.()) - mtime < @copy_wait and copy?(path) ->
+            :wait
+
+          true ->
+            %{
+              tool: :codex,
+              session_id: parent || id,
+              file: Path.relative_to(path, Path.join(dir, "sessions")),
+              subagent: parent != nil,
+              account: Archive.codex_account(dir),
+              title: if(parent, do: nil, else: elem(state.titles, 1)[id])
+            }
+        end
 
       _ ->
         nil
     end
+  end
+
+  defp copy?(path) do
+    CodexTranscript.copy?(CodexTranscript.read_file(path))
+  rescue
+    _ -> false
   end
 
   # A Codex file's first line, when it is whole and of a sane length.

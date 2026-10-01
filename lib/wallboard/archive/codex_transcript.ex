@@ -24,7 +24,45 @@ defmodule Wallboard.Archive.CodexTranscript do
       shell commands (`CommandExecution`, `failed` when they fail), file
       edits (`FileChange`, with a unified diff per file), MCP calls
       (`McpToolCall`, including Korium) and compactions
+
+  ## A chat the Codex app copied in
+
+  The Codex app can import chats from another tool (it took 44 Claude Code
+  sessions at once on 2026-10-01, Codex 0.159.2). Each becomes a session
+  file written in one go, so every line is stamped with the moment of the
+  copy, within a second. Nobody is running it. What tells such a file from
+  a session at work is each turn's own clock: `task_started` carries
+  `started_at` and `task_complete` carries `completed_at`, in seconds since
+  1970. Codex writes those lines as the turn starts and ends, so in a real
+  session they are within a second of the line's stamp (measured), and in a
+  copy they are hours or days before it.
+
+  So a turn line whose own clock is more than a minute behind its stamp
+  was copied in, and the lines stamped with it take the conversation's own
+  time instead: the session's first and last times are when it happened,
+  not when it was copied. For that to hold whatever a file starts with, a
+  session's times begin at its first turn line; the lines before it (the
+  first line, and a `turn_context` or the like) set none. `copy?/1` is true
+  while the file holds nothing but the copy. Once someone carries the chat
+  on in Codex, a turn is written as it happens and later lines have later
+  stamps, and it is a session like any other.
+
+  A copied file is in the older shape (`history_mode` "legacy"): what the
+  person typed is an `event_msg` `user_message`, a finished turn has no
+  `duration_ms`, and there is no `token_usage_record` at all, only one
+  `token_count` at the end whose `total_token_usage.total_tokens` is the
+  whole chat's tokens with every part (input, cached, output) at 0. That
+  total is kept as `total_tokens`. It cannot be split by kind, so a saved
+  session of this shape has no token rows.
   """
+
+  # A turn line whose own clock is this far behind its stamp was copied in.
+  @copied_seconds 60
+  # Lines stamped within this of a copied turn line belong to the same copy.
+  @burst_seconds 5
+  # A turn line whose own clock is within this of its stamp was written as
+  # the turn happened (measured: under a second).
+  @lived_seconds 2
 
   alias Wallboard.Archive.Transcript
 
@@ -39,9 +77,38 @@ defmodule Wallboard.Archive.CodexTranscript do
       last_context: nil,
       plan_used: nil,
       running: false,
-      turn_started_at: nil
+      turn_started_at: nil,
+      legacy: false,
+      total_tokens: nil,
+      # The stamp of the last line, and for a copied-in chat the stamp of
+      # its last copied turn line and that turn's own time.
+      stamped_at: nil,
+      copied_at: nil,
+      clock: nil,
+      # Whether a turn line has been read, and whether one of them was
+      # written by a session at work (its clock agrees with its stamp).
+      turned: false,
+      lived: false
     })
   end
+
+  @doc """
+  True for a file that holds only a chat the Codex app copied in: no turn
+  in it was written as it happened, and nothing was written after the
+  copy. See the module doc.
+  """
+  def copy?(%{lived: false, copied_at: %DateTime{} = copied, stamped_at: %DateTime{} = stamped}),
+    do: DateTime.diff(stamped, copied) <= @burst_seconds
+
+  def copy?(_), do: false
+
+  @doc """
+  A Codex session's id as a card shows it: its last 8 characters. The ids
+  start with the time, so sessions made close together share their first 8.
+  """
+  def short_id(id) when is_binary(id) and byte_size(id) > 8, do: String.slice(id, -8, 8)
+  def short_id(id) when is_binary(id), do: id
+  def short_id(_), do: ""
 
   @doc "Reads a whole file into a tally."
   def read_file(path) do
@@ -103,10 +170,80 @@ defmodule Wallboard.Archive.CodexTranscript do
     end
   end
 
-  defp entry(type, p, at, t) do
-    t = %{t | first_at: t.first_at || at, last_at: at || t.last_at}
+  defp entry(type, p, stamp, t) do
+    t = turn_line(type, p, stamp, t)
+    at = if near?(stamp, t.copied_at), do: t.clock, else: stamp
+    t = %{t | stamped_at: stamp || t.stamped_at}
+
+    # The lines before the first turn come before anything says whether the
+    # file is a copy, so the session's times start with its first turn
+    # line, which Codex writes in the same moment as the lines before it.
+    # A copy's would be the moment of the copy.
+    t = if t.turned, do: %{t | first_at: t.first_at || at, last_at: at || t.last_at}, else: t
     entry_body(type, p, at, t)
   end
+
+  @turn_lines ["task_started", "task_complete", "turn_aborted"]
+
+  # Notes a line that starts or ends a turn. One whose own clock is far
+  # behind its stamp was copied in; one whose clock agrees with its stamp
+  # was written by a session at work, and a file with such a line is never
+  # only a copy.
+  defp turn_line("event_msg", %{"type" => kind} = p, stamp, t) when kind in @turn_lines do
+    t = %{t | turned: true}
+
+    case own_time(kind, p) do
+      %DateTime{} = own when not is_nil(stamp) ->
+        behind = DateTime.diff(stamp, own)
+
+        cond do
+          # A chat can be copied in the very second its last turn ended: a
+          # line stamped in the same second as copied ones is one of them
+          # however near its clock (each real copy was written within a
+          # tenth of a second). A turn someone starts a few seconds after
+          # the copy is not.
+          behind > @copied_seconds or same_copy?(stamp, t.copied_at) ->
+            %{t | copied_at: stamp, clock: own}
+
+          behind <= @lived_seconds ->
+            %{t | lived: true}
+
+          true ->
+            t
+        end
+
+      _ ->
+        t
+    end
+  end
+
+  # A reply's tokens are only ever written by a session at work, so the
+  # session's times have begun by then whatever came before, and the reply
+  # keeps its time.
+  defp turn_line("token_usage_record", _p, _stamp, t), do: %{t | turned: true}
+  defp turn_line(_type, _p, _stamp, t), do: t
+
+  # A turn's own time: when it started on the line that starts it, when it
+  # ended on the line that ends it.
+  defp own_time("task_started", %{"started_at" => s}), do: unix(s)
+  defp own_time("task_started", _p), do: nil
+  defp own_time(_kind, %{"completed_at" => s}), do: unix(s)
+  defp own_time(_kind, _p), do: nil
+
+  defp near?(%DateTime{} = a, %DateTime{} = b), do: abs(DateTime.diff(a, b)) <= @burst_seconds
+  defp near?(_, _), do: false
+
+  defp same_copy?(%DateTime{} = a, %DateTime{} = b), do: abs(DateTime.diff(a, b)) <= 1
+  defp same_copy?(_, _), do: false
+
+  defp unix(s) when is_integer(s) do
+    case DateTime.from_unix(s) do
+      {:ok, at} -> at
+      _ -> nil
+    end
+  end
+
+  defp unix(_), do: nil
 
   defp entry_body("session_meta", p, _at, t) do
     spawn = spawn_of(p)
@@ -122,7 +259,8 @@ defmodule Wallboard.Archive.CodexTranscript do
         cwd: p["cwd"],
         version: p["cli_version"],
         git_branch: git["branch"],
-        context_window: int_or_nil(p["context_window"]) || t.context_window
+        context_window: int_or_nil(p["context_window"]) || t.context_window,
+        legacy: t.legacy or p["history_mode"] == "legacy"
     }
   end
 
@@ -163,7 +301,7 @@ defmodule Wallboard.Archive.CodexTranscript do
   defp event("task_started", _p, at, t), do: %{t | running: true, turn_started_at: at}
 
   defp event("task_complete", p, _at, t),
-    do: %{t | running: false, turns: t.turns + 1, turn_ms: t.turn_ms + int(p["duration_ms"])}
+    do: %{t | running: false, turns: t.turns + 1, turn_ms: t.turn_ms + turn_ms(p)}
 
   defp event("turn_aborted", p, _at, t),
     do: %{
@@ -171,8 +309,13 @@ defmodule Wallboard.Archive.CodexTranscript do
       | running: false,
         turns: t.turns + 1,
         aborted: t.aborted + 1,
-        turn_ms: t.turn_ms + int(p["duration_ms"])
+        turn_ms: t.turn_ms + turn_ms(p)
     }
+
+  # The older shape writes what the person typed as a line of its own.
+  defp event("user_message", %{"message" => text}, _at, %{legacy: true} = t)
+       when is_binary(text),
+       do: prompt(t, String.trim(text))
 
   defp event("token_count", p, _at, t) do
     info = if is_map(p["info"]), do: p["info"], else: %{}
@@ -183,7 +326,8 @@ defmodule Wallboard.Archive.CodexTranscript do
       t
       | context_window: int_or_nil(info["model_context_window"]) || t.context_window,
         last_context: int_or_nil(last) || t.last_context,
-        plan_used: if(is_number(used), do: used, else: t.plan_used)
+        plan_used: if(is_number(used), do: used, else: t.plan_used),
+        total_tokens: positive(dig(info, ["total_token_usage", "total_tokens"])) || t.total_tokens
     }
   end
 
@@ -199,16 +343,7 @@ defmodule Wallboard.Archive.CodexTranscript do
       |> Enum.map_join("\n", &(&1["text"] || ""))
       |> String.trim()
 
-    if text == "" do
-      t
-    else
-      %{
-        t
-        | prompts: t.prompts + 1,
-          first_prompt: t.first_prompt || clip(text),
-          last_prompt: clip(text)
-      }
-    end
+    prompt(t, text)
   end
 
   defp item("CommandExecution", item, t) do
@@ -260,6 +395,26 @@ defmodule Wallboard.Archive.CodexTranscript do
 
   defp item("ContextCompaction", _item, t), do: %{t | compactions: t.compactions + 1}
   defp item(_, _item, t), do: t
+
+  defp prompt(t, ""), do: t
+
+  defp prompt(t, text) do
+    %{
+      t
+      | prompts: t.prompts + 1,
+        first_prompt: t.first_prompt || clip(text),
+        last_prompt: clip(text)
+    }
+  end
+
+  # How long a turn ran. The older shape gives its start and end instead.
+  defp turn_ms(%{"duration_ms" => ms}) when is_integer(ms), do: ms
+
+  defp turn_ms(%{"started_at" => from, "completed_at" => to})
+       when is_integer(from) and is_integer(to) and to > from,
+       do: (to - from) * 1000
+
+  defp turn_ms(_), do: 0
 
   @doc "Lines added and removed in one file change: a unified diff, or a new file's text."
   def diff_lines(%{"unified_diff" => diff}) when is_binary(diff) do
@@ -321,4 +476,6 @@ defmodule Wallboard.Archive.CodexTranscript do
   defp int(_), do: 0
   defp int_or_nil(n) when is_integer(n), do: n
   defp int_or_nil(_), do: nil
+  defp positive(n) when is_integer(n) and n > 0, do: n
+  defp positive(_), do: nil
 end

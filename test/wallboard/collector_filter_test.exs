@@ -616,13 +616,21 @@ defmodule Wallboard.CollectorFilterTest do
           |> Enum.reduce({[], Filter.new(ctx)}, fn line, {all, state} ->
             {events, state} = Filter.read(state, line <> "\n")
             assert length(events) <= 1
+            turned? = Filter.tally(state)[:turned] != false
 
             for event <- events do
               assert event.position == Filter.position(state)
               assert event.session_id == ctx.session_id and event.file == ctx.file
 
-              with {:ok, time, _} <- DateTime.from_iso8601(Jason.decode!(line)["timestamp"] || "") do
-                assert event.at == DateTime.to_unix(time)
+              line = Jason.decode!(line)
+
+              # A Codex file's lines before its first turn carry no time:
+              # nothing has said yet whether the file is a chat the Codex
+              # app copied in.
+              with {:ok, time, _} <- DateTime.from_iso8601(line["timestamp"] || "") do
+                if turned?,
+                  do: assert(event.at == DateTime.to_unix(time)),
+                  else: assert(event.at == 0)
               end
             end
 

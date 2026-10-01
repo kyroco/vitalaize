@@ -25,7 +25,7 @@ defmodule Wallboard.Archive.Collector do
   require Logger
 
   alias Wallboard.Archive.{CodexTranscript, Transcript}
-  alias Wallboard.Sources.Claude
+  alias Wallboard.Sources.{Claude, Codex}
   alias Wallboard.Store
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -205,15 +205,19 @@ defmodule Wallboard.Archive.Collector do
 
   # Every Codex session changed within the window. A helper agent's thread
   # has its own file; it is saved with the session that started it, as its
-  # subagent, not as a session of its own.
+  # subagent, not as a session of its own. A chat the Codex app copied in
+  # from a Claude session read here is left out: that session is saved from
+  # its own transcript, and saving the copy would count it twice.
   defp codex_on_disk(%{codex: %{enabled: true, dirs: dirs}} = settings, now) do
     cutoff = DateTime.to_unix(now) - settings.archive.backfill_days * 86_400
+    copies = Codex.claude_copies(dirs, settings.claude.config_dirs)
 
     files =
       for dir <- dirs,
           path <- Path.wildcard(Path.join([dir, "sessions", "*", "*", "*", "rollout-*.jsonl"])),
           {:ok, %{size: size, mtime: mtime}} <- [File.stat(path, time: :posix)],
           {id, parent, nickname} <- [CodexTranscript.head(path)],
+          not Codex.claude_copy?(copies, id, mtime),
           do: %{
             path: path,
             dir: dir,

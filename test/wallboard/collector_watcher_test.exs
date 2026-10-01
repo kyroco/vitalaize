@@ -333,6 +333,123 @@ defmodule Wallboard.CollectorWatcherTest do
     end
   end
 
+  describe "a chat the Codex app copied in" do
+    @copy_id "01a0f8bc-44e8-7b10-80e4-85e969625028"
+    @copy_file "2026/10/01/rollout-2026-10-01T14-31-23-" <> @copy_id <> ".jsonl"
+    # The conversation happened two days before it was copied.
+    @began DateTime.to_unix(~U[2026-09-29 12:54:31Z])
+
+    defp copy_path(c), do: Path.join([c.home, ".codex/sessions", @copy_file])
+
+    defp copy_in(c) do
+      now = Agent.get(c.world, & &1.now)
+      add(copy_path(c), Fixtures.codex_copy(@copy_id, now, [{@began, @began + 42}]))
+      now
+    end
+
+    # What Codex notes about a chat it copied from a Claude session.
+    defp imported(c, at) do
+      source = Path.join(claude_dir(c), "projects/-Users-r-projects-shop/source.jsonl")
+      File.write!(source, "")
+
+      File.write!(
+        Path.join(c.home, ".codex/external_agent_session_imports.json"),
+        Jason.encode!(%{
+          records: [
+            %{
+              source_path: source,
+              imported_thread_id: @copy_id,
+              imported_at: DateTime.to_unix(at)
+            }
+          ]
+        })
+      )
+    end
+
+    # Someone opens the copied chat in Codex and types, a quarter of an
+    # hour on.
+    defp carry_on(c) do
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, 900)})
+      at = Agent.get(c.world, & &1.now)
+
+      add(copy_path(c), [
+        Jason.encode!(%{
+          timestamp: DateTime.to_iso8601(at),
+          type: "event_msg",
+          payload: %{type: "task_started", started_at: DateTime.to_unix(at)}
+        })
+      ])
+
+      File.touch!(copy_path(c), DateTime.to_unix(at))
+    end
+
+    test "is never sent as live work, and reaches the hub on the days it happened", c do
+      copy_in(c)
+      w = start(c)
+      # Codex writes its list of what it copied just after the files, so a
+      # copy only just written waits a few seconds for it.
+      assert look(w) == []
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, 10)})
+      new = look(w)
+
+      assert from_files(new) != []
+      assert statuses(new) == []
+      assert ended(new) == []
+      assert look(w) == []
+
+      # The hub saves it from these events, with the conversation's own times.
+      session =
+        Enum.reduce(new, Wallboard.Link.Session.new("papa", @copy_id), fn event, s ->
+          Wallboard.Link.Session.apply(s, event)
+        end)
+
+      refute Wallboard.Link.Session.live?(session)
+      assert {row, []} = Wallboard.Link.Session.record(session, %{}, 0)
+      assert {row.tool, row.prompts} == {"codex", 1}
+      assert {row.started_at, row.ended_at} == {@began, @began + 42}
+    end
+
+    test "a copy of a Claude session this collector sends is not sent again", c do
+      imported(c, copy_in(c))
+      w = start(c)
+      assert look(w) == []
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, 10)})
+      assert look(w) == []
+
+      # Carried on in Codex, it is a Codex session from then on.
+      carry_on(c)
+      new = look(w)
+      assert [%Proto.Event{file: @copy_file} | _] = from_files(new)
+      assert statuses(new) == [{@copy_id, :WORKING, :WHY_UNKNOWN, ""}]
+    end
+
+    test "a collector that had said a copy was live takes it back at its next look", c do
+      copy_in(c)
+      dir = Path.join(c.settings.collector.dir, "outbox")
+      outbox = start_supervised!({Outbox, dir: dir, name: nil}, id: :before)
+
+      # What a collector from before this fix saved: the file read to its
+      # end, and the copy reported as an idle session.
+      Outbox.append(
+        outbox,
+        [],
+        Jason.encode!(%{
+          offsets: %{copy_path(c) => File.stat!(copy_path(c)).size},
+          heads: %{},
+          statuses: [["codex", @copy_id, nil, "idle", "WHY_UNKNOWN", ""]]
+        })
+      )
+
+      :ok = stop_supervised(:before)
+
+      w = start(c)
+      new = look(w)
+      assert ended(new) == [@copy_id]
+      assert statuses(new) == []
+      assert look(w) == []
+    end
+  end
+
   describe "a restart" do
     test "carries on from the saved places and repeats nothing", c do
       all = lines("collector/claude_session.jsonl")

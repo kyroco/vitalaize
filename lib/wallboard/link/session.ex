@@ -31,6 +31,7 @@ defmodule Wallboard.Link.Session do
   told something new.
   """
 
+  alias Wallboard.Archive.CodexTranscript
   alias Wallboard.Collector.Proto
   alias Wallboard.Sources.Usage
 
@@ -216,9 +217,12 @@ defmodule Wallboard.Link.Session do
   def name(s) do
     sum = summary(s)
 
-    short(sum.title) || short(sum.first_prompt) || folder(sum.folder) ||
-      String.slice(s.session_id, 0, 8)
+    short(sum.title) || short(sum.first_prompt) || folder(sum.folder) || short_id(s)
   end
+
+  # A Codex id starts with the time, so its end tells sessions apart.
+  defp short_id(%{tool: "codex", session_id: id}), do: CodexTranscript.short_id(id)
+  defp short_id(%{session_id: id}), do: String.slice(id, 0, 8)
 
   @doc """
   The session's card for the board's Live tab, shaped like the cards of
@@ -246,7 +250,7 @@ defmodule Wallboard.Link.Session do
         key: Enum.join(["stream", s.machine, s.session_id], ":"),
         session_id: s.session_id,
         name: name(s),
-        short_id: String.slice(s.session_id, 0, 8),
+        short_id: short_id(s),
         account: where,
         machine: s.machine,
         kind: "remote",
