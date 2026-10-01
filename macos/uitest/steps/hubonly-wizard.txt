@@ -1,0 +1,28 @@
+# A fresh Mac set up as a hub only: it keeps what other Macs send and
+# saves none of its own sessions.
+
+wait 90 "What this Mac does"
+click "Hub only"
+expect "Step 1 of 5"
+click "Continue"
+wait "Claude folders to include"
+expect "Where the board keeps its files"
+click "Continue"
+wait "Main branch"
+type "Repository" "acme/rockets"
+enabled "Continue"
+click "Continue"
+wait "Name at the top"
+type "Name at the top" "Acme Hub Only"
+type "Port" "{PORT}"
+click "Continue"
+wait "This Mac"
+expect "Hub only"
+expect "Acme Hub Only at http://localhost:{PORT}"
+snap h01-review
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+expect "Hub only"
+absent "That did not work"
+snap h02-status

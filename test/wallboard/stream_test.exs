@@ -881,6 +881,24 @@ defmodule Wallboard.StreamTest do
     assert length(statuses) == 2
   end
 
+  test "a collector the hub removed connects again once it is paired again, with no restart", c do
+    start_hub(c)
+    pair(c)
+    w = start_collector(c)
+    dir = c.collector.collector.dir
+    link = fn -> match?({:ok, %{state: "up"}}, Sender.link_state(dir)) end
+    wait_until(link)
+
+    {:ok, _} = Hub.revoke("papa")
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
+
+    # A file's time is kept to the second.
+    Process.sleep(1_100)
+    pair(c)
+    wait_until(link)
+    assert Process.alive?(w.sender)
+  end
+
   test "a collector that is not paired sends nothing, and starts once it is", c do
     start_hub(c)
     w = start_collector(c)

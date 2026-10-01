@@ -87,6 +87,18 @@ defmodule Wallboard.CollectorRoleTest do
     assert ids(children) -- @hub_only == ids(children)
   end
 
+  test "the sender looks for the hub where pairing saves it", c do
+    settings = settings("collector", c.dir)
+    children = Wallboard.Application.children(settings)
+
+    assert {Wallboard.Collector.Sender, opts} =
+             Enum.find(children, &match?({Wallboard.Collector.Sender, _}, &1))
+
+    # Pairing writes the certificate and hub.json here; a sender that read
+    # any other folder would stay silent on a paired machine.
+    assert opts[:dir] == Wallboard.Pairing.dir(settings)
+  end
+
   test "a collector listens on no port", c do
     settings = settings("collector", c.dir)
     Settings.put(settings)

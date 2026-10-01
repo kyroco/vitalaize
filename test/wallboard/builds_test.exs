@@ -11,6 +11,24 @@ defmodule Wallboard.BuildsTest do
   # images. Prod had just deployed 511c86bab, whose deploy picked the image
   # dev built from 9847f3f92 (the commit in between changed only CI files).
 
+  # The Mac app's setup asks only for the profiles.
+  test "profiles with no repository or clusters say what is missing, and ask AWS nothing" do
+    settings = %{
+      dev_power: %{aws_profile: "acme-dev-read"},
+      builds: %{
+        prod_profile: "acme-prod-read",
+        dev_profile: nil,
+        region: "us-east-1",
+        repository: nil,
+        dev: %{cluster: nil, services: []},
+        prod: %{cluster: nil, services: []}
+      }
+    }
+
+    assert {:error, reason, %{}} = Wallboard.Sources.Builds.poll(settings, nil, nil, nil)
+    assert reason =~ "repository and both clusters"
+  end
+
   test "reads each service's current task definition" do
     assert {:ok, arns} = Builds.task_definitions(fixture("builds_prod_services.json"))
 

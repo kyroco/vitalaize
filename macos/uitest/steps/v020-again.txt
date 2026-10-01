@@ -1,0 +1,32 @@
+# Opened a second time: nothing to restart. Then Settings and Reconfigure
+# over the files 0.2.0 left.
+
+wait 40 "The board is running"
+sleep 8
+absent "Restarting"
+absent "was started before this version"
+click "Settings"
+wait 40 "Board name"
+value "Board name" "Acme Page"
+value "Seconds between pages" "45"
+snap v02-settings
+click "Back"
+wait 20 "The board is running"
+click "Reconfigure…"
+wait 60 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Main branch"
+value "Repository" "acme/rockets"
+click "Continue"
+wait "Name at the top"
+value "Name at the top" "Acme Page"
+type "Name at the top" "Acme Wizard"
+click "Continue"
+wait "This Mac"
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap v02-reconfigured

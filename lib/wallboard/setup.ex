@@ -391,8 +391,18 @@ defmodule Wallboard.Setup do
       rescue
         # Our own messages say what to do. Anything else may quote a line
         # of the settings file, which can hold a password.
-        e in ArgumentError -> {:error, Exception.message(e)}
-        e -> {:error, "VitalAIze setup stopped: #{inspect(e.__struct__)}"}
+        e in ArgumentError ->
+          {:error, Exception.message(e)}
+
+        # A folder that cannot be written to, or a file that cannot be
+        # read. The path and the reason hold nothing secret.
+        e in File.Error ->
+          {:error,
+           "Could not #{e.action} #{e.path} (#{:file.format_error(e.reason)}). " <>
+             "Check that the folder can be written to. Nothing was saved."}
+
+        e ->
+          {:error, "VitalAIze setup stopped: #{inspect(e.__struct__)}"}
       end
 
     case result do
@@ -701,7 +711,9 @@ defmodule Wallboard.Setup do
 
     * `["show"]`: the role, where the settings are saved, the sections and
       fields for this role with their values (a secret that is set comes
-      as `kept`), whether this machine is paired, and the service's state.
+      as `kept`), whether this machine is paired, how its link to the hub
+      stands (`link`, see `Wallboard.Collector.Sender.link_state/1`; nil
+      when the collector has not said), and the service's state.
     * `["save"]`: reads `{"values": {"alerts.phone": "..."}}` from standard
       input, saves, and answers `ok`, `lines` (what happened, to show) and
       `service`, or `ok: false` and `errors` by path.
@@ -729,6 +741,7 @@ defmodule Wallboard.Setup do
       kept: Settings.kept(),
       service: Service.state(opts),
       paired: paired(settings),
+      link: link(settings),
       sections:
         for {title, fields} <- Settings.editable(settings.role) do
           %{
@@ -858,6 +871,13 @@ defmodule Wallboard.Setup do
 
       :error ->
         nil
+    end
+  end
+
+  defp link(settings) do
+    case Wallboard.Collector.Sender.link_state(Pairing.dir(settings)) do
+      {:ok, state} -> state
+      :error -> nil
     end
   end
 

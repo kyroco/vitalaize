@@ -1,0 +1,12 @@
+# Remove VitalAIze from a collector.
+
+wait 40 "The collector is running"
+press "Remove VitalAIze…"
+wait 5 "Remove VitalAIze from this Mac?"
+snap c13-remove-sheet
+press "Remove"
+wait 60 "VitalAIze was removed from this Mac"
+expect "Stopping the collector"
+snap c13-removed
+click "Set up again"
+wait 90 "What this Mac does"

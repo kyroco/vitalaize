@@ -141,13 +141,17 @@ defmodule Wallboard.Pairing do
   @doc """
   A name for this machine that a certificate can carry: what `hostname`
   prints, with anything a name may not hold turned into a dash.
+  VITALAIZE_MACHINE names it instead, for a script that sets up several
+  machines on one computer.
   """
   def machine_name do
     {:ok, host} = :inet.gethostname()
 
     name =
-      host
-      |> to_string()
+      case System.get_env("VITALAIZE_MACHINE") do
+        named when is_binary(named) and named != "" -> named
+        _ -> to_string(host)
+      end
       |> String.replace_suffix(".local", "")
       |> String.replace(~r/[^A-Za-z0-9 ._-]/, "-")
       |> String.slice(0, 63)
@@ -215,6 +219,7 @@ defmodule Wallboard.Pairing do
     * `{:error, :busy}`: the hub's mailbox is full, this machine already
       has a request waiting, or it asked too often; try again in a while
     * `{:error, :bad_name}`: the hub cannot put this name in a certificate
+    * `{:error, :name_taken}`: the hub itself has this machine's name
     * `{:error, :not_a_hub}`: the address answers, but pairing is not on there
     * `{:error, {:folder, reason}}`: `dir` cannot be written. Nothing was
       asked of the hub, unless the folder failed only at the very end.
@@ -414,6 +419,7 @@ defmodule Wallboard.Pairing do
       {:ok, {{_, 422, _}, _, text}} ->
         case Jason.decode(text) do
           {:ok, %{"error" => "bad_name"}} -> {:error, :bad_name}
+          {:ok, %{"error" => "name_taken"}} -> {:error, :name_taken}
           _ -> {:error, {:hub, "the hub refused the request"}}
         end
 
@@ -421,7 +427,7 @@ defmodule Wallboard.Pairing do
         {:error, {:hub, "the hub answered #{status}"}}
 
       {:error, reason} ->
-        {:error, {:hub, reason |> inspect() |> String.slice(0, 200)}}
+        {:error, {:hub, unreachable(reason, "http://#{host}:#{hub.port}")}}
     end
   end
 
@@ -519,8 +525,31 @@ defmodule Wallboard.Pairing do
     """)
   end
 
+  # Why no answer came from an address, in words: what :httpc gives back
+  # is for a programmer.
+  defp unreachable(reason, address) do
+    text = inspect(reason)
+
+    cond do
+      text =~ "econnrefused" ->
+        "nothing answers at #{address}. Check the address, and that the hub is running."
+
+      text =~ "nxdomain" ->
+        "no machine by that name was found (#{address}). Check the address."
+
+      text =~ "timeout" or text =~ "ehostunreach" or text =~ "enetunreach" ->
+        "#{address} did not answer. Check the address, and that this machine and " <>
+          "the hub are on the same network."
+
+      true ->
+        "#{address} could not be reached (#{String.slice(text, 0, 120)})."
+    end
+  end
+
   @doc "Why a pairing failed, as a sentence for the person who asked."
-  def why(:refused), do: "The hub refused this machine."
+  def why(:refused),
+    do: "The hub's owner refused this machine. Nothing changed here; ask them, then pair again."
+
   def why(:expired), do: "Nobody approved the code in time. Ask again for a new one."
 
   def why(:hub_failed),
@@ -536,8 +565,15 @@ defmodule Wallboard.Pairing do
   def why(:bad_name),
     do: "Use letters, numbers, spaces, dots, - and _ for the machine's name, 63 at most."
 
+  def why(:name_taken),
+    do:
+      "The hub has the same name as this machine (#{machine_name()}), and two machines " <>
+        "cannot share one. Give this one another name (on a Mac: System Settings, General, " <>
+        "Sharing, Local hostname), restart it, then pair again."
+
   def why(:not_a_hub),
-    do: "That board does not take collectors. Turn the link on in its settings (link.enabled)."
+    do:
+      "That board does not take collectors. On the hub, open its settings, turn on Take collectors, and ask again."
 
   def why({:folder, reason}), do: "Could not save the certificate in #{reason}"
   def why({:hub, reason}), do: "Could not pair: #{reason}"

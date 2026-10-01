@@ -1,0 +1,35 @@
+# Reconfigure on a Mac that runs the board: the wizard starts from the
+# settings in use now, not from the first setup's answers.
+
+wait 40 "The board is running"
+click "Reconfigure…"
+wait 60 "What this Mac does"
+expect "Step 1 of 5"
+click "Continue"
+wait "Claude folders to include"
+value "~/.claude" "1"
+click "Continue"
+wait "Main branch"
+value "Repository" "kyroco/vitalaize"
+expect "acme/rockets"
+value "Gate workflow (checks each change)" "ci.yml"
+value "Dev deploy workflow" "None"
+snap 11-reconfigure-github
+click "Continue"
+wait "Name at the top"
+# Saved in Settings after the first setup: the wizard shows these, not "Acme" and the first port.
+value "Name at the top" "Acme Two"
+value "Port" "{PORT2}"
+value "Send as" "SMS"
+snap 11-reconfigure-features
+type "Name at the top" "Acme Three"
+pick "Send as" "iMessage"
+click "Continue"
+wait "This Mac"
+expect "Acme Three at http://localhost:{PORT2}"
+snap 11-reconfigure-review
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap 12-reconfigured

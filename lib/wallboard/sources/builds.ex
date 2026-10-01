@@ -31,6 +31,17 @@ defmodule Wallboard.Sources.Builds do
     b = settings.builds
     memory = memory || %{}
 
+    # The profiles alone are not enough to ask AWS anything.
+    if Enum.any?([b.repository, b.dev.cluster, b.prod.cluster], &(&1 in [nil, ""])) do
+      {:error,
+       "Builds need the repository and both clusters named in settings.exs (builds: repository, dev and prod)",
+       memory}
+    else
+      compare(settings, b, memory)
+    end
+  end
+
+  defp compare(settings, b, memory) do
     with {:ok, dev, memory} <- env(b, :dev, dev_profile(settings), memory),
          {:ok, prod, memory} <- env(b, :prod, b.prod_profile, memory) do
       {:ok, %{dev: dev, prod: prod}, memory}

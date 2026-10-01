@@ -18,11 +18,15 @@ struct RootView: View {
 // MARK: - Looking around
 
 struct DetectingView: View {
+    @EnvironmentObject var state: AppState
+
     var body: some View {
         VStack(spacing: 14) {
             ProgressView()
             Text("Looking at this Mac to fill in the setup…").font(.headline)
-            Text("Claude folders, the GitHub repository you work in, Korium, AWS profiles, and any board set up before.")
+            Text(state.choices.settingsRead == nil && Setup.installed() != nil
+                 ? "Reading the settings in use now, so the setup starts from them."
+                 : "Claude folders, the GitHub repository you work in, Korium, AWS profiles, and any board set up before.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .padding(40)
@@ -67,7 +71,7 @@ struct WizardView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canContinue)
                 } else {
-                    Button(state.choices.role.runsBoard ? "Install and start the board" : "Start the collector and pair") { state.install() }
+                    Button(state.choices.role.runsBoard ? "Install and start the board" : (state.keepsPairing ? "Start the collector" : "Start the collector and pair")) { state.install() }
                         .keyboardShortcut(.defaultAction)
                         .disabled(!state.isAppleSilicon)
                 }
@@ -81,7 +85,7 @@ struct WizardView: View {
         switch (c.role.runsBoard, state.step) {
         case (_, 1): return !c.claudeFolders.isEmpty && (c.role == .collector || !c.dataFolder.isEmpty)
         case (true, 2): return c.repo.contains("/")
-        case (false, 2): return !c.hubURL.trimmingCharacters(in: .whitespaces).isEmpty
+        case (false, 2): return !c.hubURL.trimmingCharacters(in: .whitespaces).isEmpty || state.doc?.paired != nil
         default: return true
         }
     }
@@ -185,21 +189,28 @@ struct FoldersPage: View {
                         Spacer()
                         Button("Change…") {
                             if let url = pickFolder(start: state.choices.dataFolder, message: "Pick where the board keeps its settings, database and logs") {
-                                state.choices.dataFolder = url
+                                state.useFolder(url)
                             }
                         }
                     }
                     Text("Its settings, its database of sessions and runs, and incoming sessions from other Macs. The board itself stays inside this app.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let note = state.folderNote {
+                        Label(note, systemImage: "info.circle").fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).padding(6)
             }
-            if let imported = state.choices.importedSettings {
+            // Turned off, the switch stays so it can be turned on again.
+            if let imported = state.choices.importedSettings ?? state.offeredImport {
                 GroupBox("A board you set up before") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Carry over its settings from \(imported.replacingOccurrences(of: Detect.home.path, with: "~"))",
                                isOn: Binding(get: { state.choices.importedSettings != nil },
-                                             set: { if !$0 { state.choices.importedSettings = nil } }))
+                                             set: { on in
+                                                 state.offeredImport = imported
+                                                 state.choices.importedSettings = on ? imported : nil
+                                             }))
                         if Detect.oldLoginItemInstalled {
                             Toggle("Stop that board and run this one instead", isOn: $state.choices.replaceOldBoard)
                         }
@@ -209,6 +220,10 @@ struct FoldersPage: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
             }
+            if let note = state.importNote {
+                Label(note, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -216,6 +231,7 @@ struct FoldersPage: View {
 struct GitHubPage: View {
     @EnvironmentObject var state: AppState
     @State private var newRepo = ""
+    @State private var addNote: Note?
 
     private var others: [String] { state.choices.otherRepos ?? [] }
 
@@ -224,8 +240,20 @@ struct GitHubPage: View {
             .foregroundStyle(.secondary)
         Form {
             HStack {
-                TextField("Repository (owner/name)", text: $state.choices.repo)
+                TextField("Repository", text: $state.choices.repo, prompt: Text("owner/name"))
+                    .onSubmit { state.reloadWorkflows() }
                 Button("Look up") { state.reloadWorkflows() }
+                    .disabled(state.lookingUp)
+            }
+            if state.lookingUp {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Asking GitHub about \(state.choices.repo)…").foregroundStyle(.secondary)
+                }
+            } else if let note = state.lookupNote {
+                Label(note.text, systemImage: note.ok ? "checkmark.circle" : "exclamationmark.triangle")
+                    .foregroundStyle(note.ok ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             TextField("Main branch", text: $state.choices.branch)
             workflowPicker("Gate workflow (checks each change)", $state.choices.gateWorkflow)
@@ -236,20 +264,21 @@ struct GitHubPage: View {
                     HStack {
                         Text(repo)
                         Spacer()
-                        Button("Remove") { state.choices.otherRepos = others.filter { $0 != repo } }
+                        Button("Remove") {
+                            state.choices.otherRepos = others.filter { $0 != repo }
+                            addNote = Note(ok: true, text: "Removed \(repo).")
+                        }
                     }
                 }
                 HStack {
-                    TextField("Add another (owner/name)", text: $newRepo)
-                    Button("Add") {
-                        let repo = newRepo.trimmingCharacters(in: .whitespaces)
-                        // owner/name, the only form the board accepts.
-                        let ok = repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
-                        if ok && repo != state.choices.repo && !others.contains(repo) {
-                            state.choices.otherRepos = others + [repo]
-                        }
-                        newRepo = ""
-                    }
+                    TextField("Add another", text: $newRepo, prompt: Text("owner/name"))
+                        .onSubmit(add)
+                    Button("Add", action: add)
+                }
+                if let note = addNote {
+                    Label(note.text, systemImage: note.ok ? "checkmark.circle" : "exclamationmark.triangle")
+                        .foregroundStyle(note.ok ? Color.secondary : Color.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
                 Text("Other repositories")
@@ -259,9 +288,27 @@ struct GitHubPage: View {
             }
         }
         .formStyle(.grouped)
-        if state.workflows.isEmpty {
-            Text("No workflows found. Check the repository name, and that gh is signed in (gh auth login).")
-                .font(.caption).foregroundStyle(.secondary)
+        .textFieldStyle(.roundedBorder)
+    }
+
+    /// Adds the typed repository to the list, or says why it was not added.
+    /// What was typed stays in the field when it is refused, to be fixed.
+    private func add() {
+        let repo = newRepo.trimmingCharacters(in: .whitespaces)
+        // owner/name, the only form the board accepts.
+        let ok = repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        if repo.isEmpty {
+            addNote = Note(ok: false, text: "Type a repository as owner/name in the box, then press Add.")
+        } else if !ok {
+            addNote = Note(ok: false, text: "\"\(repo)\" is not a repository name. Write it as owner/name, like kyroco/vitalaize. Nothing was added.")
+        } else if repo == state.choices.repo.trimmingCharacters(in: .whitespaces) {
+            addNote = Note(ok: false, text: "\(repo) is already the first repository above. Nothing was added.")
+        } else if others.contains(repo) {
+            addNote = Note(ok: false, text: "\(repo) is already in the list. Nothing was added.")
+        } else {
+            state.choices.otherRepos = others + [repo]
+            addNote = Note(ok: true, text: "Added \(repo).")
+            newRepo = ""
         }
     }
 
@@ -287,8 +334,10 @@ struct FeaturesPage: View {
             }
             Section("Korium") {
                 Toggle("Show Korium numbers (searches, saves, indexing)", isOn: $state.choices.korium)
-                Text(state.choices.korium ? "Your recent sessions use Korium." : "Your recent sessions do not seem to use Korium.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let found = state.koriumFound {
+                    Text(found ? "Your recent sessions use Korium." : "Your recent sessions do not seem to use Korium.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Codex") {
                 Toggle("Show and save Codex sessions", isOn: Binding(
@@ -305,13 +354,13 @@ struct FeaturesPage: View {
                 Toggle("Show the New Relic page", isOn: $state.choices.newRelic)
                 if state.choices.newRelic {
                     TextField("Account ID", text: $state.choices.newRelicAccount)
-                    TextField("1Password reference for the API key (op://…)", text: $state.choices.newRelicKeyRef)
+                    TextField("1Password reference for the API key", text: $state.choices.newRelicKeyRef, prompt: Text("op://…"))
                     Text("The key is read from 1Password when the board starts and is never written to a file.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Texts when a session needs you") {
-                TextField("Phone number (empty for no texts)", text: $state.choices.phone)
+                TextField("Phone number", text: $state.choices.phone, prompt: Text("empty for no texts"))
                 Picker("Send as", selection: $state.choices.textVia) {
                     Text("iMessage").tag("iMessage")
                     Text("SMS").tag("SMS")
@@ -319,6 +368,7 @@ struct FeaturesPage: View {
             }
         }
         .formStyle(.grouped)
+        .textFieldStyle(.roundedBorder)
     }
 
     private func profilePicker(_ title: String, _ value: Binding<String>) -> some View {
@@ -338,6 +388,10 @@ struct HubPage: View {
     var body: some View {
         Text("Pick the hub this Mac streams its Claude and Codex sessions to. This Mac then shows a short code; approve the same code in the mailbox on the hub's board. Nothing is typed or pasted.")
             .foregroundStyle(.secondary)
+        if let hub = state.doc?.paired {
+            Label("This Mac is paired with the hub at \(hub.host) as \(hub.machine). Leave the address empty to keep that, or pick a hub to pair again.", systemImage: "checkmark.circle")
+                .fixedSize(horizontal: false, vertical: true)
+        }
         GroupBox("Hubs on your network") {
             VStack(alignment: .leading, spacing: 8) {
                 if finder.hubs.isEmpty {
@@ -350,6 +404,7 @@ struct HubPage: View {
                             Text(hub.name)
                             Text(hub.url).foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -357,9 +412,10 @@ struct HubPage: View {
             .frame(maxWidth: .infinity, alignment: .leading).padding(6)
         }
         Form {
-            TextField("Hub address", text: $state.choices.hubURL, prompt: Text("http://192.168.1.20:4747"))
+            TextField("Hub address", text: $state.choices.hubURL, prompt: Text(verbatim: "http://192.168.1.20:4747"))
         }
         .formStyle(.grouped)
+        .textFieldStyle(.roundedBorder)
         Text("The hub must take collectors: on the hub, turn on Collectors on other machines in its settings.")
             .font(.caption).foregroundStyle(.secondary)
     }
@@ -390,7 +446,7 @@ struct ReviewPage: View {
                     row("Texts", c.phone.isEmpty ? "off" : "to \(c.phone) by \(c.textVia)")
                     if c.importedSettings != nil { row("Carried over", "your earlier settings file") }
                 } else {
-                    row("Hub", c.hubURL)
+                    row("Hub", state.keepsPairing ? "stays paired with \(state.doc?.paired?.host ?? "its hub")" : c.hubURL)
                     row("Codex", Detect.usesCodex() ? "watched too, in ~/.codex" : "not on this Mac")
                 }
             }
@@ -398,7 +454,7 @@ struct ReviewPage: View {
         }
         Text(c.role.runsBoard
              ? "The board starts now and again whenever you log in. You can change any of this later in this app, under Settings."
-             : "A small collector starts now and again whenever you log in. It watches this Mac's Claude and Codex sessions and streams them to the hub as they happen. It adds nothing to Claude's or Codex's own settings. After it starts, this Mac shows a code to approve on the hub.")
+             : "A small collector starts now and again whenever you log in. It watches this Mac's Claude and Codex sessions and streams them to the hub as they happen. It adds nothing to Claude's or Codex's own settings." + (state.keepsPairing ? "" : " After it starts, this Mac shows a code to approve on the hub."))
             .foregroundStyle(.secondary)
     }
 
@@ -418,8 +474,8 @@ struct WorkingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                if state.failure == nil { ProgressView().controlSize(.small) }
-                Text(state.failure == nil ? "Setting up…" : "That did not work").font(.title2.bold())
+                if state.failure == nil && state.removed == nil { ProgressView().controlSize(.small) }
+                Text(title).font(.title2.bold())
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -428,6 +484,10 @@ struct WorkingView: View {
                     }
                     if let failure = state.failure {
                         Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        if let after = state.failureAfter {
+                            Text(after).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -435,12 +495,30 @@ struct WorkingView: View {
             if let code = state.pairCode { PairCodeView(code: code) }
             if state.failure != nil {
                 HStack {
-                    Button("Back to the setup") { state.failure = nil; state.screen = .wizard }
-                    Button("Open the log") { NSWorkspace.shared.open(Setup.logFile) }
+                    Button(state.failureBack == .wizard ? "Back to the setup" : "Back") {
+                        state.failure = nil
+                        state.screen = state.failureBack
+                        if state.failureBack == .status { state.refreshStatus() }
+                    }
+                    Button("Open the log") { Shell.open(Setup.logFile) }
                 }
+            }
+            if let removed = state.removed {
+                if !removed.isEmpty {
+                    Text(removed).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                Text("The app itself is still in Applications. Drag it to the Trash to take it off this Mac.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Set up again") { state.removed = nil; state.detect() }
             }
         }
         .padding(24)
+    }
+
+    private var title: String {
+        if state.failure != nil { return "That did not work" }
+        if state.removed != nil { return "VitalAIze was removed from this Mac" }
+        return state.removing ? "Removing VitalAIze…" : "Setting up…"
     }
 }
 
@@ -478,11 +556,13 @@ struct StatusView: View {
                 HStack {
                     Button("Open the board") { state.open("/") }.keyboardShortcut(.defaultAction)
                     Button("Settings") { state.openSettings() }
-                    Button("Restart the board") {
-                        Setup.restartBoard()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { state.refreshStatus() }
-                    }
-                    Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
+                    Button("Restart the board") { state.checkStart(restart: true) }
+                        .disabled(state.mending)
+                    Button("Show the log") { Shell.open(Setup.logFile) }
+                }
+                if state.hasPassword {
+                    Text("This board has a password. The first time a browser opens it, add ?token= and the password to the end of the address.")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Other machines connect by running this app there (or vitalaize setup on Linux) and picking Collector only. Each shows a code; approve it in the mailbox on the board.")
                     .foregroundStyle(.secondary)
@@ -496,11 +576,13 @@ struct StatusView: View {
                             Button("Check again") { state.refreshStatus() }
                         }
                         if let hub = state.doc?.paired {
-                            Text("Paired with the hub at \(hub.host) as \(hub.machine).")
+                            LinkLine(hub: hub, link: state.running ? state.doc?.link : nil)
                         } else if state.doc != nil {
                             Text("Not paired with a hub yet, so nothing is sent.").foregroundStyle(.red)
                         }
-                        if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
+                        if let message = state.pairMessage {
+                            Text(message).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .padding(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -509,13 +591,13 @@ struct StatusView: View {
                     Button(state.doc?.paired == nil ? "Pair with a hub…" : "Pair again…") { showPair = true }
                         .keyboardShortcut(.defaultAction)
                     Button("Settings") { state.openSettings() }
-                    Button("Restart the collector") {
-                        Setup.restartBoard()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { state.refreshStatus() }
-                    }
-                    Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
+                    Button("Restart the collector") { state.checkStart(restart: true) }
+                        .disabled(state.mending)
+                    Button("Show the log") { Shell.open(Setup.logFile) }
                 }
             }
+
+            if state.mending || !state.mendLines.isEmpty || state.mendFailure != nil { MendBox() }
 
             Spacer()
             Divider()
@@ -526,6 +608,9 @@ struct StatusView: View {
             }
         }
         .padding(24)
+        // Keeps the first line true while the screen shows: a board that
+        // stops, or comes back after a restart, is seen without a click.
+        .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in state.quickCheck() }
         .sheet(isPresented: $showPair) { PairSheet(shown: $showPair) }
         .sheet(isPresented: $confirmRemove) {
             VStack(alignment: .leading, spacing: 14) {
@@ -541,6 +626,62 @@ struct StatusView: View {
             }
             .padding(24)
             .frame(width: 460)
+        }
+    }
+}
+
+/// What the app found wrong with how VitalAIze starts here, and what it
+/// did about it.
+struct MendBox: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                if state.mending {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(state.mendLines.isEmpty ? "Checking how VitalAIze starts on this Mac…" : "Working on it…")
+                    }
+                }
+                ForEach(Array(state.mendLines.enumerated()), id: \.offset) { _, line in
+                    Text(line).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                if let failure = state.mendFailure {
+                    Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Use Show the log to see why, then Reconfigure to set it up again. Your settings and database are where they were.")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else if !state.mending, let done = state.mendDone {
+                    Label(done, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Whether a paired collector is in touch with its hub right now.
+struct LinkLine: View {
+    let hub: Paired
+    let link: LinkState?
+
+    var body: some View {
+        switch link?.state {
+        case "up":
+            Text("Connected to the hub at \(hub.host) as \(hub.machine).")
+        case "down":
+            Text("Paired with the hub at \(hub.host) as \(hub.machine), but the hub is not answering right now. What this Mac reads is kept, and sent when the hub answers again.")
+                .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        case "back_soon":
+            Text("Paired with the hub at \(hub.host) as \(hub.machine). The hub is restarting; sending goes on when it is back.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        case "removed":
+            Text("The hub at \(hub.host) removed this machine, so nothing is sent. Use Pair again… to connect it again.")
+                .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        default:
+            Text("Paired with the hub at \(hub.host) as \(hub.machine).")
         }
     }
 }
@@ -589,7 +730,7 @@ struct PairSheet: View {
                 HStack { ProgressView().controlSize(.small); Text("Asking the hub…").foregroundStyle(.secondary) }
             } else {
                 Text("Pick the hub, or type its address. This Mac then shows a code to approve in the mailbox on the hub's board.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(finder.hubs) { hub in
                     Button { address = hub.url } label: {
                         HStack {
@@ -597,10 +738,15 @@ struct PairSheet: View {
                             Text(hub.name)
                             Text(hub.url).foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
-                TextField("Hub address", text: $address, prompt: Text("http://192.168.1.20:4747"))
+                Text("Hub address")
+                TextField("Hub address", text: $address, prompt: Text(verbatim: "http://192.168.1.20:4747"))
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .onSubmit { if !address.trimmingCharacters(in: .whitespaces).isEmpty { state.pair(hub: address) } }
                 if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
             }
             HStack {
@@ -653,6 +799,7 @@ struct SettingsView: View {
                     }
                 }
                 .formStyle(.grouped)
+                .textFieldStyle(.roundedBorder)
             } else {
                 Spacer()
                 Text(state.busy ? "Reading the settings…" : "The settings could not be read.")
@@ -664,7 +811,16 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(state.saveLines, id: \.self) { Text($0).fixedSize(horizontal: false, vertical: true) }
                 if !state.saveErrors.isEmpty {
-                    Text("Nothing was saved. Fix what is marked above and save again.").foregroundStyle(.red)
+                    Text("Nothing was saved. Fix these and save again:").foregroundStyle(.red)
+                    // Named here too: the setting itself may be scrolled out of sight.
+                    ForEach(state.saveErrors.sorted { $0.key < $1.key }, id: \.key) { key, message in
+                        // The board's message may name the setting already.
+                        Text(message.hasPrefix(label(key) + ":") ? message : "\(label(key)): \(message)")
+                            .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if let failure = state.saveFailure {
+                    Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack {
                     Button("Back") { state.screen = .status; state.refreshStatus() }
@@ -678,6 +834,13 @@ struct SettingsView: View {
             }
             .padding(16)
         }
+    }
+}
+
+extension SettingsView {
+    /// A setting's name as the screen shows it, for a message about it.
+    func label(_ key: String) -> String {
+        state.doc?.sections.flatMap { $0.fields }.first { $0.key == key }?.label ?? key
     }
 }
 
@@ -726,14 +889,14 @@ struct SettingRow: View {
 // MARK: - Helpers
 
 func pickFolder(start: String, message: String) -> String? {
-    let panel = NSOpenPanel()
-    panel.canChooseDirectories = true
-    panel.canChooseFiles = false
-    panel.canCreateDirectories = true
-    panel.showsHiddenFiles = true
-    panel.message = message
-    panel.directoryURL = URL(fileURLWithPath: start)
-    return panel.runModal() == .OK ? panel.url?.path : nil
+    Shell.folderPicker(start, message)
+}
+
+/// One line said under a control after it was used: what it did, or why
+/// it did nothing.
+struct Note: Equatable {
+    var ok: Bool
+    var text: String
 }
 
 extension String {

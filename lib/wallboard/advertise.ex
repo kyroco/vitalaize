@@ -27,7 +27,7 @@ defmodule Wallboard.Advertise do
 
       {tool, args} ->
         {:ok, host} = :inet.gethostname()
-        name = "Wallboard on " <> (host |> to_string() |> String.replace_suffix(".local", ""))
+        name = "VitalAIze on " <> (host |> to_string() |> String.replace_suffix(".local", ""))
         port = Keyword.fetch!(opts, :port)
 
         script =

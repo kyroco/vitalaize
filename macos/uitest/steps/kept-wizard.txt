@@ -1,0 +1,30 @@
+# A first setup where Change… picks a folder that already holds a board's
+# settings: the setup is filled in from them, and they are kept.
+
+wait 90 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+absent "This folder holds a board's settings."
+folder "{HOME}/BoardKept"
+click "Change…"
+wait 5 "~/BoardKept"
+wait 40 "This folder holds a board's settings."
+snap k01-folder
+click "Continue"
+wait "Main branch"
+value "Repository" "acme/rockets"
+click "Continue"
+wait "Name at the top"
+# Saved in Settings on the board this folder came from, and what its own
+# settings page kept in the database.
+value "Name at the top" "Acme Page"
+value "Port" "{PORT2}"
+type "Name at the top" "Acme Typed"
+click "Continue"
+wait "This Mac"
+expect "Acme Typed at http://localhost:{PORT2}"
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap k02-status

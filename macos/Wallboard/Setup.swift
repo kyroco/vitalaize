@@ -61,6 +61,13 @@ struct Choices: Codable {
     /// stay the same, its own timeline rows and deploy list are kept.
     var importedWorkflows: [String]? = nil
     var replaceOldBoard: Bool = true
+    /// The folder whose settings in use filled in the setup, when one did.
+    var settingsReadFrom: String? = nil
+    /// True when the wizard started from the settings as they are now: a
+    /// first setup, or a Reconfigure that read what is saved. An answer
+    /// left empty is then the person's choice, not a question nobody
+    /// asked. Optional so choices saved before this still load.
+    var settingsRead: Bool? = nil
 }
 
 /// What was installed, kept in the data folder so the app can show it,
@@ -104,6 +111,13 @@ struct Paired: Codable {
     var machine: String
 }
 
+/// How a collector's link to its hub stands, as the collector last wrote
+/// it: up, down, back_soon or removed, and when (seconds since 1970).
+struct LinkState: Codable {
+    var state: String
+    var at: Int
+}
+
 struct SettingsDoc: Codable {
     var role: String
     /// The file the settings are saved in.
@@ -111,6 +125,8 @@ struct SettingsDoc: Codable {
     /// running, stopped, or none when no login item is set up.
     var service: String
     var paired: Paired?
+    /// Nil when the collector has not said: not paired, or not run since.
+    var link: LinkState?
     var sections: [SettingsSection]
 }
 
@@ -183,6 +199,7 @@ enum Setup {
         var c = installed()?.choices ?? Choices()
         if installed() != nil { return c }
 
+        c.settingsRead = true
         c.claudeFolders = Detect.claudeFolders()
         c.korium = Detect.usesKorium(folders: c.claudeFolders)
         c.codex = Detect.usesCodex()
@@ -273,10 +290,14 @@ enum Setup {
             .joined(separator: ", ")
         let deploys = [c.devWorkflow, c.prodWorkflow].filter { !$0.isEmpty }.map(ex).joined(separator: ", ")
 
+        // "None" is written as nil only when it is the person's choice (see
+        // `settingsRead`); else a workflow left empty is left out, and the
+        // base file's or the board's own stays.
+        let all = c.settingsRead == true
         var github = ["repo: \(ex(c.repo))", "branch: \(ex(c.branch))"]
-        if !c.gateWorkflow.isEmpty { github.append("gate_workflow: \(ex(c.gateWorkflow))") }
-        if !c.devWorkflow.isEmpty { github.append("dev_deploy: \(ex(c.devWorkflow))") }
-        if !c.prodWorkflow.isEmpty { github.append("prod_deploy: \(ex(c.prodWorkflow))") }
+        if all || !c.gateWorkflow.isEmpty { github.append("gate_workflow: \(exOrNil(c.gateWorkflow))") }
+        if all || !c.devWorkflow.isEmpty { github.append("dev_deploy: \(exOrNil(c.devWorkflow))") }
+        if all || !c.prodWorkflow.isEmpty { github.append("prod_deploy: \(exOrNil(c.prodWorkflow))") }
         let keepOldRows = c.importedSettings != nil &&
             c.importedWorkflows == [c.gateWorkflow, c.devWorkflow, c.prodWorkflow]
         if !keepOldRows {
@@ -371,14 +392,19 @@ enum Setup {
     /// out with nothing to replace it. Kept, the saved one goes on winning
     /// over that nil; it is cleared in the app's Settings. Empty is tested
     /// here the way `settingsFile` tests it.
+    ///
+    /// When the wizard started from the settings as they are now
+    /// (`settingsRead`), every one of them is named: what the person sees
+    /// in the wizard is what is saved, so an empty answer is theirs.
     static func wizardKeys(_ c: Choices) -> [String] {
         if c.role == .collector { return ["role", "collector.claude_dirs"] }
+        let all = c.settingsRead == true
         let answered = [("github.gate_workflow", c.gateWorkflow),
                         ("github.dev_deploy", c.devWorkflow),
                         ("github.prod_deploy", c.prodWorkflow),
                         ("new_relic.account_id", c.newRelicAccount.trimmingCharacters(in: .whitespaces)),
                         ("new_relic.api_key_ref", c.newRelicKeyRef.trimmingCharacters(in: .whitespaces))]
-            .filter { !$0.1.isEmpty }
+            .filter { all || !$0.1.isEmpty }
             .map { $0.0 }
         return ["role", "port", "brand.name", "claude.config_dirs", "github.repos", "github.branch",
                 "korium.enabled", "codex.enabled", "new_relic.enabled",
@@ -393,7 +419,7 @@ enum Setup {
         guard let body = try? JSONSerialization.data(withJSONObject: ["keys": wizardKeys(c)]),
               let data = engine(["forget"], input: String(decoding: body, as: UTF8.self), dataFolder: c.dataFolder),
               let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok else {
-            throw Failure.step("The saved settings could not be read. The log is at \(logFile.path).")
+            throw Failure.step("The saved settings (settings.json in \(c.dataFolder)) could not be changed. Check that the folder can be written to. The settings were left as they were.")
         }
     }
 
@@ -405,7 +431,23 @@ enum Setup {
     }
 
     /// Installs everything the choices ask for. `say` reports each step.
-    static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws {
+    /// Gives back how pairing went when it asked a hub to pair: a collector
+    /// is set up whether or not the hub said yes, so the caller has that to
+    /// tell the person.
+    @discardableResult
+    static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws -> PairAnswer? {
+        // A setup that stops after the settings were written says so: what
+        // it says about the file it stopped on is not the whole of it.
+        var saved = false
+        do {
+            return try steps(c, saved: &saved, onCode: onCode, say: say)
+        } catch Failure.step(let message) where saved {
+            throw Failure.step(message + " The settings from this setup were already saved, and the copies from before are in the backups folder.")
+        }
+    }
+
+    private static func steps(_ c: Choices, saved: inout Bool, onCode: @escaping (PairCode?) -> Void, say: @escaping (String) -> Void) throws -> PairAnswer? {
+        if let fault = awayFault() { throw Failure.step(fault + " Nothing was changed.") }
         // Kept from an earlier setup, so the hooks it added are still found
         // when this run could not take them out. The earlier record stays
         // where Uninstall looks until this run has written its own: the
@@ -413,39 +455,64 @@ enum Setup {
         let earlier = installed()
         let hookedCodex: String? = earlier?.hookedCodex
         let hooked: [String] = earlier?.hookedFolders ?? []
+        var c = c
+        c.hubURL = c.hubURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
+        let backups = backupFolder(data)
         // Where the board's code looks for the folders an earlier setup
         // hooked. A reinstall into another data folder carries it along.
         if let earlier, let folder = dataFolder, folder != c.dataFolder {
             let enc = JSONEncoder()
             enc.dateEncodingStrategy = .iso8601
-            try? enc.encode(earlier).write(to: data.appendingPathComponent("install.json"))
+            if let record = try? enc.encode(earlier) {
+                try? replace(data.appendingPathComponent("install.json"), with: record, backups: backups)
+            }
         }
+        var pairing: PairAnswer?
 
         if c.role.runsBoard {
-            if let imported = c.importedSettings {
-                say("Copying your earlier settings from \(imported)")
-                let copy = data.appendingPathComponent("settings.imported.exs")
-                try? fm.removeItem(at: copy)
-                try fm.copyItem(at: URL(fileURLWithPath: imported), to: copy)
+            // Before anything is written: a board that cannot have its port
+            // would only be found out a minute and a half later.
+            // A board started by hand that is about to be stopped may be
+            // what holds the port, so the port is looked at after that.
+            let oldItem = home.appendingPathComponent("Library/LaunchAgents/local.wallboard.plist")
+            let stopsOld = c.replaceOldBoard && Detect.oldLoginItemInstalled
+            if !stopsOld && portTakenByAnother(c.port) {
+                let byHand = Detect.oldLoginItemInstalled
+                    ? " The board you started by hand may be what uses it: turn on Stop that board on the second step, or pick another port."
+                    : ""
+                throw Failure.step("Port \(c.port) is already used by another program on this Mac, so the board cannot answer there. Go back and pick another port on the fourth step; 4748 to 4999 are usually free.\(byHand) Nothing was changed.")
             }
+            c = try carryOver(c, backups: backups, say: say)
             say("Writing the board's settings")
             // Before the file is written: if this cannot be done, nothing
             // has changed yet.
-            try forgetWizardKeys(c)
-            try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+            try writeSettings(c, backups: backups)
+            saved = true
+            agree(c, say: say)
             retireOldHooks(dataFolder: c.dataFolder, say: say)
 
-            if c.replaceOldBoard && Detect.oldLoginItemInstalled {
+            if stopsOld {
                 say("Stopping the board you started by hand before")
+                try keep(oldItem, in: backups)
                 let uid = getuid()
                 Shell.run("/bin/launchctl", ["bootout", "gui/\(uid)/local.wallboard"])
-                try? fm.removeItem(at: home.appendingPathComponent("Library/LaunchAgents/local.wallboard.plist"))
+                try? fm.removeItem(at: oldItem)
+                say("Its login item is kept in \(backups.path)")
+                // It lets go of the port a moment after it is told to stop.
+                var taken = portTakenByAnother(c.port)
+                for _ in 0..<10 where taken {
+                    sleep(1)
+                    taken = portTakenByAnother(c.port)
+                }
+                if taken {
+                    throw Failure.step("Port \(c.port) is still used by another program on this Mac after the board you started by hand was stopped, so the board cannot answer there. Go back and pick another port on the fourth step; 4748 to 4999 are usually free. The board you started by hand is stopped; its login item is in \(backups.path).")
+                }
             }
 
             say("Starting the board, and setting it to start when you log in")
-            try startBoard(c)
+            try startBoard(c, backups: backups)
 
             say("Waiting for the board to answer")
             guard waitForBoard(port: c.port, seconds: 90) else {
@@ -456,14 +523,14 @@ enum Setup {
 
         if c.role == .collector {
             say("Writing the collector's settings")
-            try forgetWizardKeys(c)
-            try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+            try writeSettings(c, backups: backups)
+            saved = true
             // Before the collector starts, so it never runs beside the hooks
             // an earlier version sent sessions with.
             retireOldHooks(dataFolder: c.dataFolder, say: say)
 
             say("Starting the collector, and setting it to start when you log in")
-            try startBoard(c)
+            try startBoard(c, backups: backups)
             guard waitForService(seconds: 30) else {
                 throw Failure.step("The collector did not start. Its log is at \(logFile.path).")
             }
@@ -481,6 +548,7 @@ enum Setup {
                 // The collector is set up either way; pairing can be done
                 // again from the app's first screen.
                 say(answer.ok ? answer.message : "Not paired yet. \(answer.message) Pair from this app when the hub is ready.")
+                pairing = answer
             }
         }
 
@@ -488,13 +556,329 @@ enum Setup {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = .prettyPrinted
-        try enc.encode(record).write(to: data.appendingPathComponent("install.json"))
+        try replace(data.appendingPathComponent("install.json"), with: try enc.encode(record), backups: backups)
         dataFolder = c.dataFolder
         say("Done")
+        return pairing
+    }
+
+    // MARK: Keeping what was there
+
+    /// Where one run keeps its copies of the files it changes: a folder
+    /// named for the time, under `backups` in the data folder.
+    static func backupFolder(_ data: URL, now: Date = Date()) -> URL {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HHmmss"
+        return data.appendingPathComponent("backups/\(f.string(from: now))")
+    }
+
+    /// Copies a file into this run's backup folder before it is changed.
+    /// The first copy of a run stays: it is the file as it was before the
+    /// run. A file that is not there needs no copy.
+    static func keep(_ url: URL, in backups: URL) throws {
+        guard fm.fileExists(atPath: url.path) else { return }
+        let copy = backups.appendingPathComponent(url.lastPathComponent)
+        if fm.fileExists(atPath: copy.path) { return }
+        do {
+            try fm.createDirectory(at: backups, withIntermediateDirectories: true)
+            try fm.copyItem(at: url, to: copy)
+        } catch {
+            throw Failure.step("Could not keep a copy of \(url.path) before changing it (\(error.localizedDescription)), so it was left as it was.")
+        }
+    }
+
+    /// Puts `contents` at `url`. A file already there is copied to the
+    /// backup folder first, and goes only when the new one is fully written
+    /// beside it: a write that fails leaves the old file as it was.
+    static func replace(_ url: URL, with contents: Data, backups: URL) throws {
+        if let old = try? Data(contentsOf: url), old == contents { return }
+        try keep(url, in: backups)
+        do {
+            try contents.write(to: url, options: .atomic)
+        } catch {
+            throw Failure.step("Could not write \(url.path) (\(error.localizedDescription)). The file that was there is unchanged.")
+        }
+    }
+
+    /// Writes settings.exs from the wizard's answers, after taking those
+    /// answers' keys out of the saved settings (settings.json) so the new
+    /// answers win. The two go together: when settings.exs cannot be
+    /// written, the saved settings are put back as they were, so the board
+    /// that is running keeps the values it had.
+    static func writeSettings(_ c: Choices, backups: URL) throws {
+        let data = URL(fileURLWithPath: c.dataFolder)
+        let saved = data.appendingPathComponent("settings.json")
+        try keep(saved, in: backups)
+        try forgetWizardKeys(c)
+        do {
+            try replace(data.appendingPathComponent("settings.exs"), with: Data(settingsFile(c).utf8), backups: backups)
+        } catch {
+            let copy = backups.appendingPathComponent(saved.lastPathComponent)
+            // Only when forgetting the answers did change the file.
+            if let before = fm.contents(atPath: copy.path), fm.contents(atPath: saved.path) != before {
+                do { try before.write(to: saved, options: .atomic) } catch {
+                    throw Failure.step("Could not write settings.exs, and the saved settings (\(saved.path)) could not be put back as they were. The copy from before is at \(copy.path).")
+                }
+            }
+            throw error
+        }
+    }
+
+    /// The setup's answers as the settings screen writes them, by key.
+    static func wizardValues(_ c: Choices) -> [String: String] {
+        func flag(_ on: Bool) -> String { on ? "true" : "false" }
+        return [
+            "port": String(c.port),
+            "brand.name": c.boardName,
+            "claude.config_dirs": c.claudeFolders.joined(separator: "\n"),
+            "github.repos": ([c.repo] + (c.otherRepos ?? [])).filter { !$0.isEmpty }.joined(separator: "\n"),
+            "github.branch": c.branch,
+            "github.gate_workflow": c.gateWorkflow,
+            "github.dev_deploy": c.devWorkflow,
+            "github.prod_deploy": c.prodWorkflow,
+            "korium.enabled": flag(c.korium),
+            "codex.enabled": flag(c.codex ?? false),
+            "new_relic.enabled": flag(c.newRelic),
+            "new_relic.account_id": c.newRelicAccount,
+            "new_relic.api_key_ref": c.newRelicKeyRef,
+            "dev_power.aws_profile": c.devProfile,
+            "builds.prod_profile": c.prodProfile,
+            "alerts.phone": c.phone,
+            "alerts.via": c.textVia,
+        ]
+    }
+
+    /// Makes the settings in use agree with the setup's answers. A board
+    /// from before the app had a settings page that saved in the database,
+    /// and what it saved there wins over settings.exs: an answer changed
+    /// in the setup would otherwise not take. Any answer that is not what
+    /// is in use once settings.exs is written is saved the way the Settings
+    /// screen saves, which wins over both.
+    static func agree(_ c: Choices, say: (String) -> Void) {
+        // Only when the setup started from the settings in use in this
+        // folder: then an answer that differs is one the person changed.
+        guard c.settingsReadFrom == c.dataFolder, let doc = settingsDoc(dataFolder: c.dataFolder) else { return }
+        func plain(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let now = Dictionary(doc.sections.flatMap { $0.fields }.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        let differ = wizardValues(c).filter { key, value in now[key].map { plain($0) != plain(value) } ?? false }
+        guard !differ.isEmpty else { return }
+        say("Saving the answers that differ from what an earlier board saved")
+        _ = save(differ, dataFolder: c.dataFolder)
+    }
+
+    /// The copy this app keeps of an earlier settings file, beside settings.exs.
+    static func importedCopy(_ dataFolder: String) -> URL {
+        URL(fileURLWithPath: dataFolder).appendingPathComponent("settings.imported.exs")
+    }
+
+    /// The choices with the earlier settings file they name checked. A
+    /// record can name one that has since been moved or deleted: then the
+    /// copy this app took of it stands in, and with no copy either nothing
+    /// is carried over. `note` says so in words for the person.
+    static func checkedImport(_ c: Choices) -> (choices: Choices, note: String?) {
+        guard let imported = c.importedSettings, !fm.fileExists(atPath: imported) else { return (c, nil) }
+        var c = c
+        let copy = importedCopy(c.dataFolder)
+        if fm.fileExists(atPath: copy.path) {
+            c.importedSettings = copy.path
+            return (c, "Your earlier settings file, \(imported), is gone. The copy taken when it was first carried over is used instead.")
+        }
+        c.importedSettings = nil
+        c.importedRepos = nil
+        c.importedWorkflows = nil
+        return (c, "Your earlier settings file, \(imported), is gone, and so is the copy of it at \(copy.path). Settings beyond the ones this setup asks about were not carried over. If you have a backup of that file, put it back there and use Reconfigure.")
+    }
+
+    /// Copies the earlier settings file beside settings.exs, which loads it
+    /// from there. Gives back the choices to go on with: without the
+    /// earlier file when it is gone and no copy was kept.
+    static func carryOver(_ c: Choices, backups: URL, say: (String) -> Void) throws -> Choices {
+        let (checked, note) = checkedImport(c)
+        if let note { say(note) }
+        let copy = importedCopy(c.dataFolder)
+        guard let imported = checked.importedSettings, imported != copy.path else { return checked }
+        say("Copying your earlier settings from \(imported)")
+        guard let contents = fm.contents(atPath: imported) else {
+            throw Failure.step("Could not read your earlier settings file, \(imported). Nothing was changed. Check the file, or turn off carrying it over on the second step.")
+        }
+        try replace(copy, with: contents, backups: backups)
+        // It can hold a password; a new file is otherwise readable by all.
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
+        return checked
+    }
+
+    /// The choices as the settings in use now have them, for Reconfigure:
+    /// the wizard then starts from what the board uses, with whatever was
+    /// changed in Settings or with `vitalaize setup` since the first setup,
+    /// and not from the first setup's answers.
+    static func prefill(_ c: Choices, from doc: SettingsDoc) -> Choices {
+        var c = c
+        let values = Dictionary(doc.sections.flatMap { $0.fields }.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        func lines(_ key: String) -> [String]? {
+            values[key].map { $0.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+        }
+        c.role = doc.role == "collector" ? .collector : (doc.role == "hub" ? .hub : .hubAndCollector)
+        if c.role == .collector {
+            if let dirs = lines("collector.claude_dirs"), !dirs.isEmpty { c.claudeFolders = dirs }
+            c.settingsRead = true
+            return c
+        }
+        if let v = values["port"].flatMap({ Int($0) }) { c.port = v }
+        if let v = values["brand.name"] { c.boardName = v }
+        if let dirs = lines("claude.config_dirs"), !dirs.isEmpty { c.claudeFolders = dirs }
+        if let repos = lines("github.repos"), let first = repos.first {
+            c.repo = first
+            c.otherRepos = Array(repos.dropFirst())
+        }
+        if let v = values["github.branch"] { c.branch = v }
+        if let v = values["github.gate_workflow"] { c.gateWorkflow = v }
+        if let v = values["github.dev_deploy"] { c.devWorkflow = v }
+        if let v = values["github.prod_deploy"] { c.prodWorkflow = v }
+        if let v = values["korium.enabled"] { c.korium = v == "true" }
+        if let v = values["codex.enabled"] { c.codex = v == "true" }
+        if let v = values["new_relic.enabled"] { c.newRelic = v == "true" }
+        if let v = values["new_relic.account_id"] { c.newRelicAccount = v }
+        if let v = values["new_relic.api_key_ref"] { c.newRelicKeyRef = v }
+        if let v = values["dev_power.aws_profile"] { c.devProfile = v }
+        if let v = values["builds.prod_profile"] { c.prodProfile = v }
+        if let v = values["alerts.phone"] { c.phone = v }
+        if let v = values["alerts.via"] { c.textVia = v }
+        c.settingsRead = true
+        return c
+    }
+
+    // MARK: Mending how it starts
+
+    /// True when the board or collector that is running was started before
+    /// the copy of it inside this app was put in place: a new version of
+    /// the app was installed over the old one, and what runs is still the
+    /// old one, with its files replaced under it.
+    static func runningIsOlder() -> Bool {
+        let print = Shell.run("/bin/launchctl", ["print", "gui/\(getuid())/\(label)"], timeout: 5)
+        guard print.ok, let match = print.output.range(of: #"\bpid = (\d+)"#, options: .regularExpression) else { return false }
+        let pid = print.output[match].filter { $0.isNumber }
+        // The process's age in seconds, which needs no date to be read.
+        let age = Shell.run("/bin/ps", ["-o", "etime=", "-p", String(pid)], timeout: 5)
+        guard age.ok, let seconds = elapsed(age.output) else { return false }
+        var info = stat()
+        guard stat(release.appendingPathComponent("bin/wallboard").path, &info) == 0 else { return false }
+        // When the file was put there (its change time), not when it was built.
+        let placed = Date(timeIntervalSince1970: TimeInterval(info.st_ctimespec.tv_sec))
+        return Date().addingTimeInterval(-seconds) < placed
+    }
+
+    /// Seconds from ps's elapsed time, [[days-]hours:]minutes:seconds.
+    static func elapsed(_ text: String) -> TimeInterval? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let dayParts = trimmed.split(separator: "-")
+        let days = dayParts.count == 2 ? Double(dayParts[0]) : 0
+        let clock = (dayParts.last ?? "").split(separator: ":").map { Double($0) }
+        guard let days, !clock.isEmpty, clock.count <= 3, !clock.contains(where: { $0 == nil }) else { return nil }
+        let seconds = clock.compactMap { $0 }.reduce(0) { $0 * 60 + $1 }
+        return days * 86400 + seconds
+    }
+
+    /// What stops VitalAIze from starting on this Mac as it was set up, in
+    /// words for the person, or nil when nothing does. An app installed
+    /// over an older one finds the older one's login item: it can name a
+    /// copy of the app that is gone, or a settings file that loads a file
+    /// that is gone.
+    static func startFault(_ record: Installed) -> String? {
+        let c = record.choices
+        let program = release.appendingPathComponent("bin/wallboard").path
+        guard let item = NSDictionary(contentsOf: agentPlist) else {
+            return "The login item that starts \(c.role.runsBoard ? "the board" : "the collector") was missing."
+        }
+        let was = (item["ProgramArguments"] as? [String])?.first ?? ""
+        if was != program {
+            // Another copy of the app that is still there keeps the login
+            // item: two copies would take it from each other every time
+            // one of them is opened.
+            if fm.isExecutableFile(atPath: was) { return nil }
+            return "The login item started VitalAIze from \(was), which is gone."
+        }
+        let settings = c.dataFolder + "/settings.exs"
+        if (item["EnvironmentVariables"] as? [String: String])?["WALLBOARD_SETTINGS"] != settings {
+            return "The login item named another settings file than \(settings)."
+        }
+        if let fault = settingsFault(c) { return fault }
+        if !Shell.run("/bin/launchctl", ["print", "gui/\(getuid())/\(label)"], timeout: 5).ok {
+            return "The login item was not loaded."
+        }
+        return nil
+    }
+
+    /// What is wrong with settings.exs itself, or nil: it is missing, or it
+    /// loads the copy of an earlier settings file and that copy is gone.
+    static func settingsFault(_ c: Choices) -> String? {
+        let path = c.dataFolder + "/settings.exs"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return "The settings file, \(path), was missing."
+        }
+        let copy = importedCopy(c.dataFolder)
+        if text.contains("settings.imported.exs") && !fm.fileExists(atPath: copy.path) {
+            return "The settings file loads \(copy.path), which is gone."
+        }
+        return nil
+    }
+
+    /// Makes the login item start VitalAIze from this app again, with the
+    /// data folder where it is: the settings, the database and what was
+    /// saved in Settings all stay. settings.exs is written again only when
+    /// it cannot load as it is, from the answers the setup recorded. Every
+    /// file changed is copied to the backup folder first.
+    static func mend(_ record: Installed, say: @escaping (String) -> Void) throws {
+        if let fault = awayFault() { throw Failure.step(fault) }
+        var c = record.choices
+        let data = URL(fileURLWithPath: c.dataFolder)
+        let backups = backupFolder(data)
+        if settingsFault(c) != nil {
+            if c.importedSettings == nil {
+                // settings.exs loads a copy the record knows nothing of.
+                say("Settings beyond the ones this setup asks about were not carried over. If you have a backup of \(importedCopy(c.dataFolder).path), put it back there and use Reconfigure.")
+            }
+            c = try carryOver(c, backups: backups, say: say)
+            say("Writing the settings file again from your setup answers")
+            try replace(data.appendingPathComponent("settings.exs"), with: Data(settingsFile(c).utf8), backups: backups)
+        }
+        say("Setting the login item to start VitalAIze from this app")
+        try startBoard(c, backups: backups)
+        if c.role.runsBoard {
+            guard waitForBoard(port: currentPort(c), seconds: 90) else {
+                throw Failure.step("The board did not start. Its log is at \(logFile.path).")
+            }
+        } else if !waitForService(seconds: 30) {
+            throw Failure.step("The collector did not start. Its log is at \(logFile.path).")
+        }
+        if fm.fileExists(atPath: backups.path) { say("The files as they were are in \(backups.path)") }
+        // An older install kept its log somewhere else, and that one stops here.
+        say("The log is at \(logFile.path)")
+    }
+
+    /// The port the board answers on now: the one saved in Settings when
+    /// there is one, else the setup's.
+    static func currentPort(_ c: Choices) -> Int {
+        let saved = URL(fileURLWithPath: c.dataFolder).appendingPathComponent("settings.json")
+        if let data = try? Data(contentsOf: saved),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let port = json["port"] as? Int { return port }
+            if let port = (json["port"] as? String).flatMap({ Int($0) }) { return port }
+        }
+        return c.port
+    }
+
+    /// Why this copy of the app must not be what the login item starts,
+    /// or nil: macOS runs an app opened from a download or a disk image
+    /// from a place that is gone after a restart or an eject.
+    static func awayFault() -> String? {
+        let path = release.path
+        guard path.contains("/AppTranslocation/") || path.hasPrefix("/Volumes/") else { return nil }
+        return "This copy of VitalAIze runs from a place that will not be there after a restart (\(path)). Move VitalAIze into the Applications folder and open it from there."
     }
 
     /// The login item that runs the board from inside this app.
-    static func startBoard(_ c: Choices) throws {
+    static func startBoard(_ c: Choices, backups: URL) throws {
         let data = c.dataFolder
         try fm.createDirectory(at: logFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(atPath: data + "/tmp", withIntermediateDirectories: true)
@@ -518,12 +902,17 @@ enum Setup {
             "StandardErrorPath": logFile.path
         ]
         let xml = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try xml.write(to: agentPlist)
+        try replace(agentPlist, with: xml, backups: backups)
 
         let domain = "gui/\(getuid())"
         Shell.run("/bin/launchctl", ["bootout", "\(domain)/\(label)"])
-        let r = Shell.run("/bin/launchctl", ["bootstrap", domain, agentPlist.path])
-        if !r.ok { throw Failure.step("Could not start the board: \(r.output)") }
+        // launchd can still be letting go of the item it just stopped.
+        var r = Shell.run("/bin/launchctl", ["bootstrap", domain, agentPlist.path])
+        for _ in 0..<5 where !r.ok {
+            sleep(1)
+            r = Shell.run("/bin/launchctl", ["bootstrap", domain, agentPlist.path])
+        }
+        if !r.ok { throw Failure.step("Could not start \(c.role.runsBoard ? "the board" : "the collector"): \(r.output)") }
     }
 
     /// Asks the board or the collector to stop; the login item starts it
@@ -534,6 +923,37 @@ enum Setup {
         Shell.run("/bin/launchctl", ["kill", "SIGTERM", target])
         // In case it was not running at all.
         Shell.run("/bin/launchctl", ["kickstart", target])
+    }
+
+    /// What runs on this Mac right now, as one sentence for the person,
+    /// after a setup with these choices stopped part way.
+    static func runningNow(_ c: Choices) -> String {
+        guard let record = installed() else {
+            return serviceRunning()
+                ? "VitalAIze was started, but its setup did not finish. Fix what is said above and run the setup again."
+                : "Nothing of VitalAIze is running on this Mac."
+        }
+        if record.choices.role.runsBoard {
+            let port = currentPort(record.choices)
+            return boardRunning(port: port)
+                ? "The board that was set up before is still running at http://localhost:\(String(port))."
+                : "The board is not running now. Use Open the log to see why, then Back to the setup."
+        }
+        return serviceRunning()
+            ? "The collector that was set up before is still running."
+            : "The collector is not running now. Use Open the log to see why, then Back to the setup."
+    }
+
+    /// True when a program other than this Mac's own board listens on the
+    /// port. The board that already runs there is about to be restarted,
+    /// so it is not in the way.
+    static func portTakenByAnother(_ port: Int) -> Bool {
+        guard Shell.run("/usr/bin/nc", ["-z", "-G", "1", "127.0.0.1", String(port)], timeout: 4).ok else { return false }
+        guard serviceRunning() else { return true }
+        // With no record, a setup stopped part way and what it started is
+        // still running: that is what a new try is about to restart.
+        guard let record = installed() else { return false }
+        return !(record.choices.role.runsBoard && currentPort(record.choices) == port)
     }
 
     /// Whether the login item is running, as launchd sees it.
@@ -592,10 +1012,38 @@ enum Setup {
     /// writes settings.json and restarts the login item only when a change
     /// needs it.
     static func save(_ values: [String: String], dataFolder folder: String? = nil) -> SaveAnswer {
-        let failed = SaveAnswer(ok: false, lines: ["The settings could not be saved. The log is at \(logFile.path)."], errors: nil, service: nil)
+        let place = folder ?? dataFolder ?? "the folder the board keeps its files in"
+        let failed = SaveAnswer(ok: false, lines: ["The settings could not be saved, and are as they were. Check that \(place) can be written to. The log is at \(logFile.path)."], errors: nil, service: nil)
+        // The saved settings as they were, kept before the board's code
+        // writes the file again.
+        var kept: (file: URL, copy: URL)?
+        if let dir = (folder ?? dataFolder).map({ URL(fileURLWithPath: $0) }) {
+            let file = dir.appendingPathComponent("settings.json")
+            let backups = backupFolder(dir)
+            do { try keep(file, in: backups) } catch {
+                return SaveAnswer(ok: false, lines: [error.localizedDescription], errors: nil, service: nil)
+            }
+            if fm.fileExists(atPath: file.path) { kept = (file, backups.appendingPathComponent(file.lastPathComponent)) }
+        }
+        // True when the save wrote the file; when it did not, there is
+        // nothing to keep and the copy goes again.
+        func wrote() -> Bool {
+            guard let kept else { return false }
+            if !fm.contentsEqual(atPath: kept.file.path, andPath: kept.copy.path) { return true }
+            try? fm.removeItem(at: kept.copy)
+            let folder = kept.copy.deletingLastPathComponent()
+            if (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true { try? fm.removeItem(at: folder) }
+            return false
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: ["values": values]),
               let data = engine(["save"], input: String(decoding: body, as: UTF8.self), dataFolder: folder),
-              let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data) else { return failed }
+              var answer = try? JSONDecoder().decode(SaveAnswer.self, from: data) else {
+            guard wrote(), let kept else { return failed }
+            return SaveAnswer(ok: false, lines: ["The settings were saved, but the save did not finish, so a change that needs a restart may not be in use yet. Go back and use Restart. The settings as they were before are in \(kept.copy.deletingLastPathComponent().path). The log is at \(logFile.path)."], errors: nil, service: nil)
+        }
+        if wrote(), answer.ok, let kept {
+            answer.lines = (answer.lines ?? []) + ["The settings as they were before this save are in \(kept.copy.deletingLastPathComponent().path)."]
+        }
         return answer
     }
 
@@ -625,9 +1073,13 @@ enum Setup {
         return answer
     }
 
+    /// Asked at 127.0.0.1, where the board listens: "localhost" is tried
+    /// at ::1 first, where another program could be the one to answer.
     static func boardRunning(port: Int) -> Bool {
-        let r = Shell.run("/usr/bin/curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", "http://localhost:\(port)/"], timeout: 5)
-        return r.output == "200"
+        let r = Shell.run("/usr/bin/curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", "http://127.0.0.1:\(port)/"], timeout: 5)
+        // A board with a password answers 401 until the password is given:
+        // it is running all the same.
+        return r.output == "200" || r.output == "401"
     }
 
     static func waitForBoard(port: Int, seconds: Int) -> Bool {
@@ -659,8 +1111,22 @@ enum Setup {
 
     // MARK: Uninstalling
 
-    static func uninstall(deleteData: Bool, say: (String) -> Void) {
-        say("Stopping VitalAIze")
+    static func uninstall(deleteData: Bool, say: (String) -> Void) throws {
+        let record = installed()
+        // Kept in the backup folder unless everything is being deleted, so
+        // a Remove by mistake can be put back by hand. When they cannot be
+        // kept, nothing is removed: it is still set up, and still starts
+        // when you log in.
+        if !deleteData, let folder = dataFolder {
+            let backups = backupFolder(URL(fileURLWithPath: folder))
+            do {
+                try keep(agentPlist, in: backups)
+                try keep(URL(fileURLWithPath: folder + "/install.json"), in: backups)
+            } catch {
+                throw Failure.step("\(error.localizedDescription) Nothing was removed. Check that \(folder) can be written to and use Remove again, or turn on deleting the database and settings too.")
+            }
+        }
+        say(record?.choices.role.runsBoard == false ? "Stopping the collector" : "Stopping the board")
         Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
         try? fm.removeItem(at: agentPlist)
         // The old upload hooks and this Mac's certificate for its hub, by

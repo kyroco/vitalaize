@@ -1,0 +1,26 @@
+# Reconfigure after the mend: the earlier settings file the first setup
+# carried over is gone, and the wizard gets through without it.
+
+wait 40 "The board is running"
+absent "Mended"
+click "Reconfigure…"
+wait 60 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+absent "A board you set up before"
+expect "Settings beyond the ones this setup asks about were not carried over."
+snap a02-reconfigure-folders
+click "Continue"
+wait "Main branch"
+value "Repository" "acme/rockets"
+click "Continue"
+wait "Name at the top"
+value "Name at the top" "Acme Saved"
+click "Continue"
+wait "This Mac"
+absent "Carried over"
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap a02-reconfigured

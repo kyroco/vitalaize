@@ -1,0 +1,31 @@
+# The app opened on a Mac whose login item is wrong and whose settings
+# file cannot be read by the board: the mend puts the login item right,
+# the board still cannot start, and the screen says so and what to do.
+# Reconfigure then writes the settings file again and the board is back.
+
+wait 10 "Kyroco VitalAIze"
+wait 200 "The board did not start. Its log is at"
+expect "which is gone."
+expect "Use Show the log to see why, then Reconfigure to set it up again. Your settings and database are where they were."
+wait 20 "The board is not answering"
+absent "Mended."
+snap f02-mend-failed
+click "Show the log"
+opened "board.log"
+click "Check again"
+wait 20 "The board is not answering"
+click "Reconfigure…"
+wait 90 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Main branch"
+click "Continue"
+wait "Name at the top"
+click "Continue"
+wait "This Mac"
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap f02-reconfigured

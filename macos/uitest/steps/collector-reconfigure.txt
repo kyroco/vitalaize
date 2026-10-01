@@ -1,0 +1,26 @@
+# Reconfigure on a paired collector: it stays paired unless a hub is
+# picked again, so nobody has to approve a new code.
+
+wait 40 "The collector is running"
+wait 60 "Connected to the hub at"
+click "Reconfigure…"
+wait 60 "What this Mac does"
+expect "Step 1 of 4"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Hubs on your network"
+expect "This Mac is paired with the hub at"
+enabled "Continue"
+snap c12-reconfigure-hub
+click "Continue"
+wait "This Mac"
+expect "stays paired with"
+snap c12-reconfigure-review
+click "Start the collector"
+wait 10 "Setting up…"
+wait 120 "The collector is running"
+wait 60 "Connected to the hub at"
+absent "Waiting for the hub to approve"
+absent "did not pair"
+snap c12-reconfigured

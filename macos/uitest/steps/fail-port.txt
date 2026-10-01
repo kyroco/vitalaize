@@ -1,0 +1,37 @@
+# The setup when another program already has the board's port: it stops
+# before changing anything, says so, and goes through once another port
+# is picked.
+
+wait 90 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Main branch"
+type "Repository" "acme/rockets"
+click "Continue"
+wait "Name at the top"
+type "Name at the top" "Acme"
+type "Port" "{PORT}"
+click "Continue"
+wait "This Mac"
+click "Install and start the board"
+wait 30 "That did not work"
+expect "Port {PORT} is already used by another program on this Mac"
+expect "Nothing was changed."
+expect "Nothing of VitalAIze is running on this Mac."
+snap f01-port-taken
+click "Open the log"
+opened "board.log"
+click "Back to the setup"
+wait 5 "This Mac"
+click "Back"
+wait "Name at the top"
+type "Port" "{PORT2}"
+click "Continue"
+wait "This Mac"
+expect "Acme at http://localhost:{PORT2}"
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap f01-other-port
