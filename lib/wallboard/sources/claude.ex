@@ -202,6 +202,9 @@ defmodule Wallboard.Sources.Claude do
       status: status,
       task: task(agent, job),
       why: if(status == :needs, do: why(agent, job), else: nil),
+      # The kind of wait, as `claude agents` words it. A collector sends this
+      # in place of the words above.
+      waiting_for: if(status == :needs, do: agent.waiting_for, else: nil),
       # When the waiting started, as far as the files can tell.
       waiting_since: waiting_since(agent, job, file),
       updated_at: (job && job.updated_at) || (file && file.updated_at) || agent.started_at,

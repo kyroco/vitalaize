@@ -1,0 +1,144 @@
+defmodule Wallboard.CollectorOutboxTest do
+  use ExUnit.Case, async: true
+
+  alias Wallboard.Collector.{Outbox, Proto}
+  alias Wallboard.Fixtures
+
+  setup do
+    dir = Fixtures.tmp_path("outbox")
+    on_exit(fn -> File.rm_rf!(dir) end)
+    %{dir: dir}
+  end
+
+  defp start(dir, opts \\ []) do
+    start_supervised!({Outbox, [dir: dir, name: nil] ++ opts}, id: make_ref())
+  end
+
+  defp event(n, pad \\ 0) do
+    %Proto.Event{
+      session_id: "s#{n}",
+      file: String.duplicate("f", pad) <> ".jsonl",
+      position: n,
+      items: [%Proto.Item{body: {:ended, %Proto.SessionEnded{}}}]
+    }
+  end
+
+  defp files(dir), do: dir |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "events-"))
+
+  test "events come back in the order they went in, numbered from 1", %{dir: dir} do
+    box = start(dir)
+    assert Outbox.checkpoint(box) == nil
+    assert Outbox.append(box, [event(1), event(2)], "a") == 2
+    assert Outbox.append(box, [event(3)], "b") == 3
+
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}, {3, event(3)}]
+    assert Outbox.read(box, 2) == [{3, event(3)}]
+    assert Outbox.read(box, 0, 2) == [{1, event(1)}, {2, event(2)}]
+    assert Outbox.checkpoint(box) == "b"
+    assert %{seq: 3, acked: 0} = Outbox.stats(box)
+  end
+
+  test "a restart keeps the events, their numbers and the saved point", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1), event(2)], "a")
+    GenServer.stop(box)
+
+    box = start(dir)
+    assert Outbox.checkpoint(box) == "a"
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
+    assert Outbox.append(box, [event(3)], "b") == 3
+    assert Outbox.read(box, 2) == [{3, event(3)}]
+  end
+
+  test "events written after the last saved point are dropped on the next start", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1)], "a")
+    GenServer.stop(box)
+
+    # The collector stopped after writing two events and half of a third,
+    # before their point was saved.
+    [name] = files(dir)
+    body = Proto.Event.encode(event(2))
+
+    extra =
+      <<byte_size(body)::32, body::binary, byte_size(body)::32, body::binary, 9::32, "half">>
+
+    File.write!(Path.join(dir, name), extra, [:append])
+
+    box = start(dir)
+    assert Outbox.checkpoint(box) == "a"
+    assert Outbox.read(box, 0) == [{1, event(1)}]
+    assert Outbox.append(box, [event(2)], "b") == 2
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
+  end
+
+  test "a file of nothing but unsaved events is removed", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [], "a")
+    GenServer.stop(box)
+
+    body = Proto.Event.encode(event(1))
+    stray = Path.join(dir, "events-00000000000000000001.log")
+    File.write!(stray, <<byte_size(body)::32, body::binary>>)
+
+    box = start(dir)
+    assert Outbox.read(box, 0) == []
+    refute File.exists?(stray)
+  end
+
+  test "sent events go, a file at a time, and the numbers carry on", %{dir: dir} do
+    box = start(dir)
+    # Each batch is over a megabyte, so each starts a file of its own.
+    for n <- 1..3, do: Outbox.append(box, [event(n, 600_000), event(n + 10, 600_000)], "c#{n}")
+    assert length(files(dir)) == 3
+    before = Outbox.stats(box).bytes
+
+    assert Outbox.ack(box, 3) == :ok
+    assert length(files(dir)) == 2
+    assert Outbox.stats(box).bytes < before
+    assert [{3, _}, {4, _}, {5, _}, {6, _}] = Outbox.read(box, 2)
+
+    # More than there is acks only what there is.
+    Outbox.ack(box, 99)
+    assert files(dir) == []
+    assert %{seq: 6, acked: 6, bytes: 0} = Outbox.stats(box)
+    assert Outbox.append(box, [event(7)], "d") == 7
+    GenServer.stop(box)
+
+    box = start(dir)
+    assert Outbox.read(box, 0) == [{7, event(7)}]
+    assert %{seq: 7, acked: 6} = Outbox.stats(box)
+  end
+
+  test "it says when it is full, and has room again once events are sent", %{dir: dir} do
+    box = start(dir, max_bytes: 1_000)
+    assert Outbox.room?(box)
+    Outbox.append(box, [event(1, 2_000)], "a")
+    refute Outbox.room?(box)
+    Outbox.ack(box, 1)
+    assert Outbox.room?(box)
+  end
+
+  test "only the person the collector runs as can read it", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1)], "a")
+    assert Bitwise.band(File.stat!(dir).mode, 0o777) == 0o700
+
+    for name <- File.ls!(dir) do
+      assert Bitwise.band(File.stat!(Path.join(dir, name)).mode, 0o777) == 0o600
+    end
+  end
+
+  @tag :capture_log
+  test "a saved point that cannot be read starts the outbox over", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1)], "a")
+    GenServer.stop(box)
+    File.write!(Path.join(dir, "state"), "not json")
+
+    box = start(dir)
+    assert Outbox.checkpoint(box) == nil
+    assert Outbox.read(box, 0) == []
+    assert files(dir) == []
+  end
+end

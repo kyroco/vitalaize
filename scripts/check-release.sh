@@ -1,7 +1,9 @@
 #!/bin/sh
 # Unpacks a Linux download, starts the board from it and checks that the page
-# answers, then stops it. CI runs this on every download it builds, so a
-# download that cannot start never reaches a release.
+# answers, then stops it. Then it starts the same download as a collector
+# and checks that it comes up and opens no port. CI runs this on every
+# download it builds, so a download that cannot start never reaches a
+# release.
 #
 #   scripts/check-release.sh vitalaize-0.3.0-linux-x86_64.tar.gz
 #
@@ -90,3 +92,39 @@ grep -q "Running WallboardWeb.Endpoint .* at [^ ]*:$PORT " "$WORK/board.log" ||
 grep -q 'RELEASE_DISTRIBUTION:-none' "$ROOT"/releases/*/env.sh ||
   failed "The download's releases/*/env.sh does not turn Erlang remote connections off."
 echo "The board started from $(basename "$1") and answered on port $PORT."
+
+# The same download as a collector: it must come up, and nothing may answer
+# on the port, since a collector runs no board.
+kill "$BOARD" 2>/dev/null || true
+wait "$BOARD" 2>/dev/null || true
+BOARD=
+i=0
+while curl -s --max-time 5 -o /dev/null "http://127.0.0.1:$PORT/"; do
+  i=$((i + 1))
+  [ "$i" -lt 30 ] || failed "The board still answers on port $PORT after it was stopped."
+  sleep 1
+done
+
+env -i PATH="$PATH" HOME="$WORK/home" LANG=C.UTF-8 \
+  WALLBOARD_SETTINGS="$WORK/settings.exs" WALLBOARD_ROLE=collector RELEASE_DISTRIBUTION=none \
+  "$ROOT/bin/wallboard" start >"$WORK/board.log" 2>&1 &
+BOARD=$!
+
+i=0
+until grep -q 'Collector is up' "$WORK/board.log"; do
+  kill -0 "$BOARD" 2>/dev/null || failed "The collector stopped before it came up."
+  i=$((i + 1))
+  [ "$i" -lt 60 ] || failed "The collector did not come up within 60 seconds."
+  sleep 1
+done
+
+# Long enough for a web server to have started, had one been asked for.
+sleep 3
+kill -0 "$BOARD" 2>/dev/null || failed "The collector came up and then stopped."
+if curl -s --max-time 5 -o /dev/null "http://127.0.0.1:$PORT/"; then
+  failed "A collector must open no port, but something answers on port $PORT."
+fi
+if grep -q 'Running WallboardWeb.Endpoint' "$WORK/board.log"; then
+  failed "A collector must not start the board's web server."
+fi
+echo "The collector started from $(basename "$1") and opened no port."
