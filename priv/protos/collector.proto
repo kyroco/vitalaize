@@ -33,27 +33,35 @@ message Hello {
   repeated string folders = 4;
 }
 
-// One thing learned from one line of a session file, or from the session's
-// live status.
+// What one line of a session file told the collector, or the session's live
+// status. Everything a line gives travels in this one message, so a line
+// arrives whole or not at all.
 message Event {
   string session_id = 1;
-  // The file the event came from, as a path inside its watched folder.
-  // Empty for a status, which comes from no file.
+  // The file the line is in, as a path inside its watched folder. Empty
+  // for a status or an end, which come from no file.
   string file = 2;
-  // The byte just past the line the event came from: where to read on from.
+  // The byte just past the line: where to read on from.
   uint64 position = 3;
-  // When it happened, in seconds since 1970. 0 when the line has no time.
+  // The line's time in seconds since 1970, or the time of the nearest line
+  // before it that has one. 0 when none has.
   int64 at = 4;
+  // True when the file is a helper agent's. The hub adds a helper file's
+  // requests, tools and changes to its session, and keeps its counts apart.
+  bool subagent = 5;
+  repeated Item items = 6;
+}
 
+message Item {
   oneof body {
-    SessionStarted started = 10;
-    Request request = 11;
-    ToolTally tool = 12;
-    Changes changes = 13;
-    Status status = 14;
-    Summary summary = 15;
-    SessionEnded ended = 16;
-    Counts counts = 17;
+    SessionStarted started = 1;
+    Request request = 2;
+    ToolTally tool = 3;
+    Changes changes = 4;
+    Status status = 5;
+    Summary summary = 6;
+    SessionEnded ended = 7;
+    Counts counts = 8;
   }
 }
 
@@ -69,7 +77,7 @@ message SessionStarted {
   string account = 2;
 }
 
-// One model reply. A later message with the same request_id replaces it.
+// One model reply. A later one with the same request_id replaces it.
 message Request {
   string request_id = 1;
   string model = 2;
@@ -145,6 +153,7 @@ message Summary {
   string entrypoint = 11;
 }
 
+// A pull request on github.com. Its number and repo are read from the link.
 message PullRequest {
   string url = 1;
   uint64 number = 2;

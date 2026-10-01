@@ -75,15 +75,17 @@ defmodule Wallboard.CollectorProtoTest do
   end
 
   defp from_collector do
+    # Each kind alone, then all of them in one event, as one line can give.
     events =
-      for body <- bodies() do
+      for items <- Enum.map(bodies(), &[&1]) ++ [bodies()] do
         {:event,
          %Proto.Event{
            session_id: "d299768e",
            file: "d299768e.jsonl",
            position: 4096,
            at: 1_790_000_000,
-           body: body
+           subagent: true,
+           items: Enum.map(items, &%Proto.Item{body: &1})
          }}
       end
 
@@ -133,7 +135,7 @@ defmodule Wallboard.CollectorProtoTest do
 
   test "the round trips above cover every message kind in the schema" do
     assert MapSet.new(from_collector(), &elem(&1, 0)) == kinds(Proto.FromCollector)
-    assert MapSet.new(Keyword.keys(bodies())) == kinds(Proto.Event)
+    assert MapSet.new(Keyword.keys(bodies())) == kinds(Proto.Item)
     assert MapSet.new(Keyword.keys(from_hub())) == kinds(Proto.FromHub)
   end
 

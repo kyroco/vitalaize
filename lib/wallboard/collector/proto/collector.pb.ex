@@ -83,20 +83,32 @@ defmodule Wallboard.Collector.Proto.Event do
     protoc_gen_elixir_version: "0.17.0",
     syntax: :proto3
 
-  oneof(:body, 0)
-
   field(:session_id, 1, type: :string, json_name: "sessionId")
   field(:file, 2, type: :string)
   field(:position, 3, type: :uint64)
   field(:at, 4, type: :int64)
-  field(:started, 10, type: Wallboard.Collector.Proto.SessionStarted, oneof: 0)
-  field(:request, 11, type: Wallboard.Collector.Proto.Request, oneof: 0)
-  field(:tool, 12, type: Wallboard.Collector.Proto.ToolTally, oneof: 0)
-  field(:changes, 13, type: Wallboard.Collector.Proto.Changes, oneof: 0)
-  field(:status, 14, type: Wallboard.Collector.Proto.Status, oneof: 0)
-  field(:summary, 15, type: Wallboard.Collector.Proto.Summary, oneof: 0)
-  field(:ended, 16, type: Wallboard.Collector.Proto.SessionEnded, oneof: 0)
-  field(:counts, 17, type: Wallboard.Collector.Proto.Counts, oneof: 0)
+  field(:subagent, 5, type: :bool)
+  field(:items, 6, repeated: true, type: Wallboard.Collector.Proto.Item)
+end
+
+defmodule Wallboard.Collector.Proto.Item do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.Item",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  oneof(:body, 0)
+
+  field(:started, 1, type: Wallboard.Collector.Proto.SessionStarted, oneof: 0)
+  field(:request, 2, type: Wallboard.Collector.Proto.Request, oneof: 0)
+  field(:tool, 3, type: Wallboard.Collector.Proto.ToolTally, oneof: 0)
+  field(:changes, 4, type: Wallboard.Collector.Proto.Changes, oneof: 0)
+  field(:status, 5, type: Wallboard.Collector.Proto.Status, oneof: 0)
+  field(:summary, 6, type: Wallboard.Collector.Proto.Summary, oneof: 0)
+  field(:ended, 7, type: Wallboard.Collector.Proto.SessionEnded, oneof: 0)
+  field(:counts, 8, type: Wallboard.Collector.Proto.Counts, oneof: 0)
 end
 
 defmodule Wallboard.Collector.Proto.SessionStarted do
