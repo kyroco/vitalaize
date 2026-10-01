@@ -35,6 +35,8 @@ defmodule Wallboard.Archive.Transcript do
       first_prompt: nil,
       last_prompt: nil,
       requests: %{},
+      # The id of the request the latest reply line added or changed.
+      last_request: nil,
       model: nil,
       effort: nil,
       peak_context: 0,
@@ -162,6 +164,7 @@ defmodule Wallboard.Archive.Transcript do
           %{
             t
             | requests: Map.put(t.requests, id, req),
+              last_request: id,
               model: msg["model"] || t.model,
               effort: e["effort"] || t.effort,
               peak_context: max(t.peak_context, context)

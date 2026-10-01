@@ -1,0 +1,223 @@
+// The messages a collector and the hub send each other, over one two-way
+// stream. Wallboard.Collector.Filter's module doc says what each message is
+// for and which text may go in one.
+//
+// After changing this file, build the Elixir modules again with the command
+// in that module doc. Never reuse or renumber a field: an older collector
+// and a newer hub must still understand each other.
+syntax = "proto3";
+
+package wallboard.collector.proto;
+
+service Collector {
+  rpc Stream(stream FromCollector) returns (stream FromHub);
+}
+
+// ---------------------------------------------------------------------------
+// Collector to hub
+
+message FromCollector {
+  oneof body {
+    Hello hello = 1;
+    Event event = 2;
+    Ack ack = 3;
+  }
+}
+
+// The first message on every stream.
+message Hello {
+  string machine = 1;
+  string os = 2;
+  string version = 3;
+  // The Claude and Codex folders this collector watches.
+  repeated string folders = 4;
+}
+
+// One thing learned from one line of a session file, or from the session's
+// live status.
+message Event {
+  string session_id = 1;
+  // The file the event came from, as a path inside its watched folder.
+  // Empty for a status, which comes from no file.
+  string file = 2;
+  // The byte just past the line the event came from: where to read on from.
+  uint64 position = 3;
+  // When it happened, in seconds since 1970. 0 when the line has no time.
+  int64 at = 4;
+
+  oneof body {
+    SessionStarted started = 10;
+    Request request = 11;
+    ToolTally tool = 12;
+    Changes changes = 13;
+    Status status = 14;
+    Summary summary = 15;
+    SessionEnded ended = 16;
+    Counts counts = 17;
+  }
+}
+
+enum Tool {
+  TOOL_UNKNOWN = 0;
+  CLAUDE = 1;
+  CODEX = 2;
+}
+
+message SessionStarted {
+  Tool tool = 1;
+  // The short name of the Claude or Codex login the session runs under.
+  string account = 2;
+}
+
+// One model reply. A later message with the same request_id replaces it.
+message Request {
+  string request_id = 1;
+  string model = 2;
+  string effort = 3;
+  uint64 input_tokens = 4;
+  uint64 output_tokens = 5;
+  uint64 cache_read_tokens = 6;
+  uint64 cache_write_5m_tokens = 7;
+  uint64 cache_write_1h_tokens = 8;
+  // Dollars, at the collector's prices.
+  double cost = 9;
+  // True when a helper agent made the request.
+  bool subagent = 10;
+}
+
+// One tool's totals in this file so far.
+message ToolTally {
+  string name = 1;
+  uint64 calls = 2;
+  uint64 errors = 3;
+}
+
+// Code changes in this file so far. Only counts, never a file's name.
+message Changes {
+  uint64 lines_added = 1;
+  uint64 lines_removed = 2;
+  uint64 files_touched = 3;
+}
+
+message Status {
+  enum State {
+    STATE_UNKNOWN = 0;
+    WORKING = 1;
+    WAITING = 2;
+    IDLE = 3;
+  }
+
+  // Why a session waits on its person. A kind, never the question's words.
+  enum Why {
+    WHY_UNKNOWN = 0;
+    PERMISSION = 1;
+    QUESTION = 2;
+    DIALOG = 3;
+    NETWORK = 4;
+    HELPER = 5;
+    GOAL = 6;
+    OTHER = 7;
+  }
+
+  State state = 1;
+  Why why = 2;
+  // The tool a permission request is for, by name only.
+  string tool = 3;
+  // When this state began, in seconds since 1970. 0 when not known.
+  int64 since = 4;
+}
+
+// The only free text that leaves a collector. Each message holds every
+// field as it stands now and replaces the one before it.
+message Summary {
+  string title = 1;
+  string first_prompt = 2;
+  string last_prompt = 3;
+  string folder = 4;
+  string branch = 5;
+  // The folder's GitHub repository, as owner/name.
+  string repo = 6;
+  repeated PullRequest prs = 7;
+  string model = 8;
+  string effort = 9;
+  // The Claude Code or Codex version, and what started the session.
+  string version = 10;
+  string entrypoint = 11;
+}
+
+message PullRequest {
+  string url = 1;
+  uint64 number = 2;
+  string repo = 3;
+}
+
+message SessionEnded {}
+
+// Numbers about this file so far. Each message replaces the one before it.
+message Counts {
+  uint64 prompts = 1;
+  uint64 turns = 2;
+  uint64 turn_ms = 3;
+  uint64 api_ms = 4;
+  uint64 tool_ms = 5;
+  uint64 compactions = 6;
+  uint64 api_errors = 7;
+  uint64 retries = 8;
+  uint64 aborted = 9;
+  uint64 denials = 10;
+  uint64 peak_context = 11;
+  uint64 context_window = 12;
+  Korium korium = 13;
+}
+
+message Korium {
+  uint64 searches = 1;
+  uint64 search_hits = 2;
+  uint64 saves = 3;
+  uint64 save_errors = 4;
+  uint64 code_searches = 5;
+  uint64 code_hits = 6;
+  uint64 index = 7;
+  uint64 other = 8;
+}
+
+// The collector got the hub message with this id.
+message Ack {
+  uint64 id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Hub to collector
+
+message FromHub {
+  // Counts up on each stream. The collector answers with an Ack.
+  uint64 id = 1;
+
+  oneof body {
+    Resume resume = 2;
+    BackSoon back_soon = 3;
+    Disconnected disconnected = 4;
+    Answer answer = 5;
+  }
+}
+
+// Where the hub got to in each file it knows, so the collector sends only
+// what came after.
+message Resume {
+  repeated ResumePoint points = 1;
+}
+
+message ResumePoint {
+  string session_id = 1;
+  string file = 2;
+  uint64 position = 3;
+}
+
+// The hub is about to restart on purpose. Keep data and try again.
+message BackSoon {}
+
+// The hub no longer accepts this machine. Stop, and do not try again.
+message Disconnected {}
+
+// Kept for answers to waiting agents (VIT-11). Empty until then.
+message Answer {}

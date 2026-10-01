@@ -31,3 +31,17 @@ field Claude Code 2.1.284 sets for a waiting session (`state: "blocked"`, or
 `status: "waiting"` with `waitingFor`). New Relic has no real fixture: this
 session was not allowed to read the key, so its parsing test uses the reply
 shape from New Relic's NerdGraph documentation and says so.
+
+The `collector/` files are not captures. They are written by hand in the
+shape Claude Code 2.1.284 and codex-cli 0.155.1 write their session files,
+with made-up content, for the tests of what a collector may send to the hub
+(`Wallboard.Collector.Filter`). Every word starting with `PLANTED` marks text
+that must never leave the collector's machine: a prompt past its clip point,
+the model's replies, tool inputs and outputs, file names and contents, and
+pasted data.
+
+| File | What it stands for |
+|---|---|
+| collector/claude_session.jsonl | a Claude session's main transcript |
+| collector/claude_subagent.jsonl | one of its helper agents' transcripts |
+| collector/codex_rollout.jsonl | a Codex session's rollout file |

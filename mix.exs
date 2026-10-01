@@ -35,6 +35,9 @@ defmodule Wallboard.MixProject do
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
       {:exqlite, "~> 0.41.0"},
+      # The messages a collector and the hub send each other (see
+      # Wallboard.Collector.Filter).
+      {:protobuf, "~> 0.17.0"},
       # Security scanner for Phoenix code. CI runs it; run it yourself with
       # `mix sobelow`.
       {:sobelow, "~> 0.16", only: [:dev, :test], runtime: false}
