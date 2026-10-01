@@ -294,7 +294,8 @@ defmodule Wallboard.Remote do
     case state.entries[key] do
       %{waiting?: true, since: ^since} = entry ->
         # A machine that also runs a streaming collector reports the same
-        # wait there, and that one sends the alert.
+        # wait there, and that one sends the alert. Only while its stream
+        # is open: a collector that is cut off reports nothing.
         if Wallboard.Link.Sessions.live?(entry.session_id) do
           {:noreply, state}
         else

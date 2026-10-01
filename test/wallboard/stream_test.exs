@@ -78,7 +78,7 @@ defmodule Wallboard.StreamTest do
 
   defp start_hub(c) do
     start_supervised!({Store, path: Path.join(c.dir, "wallboard.db")})
-    start_supervised!({Sessions, save_ms: 100})
+    start_supervised!({Sessions, save_ms: 100, reap_ms: c[:reap_ms] || 300_000})
     start_supervised!({Hub, dir: c.link, port: c.port})
     :ok
   end
@@ -651,6 +651,12 @@ defmodule Wallboard.StreamTest do
           Store.collector_events("papa", @codex_id) != []
       end)
 
+      # The collector says each live session's status again, so the cards
+      # are back too, with their lines.
+      look(w)
+      wait_until(fn -> card(@claude_id) != nil and card(@codex_id) != nil end)
+      wait_until(fn -> card(@claude_id).detail.cost > 0 end)
+
       look(w)
       agents(c, [])
       mark(c, %{"hook_event_name" => "SessionEnd"})
@@ -675,6 +681,8 @@ defmodule Wallboard.StreamTest do
       wait_until(fn -> card(@claude_id).stale end)
       # Stale, not idle: the hub does not know what happened since.
       assert %{status: :working, stale_since: %DateTime{}} = card(@claude_id)
+      # A cut-off collector's word no longer stands in for the old hooks'.
+      refute Sessions.live?(@claude_id)
 
       w = start_collector(c)
       wait_until(fn -> not card(@claude_id).stale end)
@@ -707,6 +715,122 @@ defmodule Wallboard.StreamTest do
 
       start_collector(c)
       wait_until(fn -> not card(@claude_id).stale end)
+    end
+  end
+
+  describe "what the hub is told by hand" do
+    defp status_row(id, state, opts) do
+      event = Wallboard.Collector.Filter.status(%{session_id: id}, state, opts)
+
+      %{
+        session_id: id,
+        file: "",
+        position: 0,
+        at: event.at,
+        kind: "status",
+        event: Wallboard.Collector.Proto.Event.encode(event)
+      }
+    end
+
+    defp tell(rows), do: :ok = Store.put_collector_events("mama", rows, System.os_time(:second))
+
+    test "a new wait that follows an old one in the same batch still alerts, once", c do
+      start_hub(c)
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      at = &DateTime.add(now, &1)
+
+      tell([status_row("s-1", :needs, why: :question, since: at.(0), at: at.(0))])
+
+      tell([
+        status_row("s-1", :working, at: at.(1)),
+        status_row("s-1", :needs, why: :question, since: at.(2), at: at.(2))
+      ])
+
+      assert_receive {:alert, "/slack", _}, 4_000
+      assert_receive {:alert, "/topic", _}, 4_000
+      # The same wait said again, as after a reconnect, sends nothing more.
+      tell([status_row("s-1", :needs, why: :question, since: at.(9), at: at.(9))])
+      refute_receive {:alert, _, _}, 1_800
+      assert Sessions.cards() |> hd() |> Map.fetch!(:waiting_since) == at.(2)
+    end
+
+    test "an event the hub cannot add up costs that event, not the hub", c do
+      start_hub(c)
+      pid = Process.whereis(Sessions)
+      now = DateTime.utc_now()
+
+      bad = %Wallboard.Collector.Proto.Event{
+        session_id: "s-2",
+        file: "s-2.jsonl",
+        position: 10,
+        at: 1,
+        items: [
+          %Wallboard.Collector.Proto.Item{
+            body: {:request, %Wallboard.Collector.Proto.Request{request_id: "r", cost: :nan}}
+          }
+        ]
+      }
+
+      tell([
+        %{
+          session_id: "s-2",
+          file: "s-2.jsonl",
+          position: 10,
+          at: 1,
+          kind: "file",
+          event: Wallboard.Collector.Proto.Event.encode(bad)
+        },
+        status_row("s-2", :working, at: now),
+        status_row("s-3", :working, at: now)
+      ])
+
+      wait_until(fn -> Enum.any?(Sessions.cards(), &(&1.session_id == "s-3")) end)
+      :ok = Sessions.save()
+      assert Process.whereis(Sessions) == pid
+    end
+
+    @tag reap_ms: 400
+    test "a session its collector no longer speaks of after it connected has ended", c do
+      start_hub(c)
+      pair(c)
+      w = start_collector(c)
+      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+      agents(c, [{@claude_id, %{"status" => "busy"}}])
+      look(w)
+      wait_until(fn -> card(@claude_id) != nil end)
+      drained(w)
+
+      # The collector loses its place while the session ends: it has no
+      # memory of the session, so it sends no end.
+      kill_collector(w)
+      File.rm_rf!(Path.join(c.collector.collector.dir, "outbox"))
+      agents(c, [])
+      w = start_collector(c)
+      look(w)
+      wait_until(fn -> card(@claude_id) == nil end)
+
+      :ok = Sessions.save()
+      assert "gone" in Enum.map(Store.get_session("papa", @claude_id).events, & &1.status)
+    end
+
+    @tag reap_ms: 400
+    test "a session that is still running keeps its card through a reconnect", c do
+      start_hub(c)
+      pair(c)
+      w = start_collector(c)
+      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+      agents(c, [{@claude_id, %{"status" => "idle"}}])
+      look(w)
+      wait_until(fn -> card(@claude_id) != nil end)
+      drained(w)
+
+      kill_collector(w)
+      w = start_collector(c)
+      wait_until(fn -> not card(@claude_id).stale end)
+      # Its status has not changed, and is said again all the same.
+      look(w)
+      Process.sleep(900)
+      assert %{status: :idle, stale: false} = card(@claude_id)
     end
   end
 

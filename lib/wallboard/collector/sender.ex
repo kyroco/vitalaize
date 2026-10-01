@@ -15,8 +15,9 @@ defmodule Wallboard.Collector.Sender do
   leaves there: `cert.pem`, `key.pem` and `ca.pem`, and `hub.json` with the
   hub's address, such as `{"host": "192.168.1.20", "link_port": 4748}`.
   Until all four are there nothing is sent, and the outbox keeps the
-  events. The sender looks for them every few seconds, so a collector
-  paired while it runs starts sending without a restart.
+  events. The sender looks for them twice a second, so a collector paired
+  for the first time while it runs starts sending without a restart. Once
+  it has started, it keeps that hub and certificate until it is restarted.
 
   ## Sending
 
@@ -33,10 +34,11 @@ defmodule Wallboard.Collector.Sender do
   (`Wallboard.Collector.Watcher.rewind/2`). A file the hub has less of than
   the collector has read is read again from the hub's place, and what was
   already waiting of that file, in the outbox and in the client's buffer,
-  is dropped unsent: the lines read again replace it. So after a dropout,
-  a restart of either side, or a hub that lost some of what it had, the
-  hub gets each file's lines in order with none missing, whatever was on
-  its way before.
+  is dropped unsent: the lines read again replace it. The client sends
+  nothing between the hub's word and the moment that is done (`hold`). So
+  after a dropout, a restart of either side, or a hub that lost some of
+  what it had, the hub gets each file's lines in order with none missing,
+  whatever was on its way before.
 
   Which events are dropped unsent is kept in `skip.json` in the collector's
   folder, so a collector that stops halfway through does not send them
@@ -92,9 +94,11 @@ defmodule Wallboard.Collector.Sender do
       client_opts: Keyword.get(opts, :client, []),
       tick_ms: Keyword.get(opts, :tick_ms, @tick_ms),
       client: nil,
-      # The hub's positions still to go back to, and whether it has been
-      # done at least once: nothing is sent before.
+      # The hub's positions still to go back to, then the files the
+      # client is still to forget, and whether both have been done at
+      # least once: nothing is sent before.
       resume: nil,
+      forget: nil,
       ready?: false,
       # file => the outbox number up to which its events are not sent
       skip: %{},
@@ -142,38 +146,47 @@ defmodule Wallboard.Collector.Sender do
   defp connect(%{client: nil} = state) do
     with {:ok, hub} <- paired(state.dir),
          %Proto.Hello{} = hello <- hello(state) do
-      # Read here first: files that are there and are not a certificate
-      # must not stop the collector.
-      Authority.collector_tls(hub.tls)
+      if certificate?(hub.tls) do
+        opts =
+          Keyword.merge(
+            [
+              host: hub.host,
+              port: hub.port,
+              tls: hub.tls,
+              hello: hello,
+              buffer: Path.join(state.dir, "link.buffer"),
+              listener: self(),
+              # Nothing leaves the client's buffer until the watcher has
+              # gone back to the hub's place.
+              hold: true
+            ],
+            state.client_opts
+          )
 
-      opts =
-        Keyword.merge(
-          [
-            host: hub.host,
-            port: hub.port,
-            tls: hub.tls,
-            hello: hello,
-            buffer: Path.join(state.dir, "link.buffer"),
-            listener: self()
-          ],
-          state.client_opts
-        )
+        {:ok, pid} = Client.start_link(opts)
+        Logger.info("Collector: sending to the hub at #{inspect(hub.host)}, port #{hub.port}.")
+        %{state | client: pid}
+      else
+        if not state.warned?,
+          do: Logger.warning("Collector: the certificate files could not be read. Pair again.")
 
-      {:ok, pid} = Client.start_link(opts)
-      Logger.info("Collector: sending to the hub at #{hub.host}, port #{hub.port}.")
-      %{state | client: pid}
+        %{state | warned?: true}
+      end
     else
       _ -> state
     end
-  rescue
-    _ ->
-      if not state.warned?,
-        do: Logger.warning("Collector: the certificate files could not be read. Pair again.")
-
-      %{state | warned?: true}
   end
 
   defp connect(state), do: state
+
+  # Read before the client is started: files that are there and are not a
+  # certificate must not stop the collector.
+  defp certificate?(tls) do
+    Authority.collector_tls(tls)
+    true
+  rescue
+    _ -> false
+  end
 
   defp hello(state) do
     Watcher.hello(state.watcher)
@@ -183,19 +196,38 @@ defmodule Wallboard.Collector.Sender do
 
   # Goes back to the hub's place in each file. Until that has worked, no
   # event is handed on.
-  defp rewind(%{resume: nil} = state), do: state
+  # In two steps, each tried again on its own until it has worked: the
+  # watcher goes back (and what not to send is written down), then the
+  # client forgets what it held of those files and may send again.
+  defp rewind(state), do: state |> go_back() |> forget()
 
-  defp rewind(state) do
-    case Watcher.rewind(state.watcher, state.resume) do
+  defp go_back(%{resume: nil} = state), do: state
+
+  defp go_back(state) do
+    case watcher_rewind(state) do
       {:ok, files, seq} ->
         skip = Enum.reduce(files, state.skip, &Map.put(&2, &1, seq))
         state = save_skip(state, skip)
-        :ok = Client.rewound(state.client, files)
-        %{state | resume: nil, ready?: true}
+        %{state | resume: nil, forget: Enum.uniq(files ++ (state.forget || []))}
 
       :retry ->
         state
     end
+  end
+
+  defp watcher_rewind(state) do
+    Watcher.rewind(state.watcher, state.resume)
+  catch
+    :exit, _ -> :retry
+  end
+
+  defp forget(%{forget: nil} = state), do: state
+  # A newer word from the hub came meanwhile: go back to that one first.
+  defp forget(%{resume: points} = state) when points != nil, do: state
+
+  defp forget(state) do
+    :ok = Client.rewound(state.client, state.forget)
+    %{state | forget: nil, ready?: true}
   catch
     :exit, _ -> state
   end
@@ -204,10 +236,14 @@ defmodule Wallboard.Collector.Sender do
   defp pump(%{ready?: false} = state), do: state
   defp pump(%{removed?: true} = state), do: state
   defp pump(%{resume: points} = state) when points != nil, do: state
+  defp pump(%{forget: files} = state) when files != nil, do: state
 
   defp pump(state) do
     with %{bytes: bytes} when bytes < @high_water <- Client.status(state.client),
-         %{acked: acked} <- Outbox.stats(state.outbox),
+         %{acked: acked, seq: seq} <- Outbox.stats(state.outbox),
+         # A number past the outbox's last is from an outbox that is gone
+         # (its folder was cleared): it says nothing about this one.
+         state = save_skip(state, Map.reject(state.skip, fn {_, floor} -> floor > seq end)),
          [_ | _] = events <- Outbox.read(state.outbox, acked, @batch) do
       send = for {seq, event} <- events, not skipped?(state.skip, seq, event), do: event
       if send != [], do: :ok = Client.push(state.client, send)
@@ -225,6 +261,8 @@ defmodule Wallboard.Collector.Sender do
   # the old one whole.
   defp save_skip(state, skip) do
     file = Path.join(state.dir, "skip.json")
+    File.write!(file <> ".tmp", "")
+    File.chmod!(file <> ".tmp", 0o600)
     File.write!(file <> ".tmp", Jason.encode!(skip))
     File.rename!(file <> ".tmp", file)
     %{state | skip: skip}

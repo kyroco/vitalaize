@@ -267,8 +267,13 @@ defmodule WallboardWeb.BoardLive do
     # uploads shows its sessions while they wait on you.
     local_ids = MapSet.new(claude ++ codex, & &1.session_id)
     stream = Enum.reject(socket.assigns[:stream] || [], &MapSet.member?(local_ids, &1.session_id))
-    shown = MapSet.union(local_ids, MapSet.new(stream, & &1.session_id))
+    # A stale card gives way to a wait the upload hooks report: its stream
+    # is cut off and knows nothing of it.
+    fresh = MapSet.new(Enum.reject(stream, & &1.stale), & &1.session_id)
+    shown = MapSet.union(local_ids, fresh)
     remote = Enum.reject(socket.assigns[:remote] || [], &MapSet.member?(shown, &1.session_id))
+    waiting = MapSet.new(remote, & &1.session_id)
+    stream = Enum.reject(stream, &MapSet.member?(waiting, &1.session_id))
     sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex ++ stream ++ remote
     long = settings.claude.long_running_minutes
 

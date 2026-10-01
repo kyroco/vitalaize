@@ -189,6 +189,67 @@ defmodule Wallboard.LinkTest do
       assert length(saved("papa")) == 5
     end
 
+    test "a client told to hold sends nothing after a Resume until its reader has gone back",
+         %{dir: dir, link: link} do
+      port = start_hub(dir)
+      {:ok, papa} = Authority.issue(link, "papa")
+      buffer = Path.join(dir, "held.buffer")
+
+      # Lines from before, waiting in the buffer when the stream opens.
+      held = Wallboard.Link.Buffer.open(buffer)
+      held = Wallboard.Link.Buffer.push(held, Enum.map(1..3, &event/1))
+      Wallboard.Link.Buffer.close(held)
+
+      start_supervised!(
+        {Client,
+         name: :holder,
+         host: "127.0.0.1",
+         port: port,
+         tls: papa,
+         hello: Filter.hello(%{machine: "papa"}),
+         buffer: buffer,
+         listener: self(),
+         backoff: @fast,
+         hold: true},
+        id: :holder
+      )
+
+      assert_receive {:wallboard_link, {:resume, %{}}}, 5_000
+      refute_receive {:wallboard_link, {:stored, _}}, 500
+      assert saved("papa") == []
+      assert %{phase: :holding, waiting: 3} = Client.status(:holder)
+
+      # The reader sends this file again from the start: the old lines go,
+      # and only then does anything leave.
+      :ok = Client.rewound(:holder, ["s1.jsonl"])
+      :ok = Client.push(:holder, event(1))
+      assert_receive {:wallboard_link, {:stored, 4}}, 5_000
+      assert Enum.map(saved("papa"), & &1.position) == [100]
+    end
+
+    test "an event with a cost that is no number is taken and not saved", %{dir: dir, link: link} do
+      port = start_hub(dir)
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa)
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      for cost <- [:nan, :infinity, -1.0] do
+        bad = %Proto.Event{
+          session_id: "s1",
+          file: "s1.jsonl",
+          position: 50,
+          items: [%Proto.Item{body: {:request, %Proto.Request{request_id: "r", cost: cost}}}]
+        }
+
+        :ok = Client.push(client, bad)
+      end
+
+      :ok = Client.push(client, event(1))
+      # All four are confirmed, so the collector does not send them for ever.
+      assert_receive {:wallboard_link, {:stored, 4}}, 5_000
+      assert Enum.map(saved("papa"), & &1.position) == [100]
+    end
+
     test "the port speaks TLS only, and HTTP/2 only", %{dir: dir, link: link} do
       log = capture_log(fn -> send(self(), {:port, start_hub(dir)}) end)
       assert_received {:port, port}

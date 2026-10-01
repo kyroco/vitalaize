@@ -14,6 +14,12 @@ defmodule Wallboard.Link.Client do
   once it is on disk. From there the client sends it, keeps it until the
   hub confirms it, and sends it again after a dropout if it must.
 
+  With `hold: true` the client sends nothing after a `Resume` until its
+  reader has called `rewound/1` or `rewound/2`. A reader that goes back to
+  the hub's positions wants this: what waited in the buffer from before
+  could otherwise reach the hub ahead of the lines the reader is about to
+  send again, and move the hub's place in a file past lines it never got.
+
   The `listener`, when given, gets `{:wallboard_link, what}` messages:
 
     * `:up`: the stream is open
@@ -120,7 +126,8 @@ defmodule Wallboard.Link.Client do
       buffer: Buffer.open(Keyword.fetch!(opts, :buffer), Keyword.take(opts, [:max_bytes])),
       backoff: Backoff.new(opts[:backoff] || []),
       pace: Map.merge(@defaults, Map.new(opts[:pace] || %{})),
-      # :waiting, :connecting, :resuming, :live or :removed
+      hold: Keyword.get(opts, :hold, false),
+      # :waiting, :connecting, :resuming, :holding, :live or :removed
       phase: :waiting,
       conn: nil,
       points: %{},
@@ -156,12 +163,13 @@ defmodule Wallboard.Link.Client do
   end
 
   def handle_call(:rewound, _from, s) do
-    {:reply, :ok, %{s | buffer: Buffer.reopen(s.buffer)}}
+    {:reply, :ok, release(%{s | buffer: Buffer.reopen(s.buffer)})}
   end
 
   def handle_call({:rewound, files}, _from, s) do
     buffer = s.buffer |> Buffer.forget_files(files) |> Buffer.reopen()
-    {:reply, :ok, %{s | buffer: buffer, in_flight: Buffer.count_through(buffer, s.sent)}}
+    s = %{s | buffer: buffer, in_flight: Buffer.count_through(buffer, s.sent)}
+    {:reply, :ok, release(s)}
   end
 
   def handle_call(:status, _from, s) do
@@ -220,7 +228,7 @@ defmodule Wallboard.Link.Client do
   # The buffer shed a while ago and has not emptied since. Waiting longer
   # only keeps the files it refused waiting, so get a Resume now.
   def handle_info(:shed_restart, %{shed: true, phase: phase} = s)
-      when phase in [:resuming, :live],
+      when phase in [:resuming, :holding, :live],
       do: {:noreply, down(s, :shed)}
 
   # Late messages from a stream that is already gone.
@@ -246,7 +254,9 @@ defmodule Wallboard.Link.Client do
     else
       notify(s, {:resume, points})
       buffer = Buffer.drop_stored(s.buffer, points)
-      pump(%{s | phase: :live, points: %{}, buffer: buffer, shed: false})
+      s = %{s | points: %{}, buffer: buffer, shed: false}
+      # A reader that goes back first is waited for.
+      if s.hold, do: %{s | phase: :holding}, else: pump(%{s | phase: :live})
     end
   end
 
@@ -276,6 +286,10 @@ defmodule Wallboard.Link.Client do
   end
 
   defp hub(_, s), do: s
+
+  # The reader has gone back: what waits may be sent.
+  defp release(%{phase: :holding} = s), do: pump(%{s | phase: :live})
+  defp release(s), do: s
 
   # Every hub message with an id is answered, so the hub knows it arrived.
   defp ack(%{conn: %{stream: stream}} = s, id) when id > 0 and stream != nil,

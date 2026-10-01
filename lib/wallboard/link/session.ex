@@ -79,17 +79,23 @@ defmodule Wallboard.Link.Session do
       case body do
         {:status, %Proto.Status{} = status} ->
           if s.status == nil or event.at >= s.status.at do
-            %{
-              s
-              | status: %{
-                  state: status.state,
-                  why: status.why,
-                  tool: status.tool,
-                  since: status.since,
-                  question: status.question,
-                  at: event.at
-                }
+            new = %{
+              state: status.state,
+              why: status.why,
+              tool: status.tool,
+              since: status.since,
+              question: status.question,
+              at: event.at
             }
+
+            # A collector says a status again after every reconnect. The
+            # same status said again began when it first began.
+            same? =
+              s.status != nil and
+                Map.drop(s.status, [:since, :at]) == Map.drop(new, [:since, :at])
+
+            new = if same?, do: %{new | since: first(s.status.since, new.since)}, else: new
+            %{s | status: new}
           else
             s
           end
@@ -162,6 +168,11 @@ defmodule Wallboard.Link.Session do
   defp newer({had, _} = old, pos, _new) when had > pos, do: old
   defp newer(_old, pos, new), do: {pos, new}
 
+  # The earlier of two starts, where 0 means not known.
+  defp first(0, b), do: b
+  defp first(a, 0), do: a
+  defp first(a, b), do: min(a, b)
+
   defp earlier(a, 0), do: a
   defp earlier(nil, b), do: b
   defp earlier(a, b), do: min(a, b)
@@ -175,6 +186,13 @@ defmodule Wallboard.Link.Session do
   """
   def live?(%{status: nil}), do: false
   def live?(%{status: status, ended_at: ended}), do: ended == nil or status.at > ended
+
+  @doc """
+  The session with its end noted by the hub itself, at the time of its
+  last status: for one its collector stopped speaking of.
+  """
+  def ended(%{status: %{at: at}} = s), do: %{s | ended_at: max(s.ended_at || 0, at)}
+  def ended(s), do: s
 
   @doc "True when the session is live and waits on its person."
   def waiting?(s), do: live?(s) and s.status.state == :WAITING
@@ -200,7 +218,7 @@ defmodule Wallboard.Link.Session do
   def name(s) do
     sum = summary(s)
 
-    blank(sum.title) || short(sum.first_prompt) || folder(sum.folder) ||
+    short(sum.title) || short(sum.first_prompt) || folder(sum.folder) ||
       String.slice(s.session_id, 0, 8)
   end
 

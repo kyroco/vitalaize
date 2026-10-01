@@ -118,6 +118,9 @@ defmodule Wallboard.Collector.Watcher do
   all when it changed within the hub's memory of positions
   (`Wallboard.Link.limits/0`), and is left alone when it is older.
 
+  Every live session's status is also sent once more, changed or not: a
+  hub that restarted, or lost what it had, no longer knows it.
+
   Returns `{:ok, files, seq}`: the files that are read again (named as in
   an event's `file`), and the number of the last event in the outbox now.
   Events of those files up to that number were made before going back and
@@ -189,6 +192,9 @@ defmodule Wallboard.Collector.Watcher do
       heads: %{},
       # {tool, session id} => %{dir, state, why, tool}, the last status sent
       statuses: %{},
+      # The sessions whose status is sent again though it has not changed:
+      # every one known when the hub last said where it is (see `rewind/2`).
+      resend: MapSet.new(),
       # Events not in the outbox yet, newest first, and whether the place
       # above has changed since it was last saved.
       pending: [],
@@ -263,7 +269,12 @@ defmodule Wallboard.Collector.Watcher do
         {:reply, :retry, state}
 
       seq ->
-        state = %{state | pending: [], unsaved?: false}
+        state = %{
+          state
+          | pending: [],
+            unsaved?: false,
+            resend: MapSet.new(Map.keys(state.statuses))
+        }
 
         case behind(state, points) do
           [] ->
@@ -920,12 +931,12 @@ defmodule Wallboard.Collector.Watcher do
         |> Enum.split_with(&match?({:live, _, _, _}, &1))
 
       # One session listed twice counts once, as it was listed first.
-      {events, statuses} =
+      {events, statuses, resend} =
         live
         |> Enum.uniq_by(fn {:live, key, _, _} -> key end)
         |> Kernel.++(gone)
-        |> Enum.reduce({[], state.statuses}, fn
-          {:live, key, raw, since}, {events, statuses} ->
+        |> Enum.reduce({[], state.statuses, state.resend}, fn
+          {:live, key, raw, since}, {events, statuses, resend} ->
             old = statuses[key]
 
             with %Proto.Event{} = event <-
@@ -933,22 +944,27 @@ defmodule Wallboard.Collector.Watcher do
                  new = sent(raw, event) do
               # The same status under another folder is not news, but the
               # folder is noted: the session ends when that one drops it.
-              if old != nil and Map.delete(old, :dir) == Map.delete(new, :dir),
-                do: {events, Map.put(statuses, key, new)},
-                else: {[event | events], Map.put(statuses, key, new)}
+              # A status the hub may have lost is said again all the same.
+              if old != nil and Map.delete(old, :dir) == Map.delete(new, :dir) and
+                   not MapSet.member?(resend, key),
+                 do: {events, Map.put(statuses, key, new), resend},
+                 else: {[event | events], Map.put(statuses, key, new), MapSet.delete(resend, key)}
             else
-              _ -> {events, statuses}
+              _ -> {events, statuses, resend}
             end
 
-          {:gone, gone?}, {events, statuses} ->
+          {:gone, gone?}, {events, statuses, resend} ->
             keys = for {key, old} <- Enum.sort(statuses), gone?.(key, old), do: key
             ended = for key <- keys, event = ended_event(key, now), do: event
-            {Enum.reverse(ended) ++ events, Map.drop(statuses, keys)}
+
+            {Enum.reverse(ended) ++ events, Map.drop(statuses, keys),
+             MapSet.difference(resend, MapSet.new(keys))}
         end)
 
       flush(%{
         state
         | statuses: statuses,
+          resend: resend,
           pending: events ++ state.pending,
           unsaved?: state.unsaved? or statuses != state.statuses
       })
