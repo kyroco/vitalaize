@@ -350,6 +350,7 @@ defmodule Wallboard.CollectorWatcherTest do
     # What Codex notes about a chat it copied from a Claude session.
     defp imported(c, at) do
       source = Path.join(claude_dir(c), "projects/-Users-r-projects-shop/source.jsonl")
+      File.write!(source, "")
 
       File.write!(
         Path.join(c.home, ".codex/external_agent_session_imports.json"),
@@ -385,8 +386,13 @@ defmodule Wallboard.CollectorWatcherTest do
     test "is never sent as live work, and reaches the hub on the days it happened", c do
       copy_in(c)
       w = start(c)
+      # Codex writes its list of what it copied just after the files, so a
+      # copy only just written waits a few seconds for it.
+      assert look(w) == []
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, 10)})
       new = look(w)
 
+      assert from_files(new) != []
       assert statuses(new) == []
       assert ended(new) == []
       assert look(w) == []
@@ -406,6 +412,8 @@ defmodule Wallboard.CollectorWatcherTest do
     test "a copy of a Claude session this collector sends is not sent again", c do
       imported(c, copy_in(c))
       w = start(c)
+      assert look(w) == []
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, 10)})
       assert look(w) == []
 
       # Carried on in Codex, it is a Codex session from then on.

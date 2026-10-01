@@ -452,8 +452,8 @@ defmodule Wallboard.Sources.Codex do
     mains
     |> Enum.filter(& &1.thread_id)
     # A chat the Codex app copied in is nobody's session until someone
-    # carries it on.
-    |> Enum.reject(&CodexTranscript.copy?/1)
+    # carries it on. One the hook has spoken for is somebody's.
+    |> Enum.reject(&(CodexTranscript.copy?(&1) and not Map.has_key?(marks, &1.thread_id)))
     |> Enum.map(fn t ->
       kids = Map.get(subs_by_parent, t.thread_id, [])
       card(t, kids, titles[t.thread_id], now_s, marks)
@@ -581,17 +581,23 @@ defmodule Wallboard.Sources.Codex do
   under one of `claude_dirs`' `projects` folders is a Claude session that
   is saved from its own transcript, with its real tokens and cost.
   """
+  def imports_file(dir), do: Path.join(dir, @imports)
+
   def claude_copies(codex_dirs, claude_dirs) do
     roots = Enum.map(claude_dirs, &(Path.join(Path.expand(&1), "projects") <> "/"))
 
     for dir <- codex_dirs,
-        {:ok, text} <- [File.read(Path.join(dir, @imports))],
+        {:ok, text} <- [File.read(imports_file(dir))],
         {:ok, %{"records" => records}} when is_list(records) <- [Jason.decode(text)],
         %{"imported_thread_id" => id, "source_path" => source, "imported_at" => at} <- records,
-        is_binary(id) and is_binary(source) and is_integer(at),
+        is_binary(id) and is_binary(source) and is_integer(at) and String.valid?(source),
         Enum.any?(roots, &String.starts_with?(Path.expand(source), &1)),
+        # A transcript that is gone is saved by nobody else.
+        File.regular?(source),
         into: %{},
-        do: {id, at}
+        # Seconds since 1970. Should Codex ever write milliseconds, a copy
+        # must not count as unchanged for ever.
+        do: {id, if(at > 100_000_000_000, do: div(at, 1000), else: at)}
   end
 
   @doc """

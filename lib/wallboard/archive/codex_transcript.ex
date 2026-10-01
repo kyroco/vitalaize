@@ -40,9 +40,12 @@ defmodule Wallboard.Archive.CodexTranscript do
   So a turn line whose own clock is more than a minute behind its stamp
   was copied in, and the lines stamped with it take the conversation's own
   time instead: the session's first and last times are when it happened,
-  not when it was copied. `copy?/1` is true while the file holds nothing
-  but the copy. Once someone carries the chat on in Codex, later lines have
-  later stamps and it is a session like any other.
+  not when it was copied. For that to hold whatever a file starts with, a
+  session's times begin at its first turn line; the lines before it (the
+  first line, and a `turn_context` or the like) set none. `copy?/1` is true
+  while the file holds nothing but the copy. Once someone carries the chat
+  on in Codex, a turn is written as it happens and later lines have later
+  stamps, and it is a session like any other.
 
   A copied file is in the older shape (`history_mode` "legacy"): what the
   person typed is an `event_msg` `user_message`, a finished turn has no
@@ -56,7 +59,10 @@ defmodule Wallboard.Archive.CodexTranscript do
   # A turn line whose own clock is this far behind its stamp was copied in.
   @copied_seconds 60
   # Lines stamped within this of a copied turn line belong to the same copy.
-  @burst_seconds 2
+  @burst_seconds 5
+  # A turn line whose own clock is within this of its stamp was written as
+  # the turn happened (measured: under a second).
+  @lived_seconds 2
 
   alias Wallboard.Archive.Transcript
 
@@ -78,15 +84,20 @@ defmodule Wallboard.Archive.CodexTranscript do
       # its last copied turn line and that turn's own time.
       stamped_at: nil,
       copied_at: nil,
-      clock: nil
+      clock: nil,
+      # Whether a turn line has been read, and whether one of them was
+      # written by a session at work (its clock agrees with its stamp).
+      turned: false,
+      lived: false
     })
   end
 
   @doc """
-  True for a file that holds only a chat the Codex app copied in: nothing
-  was written after the copy. See the module doc.
+  True for a file that holds only a chat the Codex app copied in: no turn
+  in it was written as it happened, and nothing was written after the
+  copy. See the module doc.
   """
-  def copy?(%{copied_at: %DateTime{} = copied, stamped_at: %DateTime{} = stamped}),
+  def copy?(%{lived: false, copied_at: %DateTime{} = copied, stamped_at: %DateTime{} = stamped}),
     do: DateTime.diff(stamped, copied) <= @burst_seconds
 
   def copy?(_), do: false
@@ -95,7 +106,8 @@ defmodule Wallboard.Archive.CodexTranscript do
   A Codex session's id as a card shows it: its last 8 characters. The ids
   start with the time, so sessions made close together share their first 8.
   """
-  def short_id(id) when is_binary(id), do: String.slice(id, -8, 8)
+  def short_id(id) when is_binary(id) and byte_size(id) > 8, do: String.slice(id, -8, 8)
+  def short_id(id) when is_binary(id), do: id
   def short_id(_), do: ""
 
   @doc "Reads a whole file into a tally."
@@ -159,39 +171,57 @@ defmodule Wallboard.Archive.CodexTranscript do
   end
 
   defp entry(type, p, stamp, t) do
-    t = copied(own_time(type, p), stamp, t)
+    t = turn_line(type, p, stamp, t)
     at = if near?(stamp, t.copied_at), do: t.clock, else: stamp
     t = %{t | stamped_at: stamp || t.stamped_at}
 
-    # The first line comes before anything says whether the file is a copy,
-    # so the session's times start with the line after it, which Codex
-    # writes in the same moment. A copy's would be the moment of the copy.
-    t =
-      if type == "session_meta",
-        do: t,
-        else: %{t | first_at: t.first_at || at, last_at: at || t.last_at}
-
+    # The lines before the first turn come before anything says whether the
+    # file is a copy, so the session's times start with its first turn
+    # line, which Codex writes in the same moment as the lines before it.
+    # A copy's would be the moment of the copy.
+    t = if t.turned, do: %{t | first_at: t.first_at || at, last_at: at || t.last_at}, else: t
     entry_body(type, p, at, t)
   end
 
-  # A turn's own time: when it started on the line that starts it, when it
-  # ended on the line that ends it.
-  defp own_time("event_msg", %{"type" => "task_started", "started_at" => s}), do: unix(s)
+  @turn_lines ["task_started", "task_complete", "turn_aborted"]
 
-  defp own_time("event_msg", %{"type" => kind, "completed_at" => s})
-       when kind in ["task_complete", "turn_aborted"],
-       do: unix(s)
+  # Notes a line that starts or ends a turn. One whose own clock is far
+  # behind its stamp was copied in; one whose clock agrees with its stamp
+  # was written by a session at work, and a file with such a line is never
+  # only a copy.
+  defp turn_line("event_msg", %{"type" => kind} = p, stamp, t) when kind in @turn_lines do
+    t = %{t | turned: true}
 
-  defp own_time(_type, _p), do: nil
+    case own_time(kind, p) do
+      %DateTime{} = own when not is_nil(stamp) ->
+        behind = DateTime.diff(stamp, own)
 
-  # Notes a copied turn line: its stamp, and the turn's own time.
-  defp copied(%DateTime{} = own, %DateTime{} = stamp, t) do
-    if DateTime.diff(stamp, own) > @copied_seconds,
-      do: %{t | copied_at: stamp, clock: own},
-      else: t
+        cond do
+          # A chat can be copied seconds after its last turn ended: a line
+          # stamped with copied ones is one of them however near its clock.
+          behind > @copied_seconds or (behind > @lived_seconds and near?(stamp, t.copied_at)) ->
+            %{t | copied_at: stamp, clock: own}
+
+          behind <= @lived_seconds ->
+            %{t | lived: true}
+
+          true ->
+            t
+        end
+
+      _ ->
+        t
+    end
   end
 
-  defp copied(_own, _stamp, t), do: t
+  defp turn_line(_type, _p, _stamp, t), do: t
+
+  # A turn's own time: when it started on the line that starts it, when it
+  # ended on the line that ends it.
+  defp own_time("task_started", %{"started_at" => s}), do: unix(s)
+  defp own_time("task_started", _p), do: nil
+  defp own_time(_kind, %{"completed_at" => s}), do: unix(s)
+  defp own_time(_kind, _p), do: nil
 
   defp near?(%DateTime{} = a, %DateTime{} = b), do: abs(DateTime.diff(a, b)) <= @burst_seconds
   defp near?(_, _), do: false
@@ -220,7 +250,7 @@ defmodule Wallboard.Archive.CodexTranscript do
         version: p["cli_version"],
         git_branch: git["branch"],
         context_window: int_or_nil(p["context_window"]) || t.context_window,
-        legacy: p["history_mode"] == "legacy"
+        legacy: t.legacy or p["history_mode"] == "legacy"
     }
   end
 

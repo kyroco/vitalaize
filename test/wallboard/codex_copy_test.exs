@@ -163,6 +163,67 @@ defmodule Wallboard.CodexCopyTest do
     assert {a, b} == {"069ec94f", "69625028"}
   end
 
+  test "a copy keeps the conversation's times whatever comes before its first turn" do
+    [meta | rest] = copy(@one)
+
+    context =
+      Jason.encode!(%{
+        timestamp: DateTime.to_iso8601(@copied),
+        type: "turn_context",
+        payload: %{model: "gpt-6-astra", effort: "high"}
+      })
+
+    lines = [meta, context | rest]
+    t = CodexTranscript.read_lines(Enum.join(lines, "\n"))
+    assert CodexTranscript.copy?(t)
+    assert {DateTime.to_unix(t.first_at), DateTime.to_unix(t.last_at)} == {@began, @began + 660}
+
+    # The same from a collector's events, as the hub puts them together.
+    {events, _} =
+      %{tool: :codex, session_id: @one, file: "f.jsonl"}
+      |> Wallboard.Collector.Filter.new()
+      |> Wallboard.Collector.Filter.read(Enum.map_join(lines, &(&1 <> "\n")))
+
+    session =
+      Enum.reduce(events, Wallboard.Link.Session.new("papa", @one), fn event, s ->
+        Wallboard.Link.Session.apply(s, event)
+      end)
+
+    assert {row, []} = Wallboard.Link.Session.record(session, %{}, 0)
+    assert {row.started_at, row.ended_at} == {@began, @began + 660}
+  end
+
+  test "a session with a turn written as it happened is never a copy", c do
+    # A turn that ends long after it should have (the Mac slept): the line
+    # is stamped now and carries an old end time, as a copied line does.
+    now = ~U[2026-10-01 18:40:00Z]
+
+    late =
+      Jason.encode!(%{
+        timestamp: DateTime.to_iso8601(now),
+        type: "event_msg",
+        payload: %{type: "turn_aborted", completed_at: DateTime.to_unix(now) - 3600}
+      })
+
+    write(c, @real, running(@real, DateTime.add(now, -2)) ++ [late], now)
+    assert [%{session_id: @real, status: :idle}] = live(c, now)
+  end
+
+  # One of the 44 real ones ended five seconds before it was copied.
+  test "a chat copied seconds after its last turn ended is still a copy" do
+    ended = DateTime.to_unix(@copied) - 5
+    lines = Fixtures.codex_copy(@one, @copied, [{@began, @began + 42}, {ended - 100, ended}])
+    t = CodexTranscript.read_lines(Enum.join(lines, "\n"))
+
+    assert CodexTranscript.copy?(t)
+    assert {DateTime.to_unix(t.first_at), DateTime.to_unix(t.last_at)} == {@began, ended}
+  end
+
+  test "a short id is shown whole" do
+    assert CodexTranscript.short_id("s1") == "s1"
+    assert CodexTranscript.short_id(@one) == "69625028"
+  end
+
   describe "the Archive" do
     setup do
       start_supervised!({Store, path: ":memory:"})
@@ -173,9 +234,11 @@ defmodule Wallboard.CodexCopyTest do
     defp imported(c, ids) do
       records =
         for id <- ids do
+          source = Path.join(c.home, ".claude/projects/-Users-r-projects-shop/#{id}-source.jsonl")
+          File.write!(source, "")
+
           %{
-            source_path:
-              Path.join(c.home, ".claude/projects/-Users-r-projects-shop/#{id}-source.jsonl"),
+            source_path: source,
             imported_thread_id: id,
             imported_at: DateTime.to_unix(@copied)
           }
@@ -223,6 +286,31 @@ defmodule Wallboard.CodexCopyTest do
 
       assert Store.list_sessions() |> Enum.map(& &1.session_id) |> Enum.sort() ==
                Enum.sort([@one, @two])
+    end
+
+    test "a copy whose Claude transcript is gone is saved: nothing else holds it", c do
+      write(c, @one, copy(@one))
+      imported(c, [@one])
+      File.rm!(Path.join(c.home, ".claude/projects/-Users-r-projects-shop/#{@one}-source.jsonl"))
+
+      assert {:ok, 1} = Collector.round(c.settings, DateTime.add(@copied, 600), false)
+    end
+
+    test "the time of an import is read in seconds or in milliseconds", c do
+      imported(c, [@one])
+      at = DateTime.to_unix(@copied)
+      copies = Codex.claude_copies([c.codex], c.settings.claude.config_dirs)
+      assert copies == %{@one => at}
+      assert Codex.claude_copy?(copies, @one, at + 1)
+      refute Codex.claude_copy?(copies, @one, at + 900)
+
+      path = Path.join(c.codex, "external_agent_session_imports.json")
+      File.write!(path, String.replace(File.read!(path), "#{at}", "#{at * 1000}"))
+      assert Codex.claude_copies([c.codex], c.settings.claude.config_dirs) == %{@one => at}
+
+      # A list that is not what it should be names nothing.
+      File.write!(path, ~s({"records": [1, {"imported_thread_id": 2}, "x"]}))
+      assert Codex.claude_copies([c.codex], c.settings.claude.config_dirs) == %{}
     end
 
     test "a copy from a folder that is not read here is saved", c do
