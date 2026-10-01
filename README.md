@@ -2,12 +2,10 @@
 
 VitalAIze is a wall screen for teams that build software with AI coding
 agents. Put it on an iPad (or any browser) and at a glance you see every
-Claude Code and Codex session at work on the machine that runs it, which one
-is waiting on you (on your other machines too), what your GitHub builds are
+Claude Code and Codex session at work, on the machine that runs it and on
+your other machines, which one is waiting on you, what your GitHub builds are
 doing across all your repositories, and how the work trends over days and
-weeks. Sessions from your other machines are saved for the archive and
-trends, and their Claude sessions show on the live board while they wait on
-you. When a session needs you, it can tell you by Messages, Slack, ntfy or
+weeks. When a session needs you, it can tell you by Messages, Slack, ntfy or
 Pushover. It runs on your own Mac or Linux machine, and needs Claude Code
 and the GitHub CLI (`gh`), both signed in; Codex is optional.
 
@@ -23,10 +21,21 @@ machines, known limits, building from source and how it works.
   the four busiest a column each and lists the rest below.
 - **Alerts anywhere**: Slack, ntfy (iPhone or Android) and Pushover, besides
   Messages on a Mac.
-- **Alerts for your other machines**: a connected machine tells the hub the
-  moment one of its Claude sessions starts waiting on you.
+- **Your other machines, live**: a small collector on each one watches its
+  own Claude and Codex sessions and streams them to the hub over an encrypted
+  connection. Their sessions get cards on the board as they work, show Needs
+  you, and send your alerts. It sends numbers and a few short lines (a
+  session's title, its folder and branch, and the start of your prompts),
+  never the agent's replies, the commands it ran or your files; the
+  [wiki](https://github.com/kyroco/vitalaize/wiki/How-it-works) lists what
+  crosses the network.
+- **Connect a machine by code**: the new machine shows a six-digit code, and
+  you approve the same code in the mailbox on the hub's board. There is no
+  key to copy. At most you type the hub's address.
+- **Settings in the app**, or with `vitalaize setup` in a terminal. Most
+  changes are in use within seconds, with no restart.
 - **Codex**: Codex sessions can show Needs you (new, and not yet tried with
-  a real Codex), and connected machines send their Codex sessions to the hub.
+  a real Codex).
 - **A note when a new version is out**, which you can turn off in Settings.
 
 If you run 0.2.0 on Linux, upgrade. Every copy of that download had the same
@@ -48,7 +57,10 @@ the archive and trends.
 
 1. Download `VitalAIze-<version>.pkg` from the
    [latest release](https://github.com/kyroco/vitalaize/releases/latest)
-   and open it. It is signed and notarized by Apple.
+   and open it. It is signed and notarized by Apple. If an Installer
+   window from an earlier install is still open on its last page, close it
+   first: otherwise the new package only brings that window forward and
+   installs nothing.
 2. The installer says what it will do, then puts VitalAIze in your
    Applications folder and opens it.
 3. VitalAIze asks what this Mac does:
@@ -57,10 +69,10 @@ the archive and trends.
    - **Hub only**: it runs the board and keeps what other Macs send it.
    - **Collector only**, for your other Macs: a small collector watches
      this Mac's Claude and Codex sessions and streams them to a hub as they
-     happen. It finds hubs on your network by itself. Nothing is typed or
+     happen. It finds hubs on your network by itself. No key is typed or
      pasted: this Mac shows a short code, and you approve the same code in
      the mailbox on the hub's board (the envelope by the clock). The hub
-     must take collectors: turn on **Collectors on other machines** in the
+     must take collectors: turn on **Take collectors**, under Collectors on other machines, in the
      hub's settings first.
 4. On a hub, it fills in what it can find (your Claude and Codex folders,
    the GitHub repositories your sessions work in, up to six, busiest first,
@@ -131,7 +143,7 @@ without it, collectors type the hub's address.
 A Linux machine can be a collector too: unpack the download on it, run
 `bin/vitalaize setup` and answer `collector`. It finds the hub on your
 network or takes its address, and shows a short code; approve the same code
-in the mailbox on the hub's board. Nothing is typed or pasted.
+in the mailbox on the hub's board. No key is copied.
 
 To take VitalAIze off a Linux machine, run `bin/vitalaize remove`. It stops
 VitalAIze, takes it out of what starts at login, deletes the machine's
@@ -141,6 +153,9 @@ added. On a Mac, **Remove VitalAIze** in the app does the same.
 A collector streams to its hub over an encrypted connection, and only a
 machine you approved in the mailbox can send. See the known limits in the
 [wiki](https://github.com/kyroco/vitalaize/wiki).
+
+To try a hub and a collector on two machines step by step, with what you
+should see at each step, follow the [test guide](docs/test-guide.md).
 
 ## Questions and ideas
 
