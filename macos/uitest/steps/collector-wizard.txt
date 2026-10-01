@@ -18,6 +18,13 @@ wait "Hubs on your network"
 expect "Step 3 of 4"
 disabled "Continue"
 snap c03-hub
+# The hub is found on the network; clicking its row fills in its address.
+wait 30 ":{HUBPORT}"
+click ":{HUBPORT}"
+value "Hub address" ":{HUBPORT}"
+enabled "Continue"
+type "Hub address" ""
+disabled "Continue"
 type "Hub address" "{HUB}"
 enabled "Continue"
 click "Back"

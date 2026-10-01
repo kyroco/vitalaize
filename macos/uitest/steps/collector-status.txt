@@ -21,6 +21,7 @@ snap c09-settings
 click "Save"
 wait 5 "Nothing changed."
 type "Claude folders to watch" "{HOME}/.claude"
+type "Codex folders to watch" "{HOME}/.codex"
 click "Save"
 wait 40 "Saved in"
 snap c09-settings-saved
@@ -32,7 +33,10 @@ click "Pair again…"
 wait 5 "Pick the hub, or type its address."
 snap c10-pair-sheet
 disabled "Pair"
-type "Hub address" "{HUB}"
+# The hub's row, found on the network, fills in its address.
+wait 30 ":{HUBPORT}"
+click ":{HUBPORT}"
+value "Hub address" ":{HUBPORT}"
 enabled "Pair"
 click "Pair"
 wait 60 "Waiting for the hub to approve…"

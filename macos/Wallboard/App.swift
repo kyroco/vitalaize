@@ -168,6 +168,9 @@ final class AppState: ObservableObject {
     /// Said on the wizard's second step when the earlier settings file the
     /// setup carried over before is gone.
     @Published var importNote: String?
+    /// The earlier settings file the wizard offered to carry over, kept
+    /// while its switch is off.
+    @Published var offeredImport: String?
 
     let finder = HubFinderHolder.shared
 
@@ -370,6 +373,9 @@ final class AppState: ObservableObject {
                         self.pairMessage = nil
                     }
                     self.finder.stop()
+                    // The setup ended with it running, so the first screen
+                    // does not say otherwise while it looks again.
+                    self.running = true
                     self.screen = .status
                     self.refreshStatus()
                 }
@@ -550,6 +556,12 @@ final class AppState: ObservableObject {
                 self.refreshStatus()
             }
         }
+    }
+
+    /// True when the board asks for a password. The password itself is
+    /// never handed to the app, only that there is one.
+    var hasPassword: Bool {
+        doc?.sections.flatMap { $0.fields }.first { $0.key == "token" }?.value.isEmpty == false
     }
 
     func open(_ path: String) {

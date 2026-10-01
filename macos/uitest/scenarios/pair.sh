@@ -4,11 +4,21 @@ SCENARIOS+=(pair)
 scenario_pair() {
   home pairhub 4982
   setup_by_command "$PORT" "Acme Hub"
-  save_settings '{"link.enabled": "true", "link.port": "4758"}'
-  sleep 4
-  check "the hub answers" wait_until 60 answers "$PORT"
+  check "the board answers" wait_until 60 answers "$PORT"
   HUB="http://localhost:4982"
   HUB_PORT=4982
+  HUB_HOME="$H" HUB_DATA="$DATA" HUB_LABEL="$LABEL"
+
+  # The board does not take collectors yet.
+  home col 4983
+  drive collector-closed-hub
+  check "the collector runs although the board would not pair" item_running "$LABEL"
+
+  # Now it does.
+  use pairhub 4982
+  save_settings '{"link.enabled": "true", "link.port": "4758"}'
+  sleep 4
+  check "the hub answers" wait_until 60 answers "$HUB_PORT"
 
   home col 4983
   drive_start collector-wizard

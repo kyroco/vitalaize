@@ -784,7 +784,7 @@ defmodule Wallboard.PairingTest do
     assert Mailbox.items() == []
     assert {:error, _} = Mailbox.act("machine:x", "approve")
     assert {:error, :not_a_hub} = Task.await(ask(port, dir, "air"), 5_000)
-    assert Pairing.why(:not_a_hub) =~ "link"
+    assert Pairing.why(:not_a_hub) =~ "turn on Take collectors"
   end
 
   describe "the mailbox" do

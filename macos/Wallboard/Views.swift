@@ -198,12 +198,16 @@ struct FoldersPage: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).padding(6)
             }
-            if let imported = state.choices.importedSettings {
+            // Turned off, the switch stays so it can be turned on again.
+            if let imported = state.choices.importedSettings ?? state.offeredImport {
                 GroupBox("A board you set up before") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Carry over its settings from \(imported.replacingOccurrences(of: Detect.home.path, with: "~"))",
                                isOn: Binding(get: { state.choices.importedSettings != nil },
-                                             set: { if !$0 { state.choices.importedSettings = nil } }))
+                                             set: { on in
+                                                 state.offeredImport = imported
+                                                 state.choices.importedSettings = on ? imported : nil
+                                             }))
                         if Detect.oldLoginItemInstalled {
                             Toggle("Stop that board and run this one instead", isOn: $state.choices.replaceOldBoard)
                         }
@@ -397,6 +401,7 @@ struct HubPage: View {
                             Text(hub.name)
                             Text(hub.url).foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -545,6 +550,10 @@ struct StatusView: View {
                     Button("Restart the board") { state.checkStart(restart: true) }
                         .disabled(state.mending)
                     Button("Show the log") { Shell.open(Setup.logFile) }
+                }
+                if state.hasPassword {
+                    Text("This board has a password. The first time a browser opens it, add ?token= and the password to the end of the address.")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Other machines connect by running this app there (or vitalaize setup on Linux) and picking Collector only. Each shows a code; approve it in the mailbox on the board.")
                     .foregroundStyle(.secondary)
@@ -720,6 +729,7 @@ struct PairSheet: View {
                             Text(hub.name)
                             Text(hub.url).foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -795,7 +805,9 @@ struct SettingsView: View {
                     Text("Nothing was saved. Fix these and save again:").foregroundStyle(.red)
                     // Named here too: the setting itself may be scrolled out of sight.
                     ForEach(state.saveErrors.sorted { $0.key < $1.key }, id: \.key) { key, message in
-                        Text("\(label(key)): \(message)").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                        // The board's message may name the setting already.
+                        Text(message.hasPrefix(label(key) + ":") ? message : "\(label(key)): \(message)")
+                            .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 if let failure = state.saveFailure {

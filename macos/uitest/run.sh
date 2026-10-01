@@ -44,14 +44,16 @@ fi
 
 build() {
   mkdir -p "$WORK"
-  if [ ! -x "$BOARD/bin/wallboard" ] || [ -n "${VITALAIZE_UITEST_REBUILD:-}" ] ||
-    [ -n "$(find "$ROOT/lib" "$ROOT/config" "$ROOT/rel" "$ROOT/priv" "$ROOT/mix.exs" "$ROOT/mix.lock" -newer "$BOARD/bin/wallboard" -type f 2>/dev/null | head -1)" ]; then
+  if [ ! -x "$BOARD/bin/wallboard" ] || [ ! -f "$WORK/board.built" ] || [ -n "${VITALAIZE_UITEST_REBUILD:-}" ] ||
+    [ -n "$(find "$ROOT/lib" "$ROOT/config" "$ROOT/rel" "$ROOT/priv" "$ROOT/mix.exs" "$ROOT/mix.lock" -newer "$WORK/board.built" -type f 2>/dev/null | head -1)" ]; then
     echo "==> Building the board"
     (cd "$ROOT" && MIX_ENV=prod mix deps.get --only prod >/dev/null &&
       MIX_ENV=prod mix release --overwrite --path "$BOARD" >/dev/null) || {
       echo "The board did not build." >&2
       exit 2
     }
+    # Its own mark: a scenario changes the date of the board's program.
+    touch "$WORK/board.built"
   fi
   echo "==> Building the test copy of the app"
   xcrun swiftc -swift-version 5 -parse-as-library -target arm64-apple-macos13.0 -O -D UITEST \
@@ -123,7 +125,7 @@ drive() {
 drive_start() {
   DRIVING="$1"
   local steps="$OUT/$1.steps"
-  sed -e "s|{PORT}|$PORT|g" -e "s|{HOME}|$H|g" -e "s|{PORT2}|${PORT2:-}|g" -e "s|{DATA}|$DATA|g" -e "s|{HUB}|${HUB:-}|g" "$HERE/steps/$1.txt" >"$steps"
+  sed -e "s|{PORT}|$PORT|g" -e "s|{HOME}|$H|g" -e "s|{PORT2}|${PORT2:-}|g" -e "s|{DATA}|$DATA|g" -e "s|{HUB}|${HUB:-}|g" -e "s|{HUBPORT}|${HUB_PORT:-}|g" "$HERE/steps/$1.txt" >"$steps"
   rm -f "$OUT/results.txt"
   VITALAIZE_UITEST="$steps" VITALAIZE_UITEST_OUT="$OUT" "$APP" >"$OUT/$1.log" 2>&1 &
   DRIVER=$!
@@ -200,7 +202,13 @@ wait_until() {
 mailbox() { node "$HERE/mailbox.mjs" "$@"; }
 mailbox_has_code() { [ -n "$(mailbox "$1" list 2>/dev/null)" ]; }
 
-answers() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$1/")" = 200 ]; }
+# A board with a password answers 401 until it is given.
+answers() {
+  case "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$1/")" in
+    200 | 401) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 no_answer() { ! answers "$1"; }
 item_running() { launchctl print "gui/$(id -u)/$1" 2>/dev/null | grep -q "state = running"; }
 item_gone() { ! launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; }

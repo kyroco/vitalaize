@@ -447,8 +447,15 @@ enum Setup {
         if c.role.runsBoard {
             // Before anything is written: a board that cannot have its port
             // would only be found out a minute and a half later.
-            if portTakenByAnother(c.port) {
-                throw Failure.step("Port \(c.port) is already used by another program on this Mac, so the board cannot answer there. Go back and pick another port on the fourth step; 4748 to 4999 are usually free. Nothing was changed.")
+            // A board started by hand that is about to be stopped may be
+            // what holds the port, so the port is looked at after that.
+            let oldItem = home.appendingPathComponent("Library/LaunchAgents/local.wallboard.plist")
+            let stopsOld = c.replaceOldBoard && Detect.oldLoginItemInstalled
+            if !stopsOld && portTakenByAnother(c.port) {
+                let byHand = Detect.oldLoginItemInstalled
+                    ? " The board you started by hand may be what uses it: turn on Stop that board on the second step, or pick another port."
+                    : ""
+                throw Failure.step("Port \(c.port) is already used by another program on this Mac, so the board cannot answer there. Go back and pick another port on the fourth step; 4748 to 4999 are usually free.\(byHand) Nothing was changed.")
             }
             c = try carryOver(c, backups: backups, say: say)
             say("Writing the board's settings")
@@ -456,11 +463,22 @@ enum Setup {
             // has changed yet.
             try writeSettings(c, backups: backups)
 
-            if c.replaceOldBoard && Detect.oldLoginItemInstalled {
+            if stopsOld {
                 say("Stopping the board you started by hand before")
+                try keep(oldItem, in: backups)
                 let uid = getuid()
                 Shell.run("/bin/launchctl", ["bootout", "gui/\(uid)/local.wallboard"])
-                try? fm.removeItem(at: home.appendingPathComponent("Library/LaunchAgents/local.wallboard.plist"))
+                try? fm.removeItem(at: oldItem)
+                say("Its login item is kept in \(backups.path)")
+                // It lets go of the port a moment after it is told to stop.
+                var taken = portTakenByAnother(c.port)
+                for _ in 0..<10 where taken {
+                    sleep(1)
+                    taken = portTakenByAnother(c.port)
+                }
+                if taken {
+                    throw Failure.step("Port \(c.port) is still used by another program on this Mac after the board you started by hand was stopped, so the board cannot answer there. Go back and pick another port on the fourth step; 4748 to 4999 are usually free. The board you started by hand is stopped; its login item is in \(backups.path).")
+                }
             }
 
             say("Starting the board, and setting it to start when you log in")
@@ -900,10 +918,38 @@ enum Setup {
     /// writes settings.json and restarts the login item only when a change
     /// needs it.
     static func save(_ values: [String: String], dataFolder folder: String? = nil) -> SaveAnswer {
-        let failed = SaveAnswer(ok: false, lines: ["The settings could not be saved. The log is at \(logFile.path)."], errors: nil, service: nil)
+        let place = folder ?? dataFolder ?? "the folder the board keeps its files in"
+        let failed = SaveAnswer(ok: false, lines: ["The settings could not be saved, and are as they were. Check that \(place) can be written to. The log is at \(logFile.path)."], errors: nil, service: nil)
+        // The saved settings as they were, kept before the board's code
+        // writes the file again.
+        var kept: (file: URL, copy: URL)?
+        if let dir = (folder ?? dataFolder).map({ URL(fileURLWithPath: $0) }) {
+            let file = dir.appendingPathComponent("settings.json")
+            let backups = backupFolder(dir)
+            do { try keep(file, in: backups) } catch {
+                return SaveAnswer(ok: false, lines: [error.localizedDescription], errors: nil, service: nil)
+            }
+            if fm.fileExists(atPath: file.path) { kept = (file, backups.appendingPathComponent(file.lastPathComponent)) }
+        }
+        // True when the save wrote the file; when it did not, there is
+        // nothing to keep and the copy goes again.
+        func wrote() -> Bool {
+            guard let kept else { return false }
+            if !fm.contentsEqual(atPath: kept.file.path, andPath: kept.copy.path) { return true }
+            try? fm.removeItem(at: kept.copy)
+            let folder = kept.copy.deletingLastPathComponent()
+            if (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true { try? fm.removeItem(at: folder) }
+            return false
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: ["values": values]),
               let data = engine(["save"], input: String(decoding: body, as: UTF8.self), dataFolder: folder),
-              let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data) else { return failed }
+              var answer = try? JSONDecoder().decode(SaveAnswer.self, from: data) else {
+            _ = wrote()
+            return failed
+        }
+        if wrote(), answer.ok, let kept {
+            answer.lines = (answer.lines ?? []) + ["The settings as they were before this save are in \(kept.copy.deletingLastPathComponent().path)."]
+        }
         return answer
     }
 
@@ -935,7 +981,9 @@ enum Setup {
 
     static func boardRunning(port: Int) -> Bool {
         let r = Shell.run("/usr/bin/curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", "http://localhost:\(port)/"], timeout: 5)
-        return r.output == "200"
+        // A board with a password answers 401 until the password is given:
+        // it is running all the same.
+        return r.output == "200" || r.output == "401"
     }
 
     static func waitForBoard(port: Int, seconds: Int) -> Bool {

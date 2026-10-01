@@ -25,6 +25,16 @@ defmodule Wallboard.DevPowerTest do
     %{facts | database: db, services: services}
   end
 
+  # The Mac app's setup asks only for the profile.
+  test "a profile with no database or cluster says what is missing, and asks AWS nothing" do
+    settings = %{
+      dev_power: %{aws_profile: "acme-dev-read", region: nil, database: nil, cluster: nil}
+    }
+
+    assert {:error, reason, :memory} = DevPower.poll(settings, nil, :memory, nil)
+    assert reason =~ "database and cluster"
+  end
+
   test "reads the database status and every service's task counts" do
     facts = asleep()
     assert facts.database == "stopped"

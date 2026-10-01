@@ -25,8 +25,21 @@ acme/rockets"
   check "the name typed in Reconfigure is in use" setting_is brand.name "Acme Three"
   check "a setting the wizard does not ask about is still as saved" setting_is rotate_seconds "45"
   check "Reconfigure's Send as is in use" setting_is alerts.via "iMessage"
-  python3 -c 'import json,sys; json.dump(json.load(open(sys.argv[1]))["choices"], open(sys.argv[2], "w"))' "$DATA/install.json" "$H/again.json"
 
+  drive hub-settings-all
+  check "the time zone saved in Settings is in use" setting_is timezone "America/Chicago"
+  check "the ntfy server too" setting_is alerts.ntfy_server "http://localhost:9"
+  check "the region too" setting_is new_relic.region "eu"
+  check "the hub takes collectors" setting_is link.enabled "true"
+  check "on the port typed" setting_is link.port "4761"
+  check "the repositories too" setting_is github.repos "acme/rockets"
+  check "the main branch too" setting_is github.branch "trunk"
+  check "the board still answers" answers "$PORT2"
+  check "and asks for its password" test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$PORT2/")" = 401
+  check "and opens with it" test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$PORT2/?token=acme-secret")" = 200
+  check "the saved settings as they were are in the backup folder" ls "$DATA"/backups/*/settings.json
+
+  sqlite3 "$DATA/wallboard.db" "create table uitest_marker(x); insert into uitest_marker values('history');"
   drive hub-remove
   check "after Remove the login item is gone" item_gone "$LABEL"
   check "after Remove nothing answers on the port" no_answer "$PORT2"
@@ -36,8 +49,11 @@ acme/rockets"
   check "Remove kept a copy of the setup record" ls "$DATA"/backups/*/install.json
   check "Remove kept a copy of the login item" ls "$DATA"/backups/*/"$LABEL.plist"
 
-  app --install "$H/again.json" >"$OUT/install-again.log" 2>&1
-  check "set up again from the command line" answers "$PORT2"
+  drive hub-again
+  check "set up again, the board answers" answers "$PORT2"
+  check "the name typed in the new setup is in use" setting_is brand.name "Acme Again"
+  check "a setting saved before Remove is still in use" setting_is timezone "America/Chicago"
+  check "the history from before Remove is still in the database" test "$(sqlite3 "$DATA/wallboard.db" 'select x from uitest_marker')" = history
   drive hub-remove-all
   check "after Remove with delete the login item is gone" item_gone "$LABEL"
   check "after Remove with delete the data folder is gone" test ! -d "$DATA"

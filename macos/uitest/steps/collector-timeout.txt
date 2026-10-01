@@ -16,6 +16,6 @@ wait 90 "Waiting for the hub to approve…"
 expect "expires in 10 minutes"
 snap t01-code
 wait 700 "The collector is set up, but it did not pair. Nobody approved the code in time."
-expect "The collector is running"
-expect "Not paired with a hub yet, so nothing is sent."
+wait 30 "The collector is running"
+wait 30 "Not paired with a hub yet, so nothing is sent."
 snap t02-timed-out

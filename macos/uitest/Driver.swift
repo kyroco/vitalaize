@@ -129,7 +129,11 @@ enum UITest {
     static func buttons(_ label: String) -> [Element] {
         let all = elements().filter { pressable.contains($0.role) }
         let exact = all.filter { $0.name == label }
-        return exact.isEmpty ? all.filter { $0.name.hasPrefix(label) } : exact
+        if !exact.isEmpty { return exact }
+        let starts = all.filter { $0.name.hasPrefix(label) }
+        // A hub found on the network is named for this computer; its
+        // address, which ends the row, is what a script can know.
+        return starts.isEmpty ? all.filter { $0.name.hasSuffix(label) } : starts
     }
 
     /// The control of one of `roles` that carries `label`, or the first one
@@ -260,8 +264,11 @@ enum UITest {
             view.cacheDisplay(in: view.bounds, to: rep)
             return rep.representation(using: .png, properties: [:])
         }
-        // What changed a moment ago (a switch just clicked) is in the layers
-        // only once the pending changes are sent.
+        // What changed a moment ago is in the layers only once the pending
+        // changes are sent. One thing still is not: a switch the script
+        // clicked slides its knob over, and in a window that is not in
+        // front the slide never ends, so the picture can show it as it was
+        // before the click. The list beside the picture has its real value.
         CATransaction.flush()
         context.scaleBy(x: scale, y: scale)
         if !layer.isGeometryFlipped && view.isFlipped {

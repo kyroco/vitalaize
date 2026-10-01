@@ -1,0 +1,36 @@
+# A Mac with a board started by hand before the app existed (its login
+# item is local.wallboard, its settings file is in ~/projects/wallboard).
+# The wizard offers to carry its settings over and to stop it.
+
+wait 90 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+expect "A board you set up before"
+value "Carry over its settings from ~/projects/wallboard/settings.exs" "1"
+value "Stop that board and run this one instead" "1"
+snap b01-folders
+# Each switch can be turned off and on again.
+toggle "Carry over its settings from ~/projects/wallboard/settings.exs"
+value "Carry over its settings from ~/projects/wallboard/settings.exs" "0"
+toggle "Carry over its settings from ~/projects/wallboard/settings.exs"
+value "Carry over its settings from ~/projects/wallboard/settings.exs" "1"
+toggle "Stop that board and run this one instead"
+toggle "Stop that board and run this one instead"
+value "Stop that board and run this one instead" "1"
+click "Continue"
+wait "Main branch"
+# What the earlier file holds is filled in already.
+value "Repository" "acme/rockets"
+click "Continue"
+wait "Name at the top"
+value "Name at the top" "Acme By Hand"
+type "Port" "{PORT}"
+click "Continue"
+wait "This Mac"
+expect "Carried over"
+snap b02-review
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap b03-status

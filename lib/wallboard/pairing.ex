@@ -572,7 +572,8 @@ defmodule Wallboard.Pairing do
         "Sharing, Local hostname), restart it, then pair again."
 
   def why(:not_a_hub),
-    do: "That board does not take collectors. Turn the link on in its settings (link.enabled)."
+    do:
+      "That board does not take collectors. On the hub, open its settings, turn on Take collectors, and ask again."
 
   def why({:folder, reason}), do: "Could not save the certificate in #{reason}"
   def why({:hub, reason}), do: "Could not pair: #{reason}"

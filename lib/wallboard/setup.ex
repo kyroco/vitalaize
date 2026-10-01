@@ -235,8 +235,18 @@ defmodule Wallboard.Setup do
       rescue
         # Our own messages say what to do. Anything else may quote a line
         # of the settings file, which can hold a password.
-        e in ArgumentError -> {:error, Exception.message(e)}
-        e -> {:error, "VitalAIze setup stopped: #{inspect(e.__struct__)}"}
+        e in ArgumentError ->
+          {:error, Exception.message(e)}
+
+        # A folder that cannot be written to, or a file that cannot be
+        # read. The path and the reason hold nothing secret.
+        e in File.Error ->
+          {:error,
+           "Could not #{e.action} #{e.path} (#{:file.format_error(e.reason)}). " <>
+             "Check that the folder can be written to. Nothing was saved."}
+
+        e ->
+          {:error, "VitalAIze setup stopped: #{inspect(e.__struct__)}"}
       end
 
     case result do

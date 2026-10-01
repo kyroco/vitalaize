@@ -1,0 +1,22 @@
+# Set up again after Remove kept the database and settings: the wizard
+# runs from its first page and the board comes back with what was kept.
+
+wait 90 "What this Mac does"
+expect "Step 1 of 5"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Main branch"
+type "Repository" "acme/rockets"
+click "Continue"
+wait "Name at the top"
+type "Name at the top" "Acme Again"
+type "Port" "{PORT2}"
+click "Continue"
+wait "This Mac"
+expect "Acme Again at http://localhost:{PORT2}"
+click "Install and start the board"
+wait 10 "Setting up…"
+wait 150 "The board is running"
+absent "That did not work"
+snap 14-set-up-again
