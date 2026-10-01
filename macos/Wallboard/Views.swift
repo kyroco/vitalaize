@@ -467,7 +467,9 @@ struct StatusView: View {
                 GroupBox {
                     HStack {
                         Circle().fill(state.running ? Color.green : Color.red).frame(width: 10, height: 10)
-                        Text(state.running ? "The board is running at http://localhost:\(c.port)" : "The board is not answering")
+                        // verbatim: a Text made from a literal writes a number the
+                        // way the Mac's region does, and a port is not "4,747".
+                        Text(verbatim: state.running ? "The board is running at http://localhost:\(c.port)" : "The board is not answering")
                         Spacer()
                         Button("Check again") { state.refreshStatus() }
                     }
