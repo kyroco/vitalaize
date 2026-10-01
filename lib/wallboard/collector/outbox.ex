@@ -66,10 +66,13 @@ defmodule Wallboard.Collector.Outbox do
   def append(server \\ __MODULE__, events, checkpoint) when is_binary(checkpoint),
     do: GenServer.call(server, {:append, events, checkpoint}, :infinity)
 
-  @doc "The checkpoint given to the last `append/3`, or nil when there is none."
+  @doc """
+  The checkpoint given to the last `append/3`, nil when there is none, or
+  `{:error, :outbox_unreadable}` while the outbox cannot read its files.
+  """
   def checkpoint(server \\ __MODULE__), do: GenServer.call(server, :checkpoint, 60_000)
 
-  @doc "False when the outbox is full and the watcher should wait."
+  @doc "False when the outbox is full, or cannot be read, and the watcher should wait."
   def room?(server \\ __MODULE__), do: GenServer.call(server, :room?, 60_000)
 
   @doc "Up to `limit` events numbered after `seq`, oldest first, as {number, event}."
@@ -79,7 +82,11 @@ defmodule Wallboard.Collector.Outbox do
   @doc "Every event up to and including `seq` has reached the hub; they can go."
   def ack(server \\ __MODULE__, seq), do: GenServer.call(server, {:ack, seq}, 60_000)
 
-  @doc "%{seq: last event's number, acked: last one sent, bytes: size on disk, max_bytes: limit}."
+  @doc """
+  %{seq: last event's number, acked: last one sent, bytes: size on disk,
+  max_bytes: limit, broken?: false}, or only %{broken?: true} while the
+  outbox cannot read its files.
+  """
   def stats(server \\ __MODULE__), do: GenServer.call(server, :stats, 60_000)
 
   # ---------------------------------------------------------------------------
@@ -99,44 +106,72 @@ defmodule Wallboard.Collector.Outbox do
       checkpoint: nil,
       # {number of the first event, how many events, bytes}, oldest first.
       segments: [],
-      # True while the event files cannot be read or put right.
+      # Whether the saved point has been read from disk yet, and whether
+      # the event files could not be read or put right the last time.
+      loaded?: false,
       broken?: false
     }
 
-    {:ok, reopen(state)}
+    {:ok, mend(state)}
   end
 
-  # Reads the saved point and lines the event files up with it. A file that
-  # cannot be read or changed leaves the outbox marked broken rather than
-  # stopping it: a stop would print the append in hand, events and all, in
-  # the crash report of whoever was waiting for it.
-  defp reopen(state) do
-    state = %{state | segments: [], broken?: false}
+  # A file that cannot be read or changed leaves the outbox marked broken
+  # rather than stopping it: a stop would print the append in hand, events
+  # and all, in the crash report of whoever was waiting for it. While it is
+  # broken it gives nothing out and takes nothing in, and every call tries
+  # to put it right first.
+  defp mend(%{broken?: false, loaded?: true} = state), do: state
 
-    case load(state.dir) do
-      :damaged -> rebuild(state)
-      saved -> state |> Map.merge(saved) |> recover() |> drop_sent()
-    end
+  # Not read from disk yet: the saved point, then the files lined up to it.
+  defp mend(%{loaded?: false} = state) do
+    opened =
+      case load(state.dir) do
+        :damaged -> rebuild(state)
+        saved -> %{state | segments: []} |> Map.merge(saved) |> recover() |> drop_sent()
+      end
+
+    %{opened | loaded?: true, broken?: false}
   rescue
-    _ ->
-      Logger.warning("Collector: the outbox's files cannot be read. It will try again.")
-      %{state | broken?: true}
+    _ -> broken(state)
+  end
+
+  # Read before: the numbers in memory are the saved ones, so the files are
+  # lined up to those. The saved point is not read again, since an append
+  # that failed must not be taken for saved.
+  defp mend(state) do
+    %{recover(%{state | segments: []}) | broken?: false} |> drop_sent()
+  rescue
+    _ -> broken(state)
+  end
+
+  defp broken(state) do
+    if not state.broken?,
+      do: Logger.warning("Collector: the outbox's files cannot be read. It will try again.")
+
+    %{state | broken?: true}
   end
 
   @impl true
-  def handle_call({:append, [], checkpoint}, _from, %{checkpoint: checkpoint} = state),
-    do: {:reply, state.seq, state}
-
-  # The files could not be lined up with the saved point (see `reopen/1`).
-  # Nothing is added until they can be.
-  def handle_call({:append, _events, _checkpoint} = call, from, %{broken?: true} = state) do
-    case reopen(state) do
-      %{broken?: true} = state -> {:reply, {:error, :outbox_unreadable}, state}
-      state -> handle_call(call, from, state)
+  def handle_call(call, _from, state) do
+    case mend(state) do
+      %{broken?: true} = state -> {:reply, unreadable(call), state}
+      state -> answer(call, state)
     end
   end
 
-  def handle_call({:append, events, checkpoint}, _from, state) do
+  # What each call gets while the outbox cannot be read: no events, no
+  # room, and no saved point (which is not the same as an empty one).
+  defp unreadable({:append, _, _}), do: {:error, :outbox_unreadable}
+  defp unreadable(:checkpoint), do: {:error, :outbox_unreadable}
+  defp unreadable(:room?), do: false
+  defp unreadable({:read, _, _}), do: []
+  defp unreadable({:ack, _}), do: :ok
+  defp unreadable(:stats), do: %{broken?: true}
+
+  defp answer({:append, [], checkpoint}, %{checkpoint: checkpoint} = state),
+    do: {:reply, state.seq, state}
+
+  defp answer({:append, events, checkpoint}, state) do
     with {:ok, written} <- events |> Enum.map(&record/1) |> write(state),
          written = %{written | checkpoint: checkpoint},
          :ok <- save(written) do
@@ -144,14 +179,14 @@ defmodule Wallboard.Collector.Outbox do
     else
       # Nothing of a failed append stays: the files go back to the last
       # saved point, and the caller tries again later.
-      {:error, reason} -> {:reply, {:error, reason}, reopen(state)}
+      {:error, reason} -> {:reply, {:error, reason}, mend(%{state | broken?: true})}
     end
   end
 
-  def handle_call(:checkpoint, _from, state), do: {:reply, state.checkpoint, state}
-  def handle_call(:room?, _from, state), do: {:reply, bytes(state) < state.max_bytes, state}
+  defp answer(:checkpoint, state), do: {:reply, state.checkpoint, state}
+  defp answer(:room?, state), do: {:reply, bytes(state) < state.max_bytes, state}
 
-  def handle_call({:read, seq, limit}, _from, state) do
+  defp answer({:read, seq, limit}, state) do
     events =
       state.segments
       |> Enum.filter(fn {first, count, _} -> first + count - 1 > seq end)
@@ -165,22 +200,24 @@ defmodule Wallboard.Collector.Outbox do
             []
         end
       end)
-      |> Stream.filter(fn {n, _} -> n > seq end)
+      # Never past the saved point, whatever a file holds.
+      |> Stream.filter(fn {n, _} -> n > seq and n <= state.seq end)
       |> Enum.take(limit)
       |> Enum.map(fn {n, body} -> {n, Proto.Event.decode(body)} end)
 
     {:reply, events, state}
   end
 
-  def handle_call({:ack, seq}, _from, state) when is_integer(seq) do
+  defp answer({:ack, seq}, state) when is_integer(seq) do
     state = drop_sent(%{state | acked: seq |> max(state.acked) |> min(state.seq)})
     # Unsaved, a restart only offers the hub some events again.
     save(state)
     {:reply, :ok, state}
   end
 
-  def handle_call(:stats, _from, state) do
-    {:reply, Map.take(state, [:seq, :acked, :max_bytes]) |> Map.put(:bytes, bytes(state)), state}
+  defp answer(:stats, state) do
+    stats = Map.take(state, [:seq, :acked, :max_bytes, :broken?])
+    {:reply, Map.put(stats, :bytes, bytes(state)), state}
   end
 
   # Never print events or the checkpoint in a crash report.
@@ -254,8 +291,13 @@ defmodule Wallboard.Collector.Outbox do
          true <- is_nil(checkpoint) or is_binary(checkpoint) do
       %{seq: seq, acked: acked, checkpoint: checkpoint}
     else
-      {:error, :enoent} -> %{seq: 0, acked: 0, checkpoint: nil}
-      _ -> :damaged
+      {:error, :enoent} ->
+        if Enum.any?(File.ls!(dir), &(&1 =~ ~r/\Aevents-\d{20}\.log\z/)),
+          do: :damaged,
+          else: %{seq: 0, acked: 0, checkpoint: nil}
+
+      _ ->
+        :damaged
     end
   end
 

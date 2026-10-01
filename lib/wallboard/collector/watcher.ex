@@ -189,11 +189,13 @@ defmodule Wallboard.Collector.Watcher do
       # Whether the last look stopped early, and whether it read every file.
       full?: false,
       read?: false,
+      # False until the saved place has been read from the outbox.
+      placed?: false,
       task: nil,
       callers: []
     }
 
-    state = Map.merge(state, restore(Outbox.checkpoint(state.outbox)))
+    state = place(state)
     found = folders(state.settings.(), state.home)
 
     Logger.info(
@@ -352,7 +354,6 @@ defmodule Wallboard.Collector.Watcher do
         # Back to the last place that was saved: what was read since is
         # read again once the outbox can be written.
         state
-        |> Map.merge(restore(Outbox.checkpoint(state.outbox)))
         |> Map.merge(%{
           pending: [],
           unsaved?: false,
@@ -361,11 +362,31 @@ defmodule Wallboard.Collector.Watcher do
           full?: true,
           read?: false
         })
+        |> place()
 
       _seq ->
         state = %{state | pending: [], unsaved?: false}
         if Outbox.room?(state.outbox), do: state, else: %{state | full?: true}
     end
+  end
+
+  # Takes the saved place from the outbox. While the outbox cannot read its
+  # files there is no place to take, and the collector does nothing: to
+  # start from nothing instead would send everything a second time.
+  defp place(state) do
+    case saved_place(state) do
+      {:error, _} ->
+        %{state | offsets: %{}, heads: %{}, statuses: %{}, placed?: false}
+
+      text ->
+        state |> Map.merge(restore(text)) |> Map.put(:placed?, true)
+    end
+  end
+
+  defp saved_place(state) do
+    Outbox.checkpoint(state.outbox)
+  catch
+    :exit, _ -> {:error, :outbox_stopped}
   end
 
   # An outbox that stopped mid-append is one that could not write. The exit
@@ -379,6 +400,13 @@ defmodule Wallboard.Collector.Watcher do
 
   # ---------------------------------------------------------------------------
   # Session files
+
+  defp read_files(%{placed?: false} = state) do
+    case place(state) do
+      %{placed?: true} = state -> read_files(state)
+      state -> %{state | full?: true, read?: false}
+    end
+  end
 
   defp read_files(state) do
     settings = state.settings.()
@@ -775,6 +803,8 @@ defmodule Wallboard.Collector.Watcher do
   end
 
   defp start_status(state), do: state
+
+  defp statuses(%{placed?: false} = state, _claude), do: state
 
   defp statuses(state, claude) do
     # A full outbox waits. The statuses then are sent when there is room.

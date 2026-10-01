@@ -215,4 +215,74 @@ defmodule Wallboard.CollectorOutboxTest do
     File.chmod!(file, 0o600)
     assert Outbox.append(box, [event(3)], "c") == 3
   end
+
+  @tag :capture_log
+  test "while its files cannot be read it gives nothing out and loses nothing", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1), event(2), event(3)], "place-a")
+    GenServer.stop(box)
+    [name] = files(dir)
+    file = Path.join(dir, name)
+    saved = File.read!(Path.join(dir, "state"))
+
+    File.chmod!(file, 0o000)
+    box = start(dir)
+    # No saved point is not the same as an empty one.
+    assert Outbox.checkpoint(box) == {:error, :outbox_unreadable}
+    assert Outbox.read(box, 0) == []
+    refute Outbox.room?(box)
+    assert Outbox.stats(box) == %{broken?: true}
+    assert Outbox.ack(box, 2) == :ok
+    assert {:error, :outbox_unreadable} = Outbox.append(box, [event(4)], "place-b")
+    assert File.read!(Path.join(dir, "state")) == saved
+
+    File.chmod!(file, 0o600)
+    assert Outbox.checkpoint(box) == "place-a"
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}, {3, event(3)}]
+    assert %{seq: 3, acked: 0, broken?: false} = Outbox.stats(box)
+  end
+
+  @tag :capture_log
+  test "an append that failed is never handed out or kept, whatever else is wrong", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1), event(2)], "a")
+    [name] = files(dir)
+    file = Path.join(dir, name)
+
+    # The events can be written but their point cannot be saved, and the
+    # file cannot be read to take them out again.
+    File.chmod!(file, 0o200)
+    File.chmod!(dir, 0o500)
+    assert {:error, _} = Outbox.append(box, [event(3)], "b")
+    assert Outbox.read(box, 0) == []
+
+    File.chmod!(dir, 0o700)
+    File.chmod!(file, 0o600)
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
+    assert Outbox.append(box, [event(7)], "c") == 3
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}, {3, event(7)}]
+    GenServer.stop(box)
+
+    # The saved point unreadable too: the failed appends still do not stay.
+    File.write!(Path.join(dir, "state"), "not json")
+    File.mkdir_p!(Path.join(dir, "state.tmp"))
+    box = start(dir)
+    for _ <- 1..3, do: assert({:error, _} = Outbox.append(box, [event(8)], "d"))
+    assert %{seq: 3} = Outbox.stats(box)
+    assert Enum.map(Outbox.read(box, 0), &elem(&1, 0)) == [1, 2, 3]
+  end
+
+  @tag :capture_log
+  test "a saved point that is gone, with events still there, does not start the numbers over", %{
+    dir: dir
+  } do
+    box = start(dir)
+    Outbox.append(box, [event(1), event(2), event(3)], "a")
+    Outbox.ack(box, 3)
+    GenServer.stop(box)
+    File.rm!(Path.join(dir, "state"))
+
+    box = start(dir)
+    assert Outbox.append(box, [event(4)], "b") == 4
+  end
 end

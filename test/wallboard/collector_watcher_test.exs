@@ -66,7 +66,7 @@ defmodule Wallboard.CollectorWatcherTest do
 
   # What one more look adds to the outbox.
   defp look(%{outbox: outbox, watcher: watcher}) do
-    before = Outbox.stats(outbox).seq
+    before = Map.get(Outbox.stats(outbox), :seq, 0)
     :ok = Watcher.tick(watcher)
     outbox |> Outbox.read(before, 100_000) |> Enum.map(&elem(&1, 1))
   end
@@ -573,6 +573,29 @@ defmodule Wallboard.CollectorWatcherTest do
       assert from_files(new) == filtered(claude_ctx(), all, c)
       assert statuses(new) == [{@claude_id, :WORKING, :WHY_UNKNOWN, ""}]
       assert look(w) == []
+    end
+
+    @tag :capture_log
+    test "an outbox that cannot be read at a start makes it wait, and nothing goes out twice",
+         c do
+      all = lines("collector/claude_session.jsonl")
+      add(claude_path(c, @claude_id <> ".jsonl"), all)
+      agents(c, [{@claude_id, %{"status" => "busy"}}])
+      w = start(c)
+      before = look(w)
+      assert before != []
+      stop()
+
+      dir = Path.join(c.settings.collector.dir, "outbox")
+      [file] = Path.wildcard(Path.join(dir, "events-*.log"))
+      File.chmod!(file, 0o000)
+      w = start(c)
+      assert look(w) == []
+      assert look(w) == []
+
+      File.chmod!(file, 0o600)
+      assert look(w) == []
+      assert sent(w) == before
     end
 
     test "a Codex file with a bad line costs only its own session its status", c do
