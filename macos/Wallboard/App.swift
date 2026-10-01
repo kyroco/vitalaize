@@ -124,6 +124,8 @@ final class AppState: ObservableObject {
     @Published var step = 0
     @Published var log: [String] = []
     @Published var failure: String?
+    /// What runs on this Mac after a setup that failed.
+    @Published var failureAfter: String?
     /// While Remove is working, and what it left behind once it is done.
     @Published var removing = false
     @Published var removed: String?
@@ -241,6 +243,12 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// True when the wizard is set to leave a paired collector's pairing as
+    /// it is: no hub address was given, and it is paired already.
+    var keepsPairing: Bool {
+        !choices.role.runsBoard && choices.hubURL.trimmingCharacters(in: .whitespaces).isEmpty && doc?.paired != nil
+    }
+
     var isAppleSilicon: Bool {
         var sysinfo = utsname()
         uname(&sysinfo)
@@ -292,6 +300,8 @@ final class AppState: ObservableObject {
             // record, and an answer left empty changes nothing saved.
             now.settingsRead = nil
             if let doc { now = Setup.prefill(now, from: doc) }
+            // A paired collector stays paired unless a hub is picked again.
+            if now.role == .collector, doc?.paired != nil { now.hubURL = "" }
             let repo = now.repo
             let flows = repo.isEmpty ? [] : Detect.workflows(repo: repo)
             let profiles = Detect.awsProfiles()
@@ -301,6 +311,7 @@ final class AppState: ObservableObject {
                          ("op (1Password)", Shell.which("op") != nil)]
             DispatchQueue.main.async {
                 self.choices = now
+                if let doc { self.doc = doc }
                 self.workflows = flows
                 self.awsProfiles = profiles
                 self.tools = tools
@@ -341,6 +352,7 @@ final class AppState: ObservableObject {
     func install() {
         log = []
         failure = nil
+        failureAfter = nil
         removing = false
         removed = nil
         screen = .working
@@ -362,7 +374,13 @@ final class AppState: ObservableObject {
                     self.refreshStatus()
                 }
             } catch {
-                DispatchQueue.main.async { self.failure = error.localizedDescription }
+                // Said with the failure: whether VitalAIze runs on this Mac
+                // now, so nobody has to go and find out.
+                let after = Setup.runningNow(c)
+                DispatchQueue.main.async {
+                    self.failure = error.localizedDescription
+                    self.failureAfter = after
+                }
             }
         }
     }

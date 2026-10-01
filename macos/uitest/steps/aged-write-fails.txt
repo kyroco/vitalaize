@@ -1,0 +1,26 @@
+# Reconfigure when the data folder cannot be written to: it stops, says
+# which file and that nothing changed, and the board goes on running.
+
+wait 40 "The board is running"
+click "Reconfigure…"
+wait 60 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Main branch"
+click "Continue"
+wait "Name at the top"
+type "Name at the top" "Acme Changed"
+click "Continue"
+wait "This Mac"
+click "Install and start the board"
+wait 60 "That did not work"
+expect "Could not write"
+expect "The file that was there is unchanged."
+expect "The board that was set up before is still running at http://localhost:{PORT}."
+snap a03-write-failed
+click "Open the log"
+opened "board.log"
+click "Back to the setup"
+wait 5 "This Mac"
+expect "Acme Changed"

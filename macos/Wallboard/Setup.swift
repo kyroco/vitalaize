@@ -415,7 +415,7 @@ enum Setup {
         guard let body = try? JSONSerialization.data(withJSONObject: ["keys": wizardKeys(c)]),
               let data = engine(["forget"], input: String(decoding: body, as: UTF8.self), dataFolder: c.dataFolder),
               let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok else {
-            throw Failure.step("The saved settings could not be read. The log is at \(logFile.path).")
+            throw Failure.step("The saved settings (settings.json in \(c.dataFolder)) could not be changed. Check that the folder can be written to. Nothing was changed.")
         }
     }
 
@@ -445,6 +445,11 @@ enum Setup {
         var pairing: PairAnswer?
 
         if c.role.runsBoard {
+            // Before anything is written: a board that cannot have its port
+            // would only be found out a minute and a half later.
+            if portTakenByAnother(c.port) {
+                throw Failure.step("Port \(c.port) is already used by another program on this Mac, so the board cannot answer there. Go back and pick another port on the fourth step; 4748 to 4999 are usually free. Nothing was changed.")
+            }
             c = try carryOver(c, backups: backups, say: say)
             say("Writing the board's settings")
             // Before the file is written: if this cannot be done, nothing
@@ -809,6 +814,34 @@ enum Setup {
         Shell.run("/bin/launchctl", ["kill", "SIGTERM", target])
         // In case it was not running at all.
         Shell.run("/bin/launchctl", ["kickstart", target])
+    }
+
+    /// What runs on this Mac right now, as one sentence for the person,
+    /// after a setup with these choices stopped part way.
+    static func runningNow(_ c: Choices) -> String {
+        guard let record = installed() else {
+            return serviceRunning()
+                ? "VitalAIze was started, but its setup did not finish. Fix what is said above and run the setup again."
+                : "Nothing of VitalAIze is running on this Mac."
+        }
+        if record.choices.role.runsBoard {
+            let port = currentPort(record.choices)
+            return boardRunning(port: port)
+                ? "The board that was set up before is still running at http://localhost:\(String(port))."
+                : "The board is not running now. Use Open the log to see why, then Back to the setup."
+        }
+        return serviceRunning()
+            ? "The collector that was set up before is still running."
+            : "The collector is not running now. Use Open the log to see why, then Back to the setup."
+    }
+
+    /// True when a program other than this Mac's own board listens on the
+    /// port. The board that already runs there is about to be restarted,
+    /// so it is not in the way.
+    static func portTakenByAnother(_ port: Int) -> Bool {
+        guard Shell.run("/usr/bin/nc", ["-z", "-G", "1", "127.0.0.1", String(port)], timeout: 4).ok else { return false }
+        if serviceRunning(), let record = installed(), record.choices.role.runsBoard, currentPort(record.choices) == port { return false }
+        return true
     }
 
     /// Whether the login item is running, as launchd sees it.

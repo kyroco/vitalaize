@@ -37,6 +37,13 @@ enabled "Pair"
 click "Pair"
 wait 60 "Waiting for the hub to approve…"
 snap c10-pair-code
+# Hide puts the sheet away while the hub's owner decides; the code is
+# there again when the sheet is opened.
+click "Hide"
+gone 5 "Waiting for the hub to approve…"
+click "Pair again…"
+wait 5 "Waiting for the hub to approve…"
+snap c10-pair-again
 wait 90 "The hub's owner refused this machine."
 snap c10-refused
 click "Close"

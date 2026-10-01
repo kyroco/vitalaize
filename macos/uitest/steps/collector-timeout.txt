@@ -1,0 +1,21 @@
+# A collector set up while nobody approves its code: after the ten minutes
+# the code lasts, the setup ends with the collector running and the reason
+# it is not paired on the first screen.
+
+wait 90 "What this Mac does"
+click "Collector only"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Hubs on your network"
+type "Hub address" "{HUB}"
+click "Continue"
+wait "This Mac"
+click "Start the collector and pair"
+wait 90 "Waiting for the hub to approve…"
+expect "expires in 10 minutes"
+snap t01-code
+wait 700 "The collector is set up, but it did not pair. Nobody approved the code in time."
+expect "The collector is running"
+expect "Not paired with a hub yet, so nothing is sent."
+snap t02-timed-out

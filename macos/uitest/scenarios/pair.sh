@@ -24,13 +24,17 @@ scenario_pair() {
   check "the collector's link to the hub is up" wait_until 60 grep -q '"state":"up"' "$DATA/collector/link/state.json"
 
   drive_start collector-status
-  check "the hub's mailbox gets the second request" wait_until 180 test -f "$OUT/c10-pair-code.txt"
+  check "the hub's mailbox gets the second request" wait_until 180 test -f "$OUT/c10-pair-again.txt"
   wait_until 30 mailbox_has_code "$HUB_PORT"
   CODE=$(mailbox "$HUB_PORT" list | head -1)
   check "the second code matches too" grep -q "$CODE" "$OUT/c10-pair-code.txt"
   check "Refuse in the mailbox" mailbox "$HUB_PORT" refuse "$CODE"
   drive_wait
   check "the collector still runs after a refused pairing" item_running "$LABEL"
+
+  drive collector-reconfigure
+  check "after Reconfigure the collector still runs" item_running "$LABEL"
+  check "and its link to the hub is up again" wait_until 60 grep -q '"state":"up"' "$DATA/collector/link/state.json"
 
   drive collector-remove
   check "after Remove the collector's login item is gone" item_gone "$LABEL"

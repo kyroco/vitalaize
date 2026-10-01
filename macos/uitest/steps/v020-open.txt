@@ -1,0 +1,10 @@
+# The new app opened over 0.2.0, whose board is still running. Nothing is
+# clicked: the app restarts the old board by itself and says why.
+
+wait 10 "Kyroco VitalAIze"
+wait 60 "The board that was running was started before this version of the app was installed. Restarting it…"
+snap v01-restarting
+wait 120 "The board restarted and is answering."
+wait 40 "The board is running"
+absent "Mended"
+snap v01-restarted

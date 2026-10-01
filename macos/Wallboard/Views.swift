@@ -71,7 +71,7 @@ struct WizardView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canContinue)
                 } else {
-                    Button(state.choices.role.runsBoard ? "Install and start the board" : "Start the collector and pair") { state.install() }
+                    Button(state.choices.role.runsBoard ? "Install and start the board" : (state.keepsPairing ? "Start the collector" : "Start the collector and pair")) { state.install() }
                         .keyboardShortcut(.defaultAction)
                         .disabled(!state.isAppleSilicon)
                 }
@@ -85,7 +85,7 @@ struct WizardView: View {
         switch (c.role.runsBoard, state.step) {
         case (_, 1): return !c.claudeFolders.isEmpty && (c.role == .collector || !c.dataFolder.isEmpty)
         case (true, 2): return c.repo.contains("/")
-        case (false, 2): return !c.hubURL.trimmingCharacters(in: .whitespaces).isEmpty
+        case (false, 2): return !c.hubURL.trimmingCharacters(in: .whitespaces).isEmpty || state.doc?.paired != nil
         default: return true
         }
     }
@@ -381,6 +381,10 @@ struct HubPage: View {
     var body: some View {
         Text("Pick the hub this Mac streams its Claude and Codex sessions to. This Mac then shows a short code; approve the same code in the mailbox on the hub's board. Nothing is typed or pasted.")
             .foregroundStyle(.secondary)
+        if let hub = state.doc?.paired {
+            Label("This Mac is paired with the hub at \(hub.host) as \(hub.machine). Leave the address empty to keep that, or pick a hub to pair again.", systemImage: "checkmark.circle")
+                .fixedSize(horizontal: false, vertical: true)
+        }
         GroupBox("Hubs on your network") {
             VStack(alignment: .leading, spacing: 8) {
                 if finder.hubs.isEmpty {
@@ -434,7 +438,7 @@ struct ReviewPage: View {
                     row("Texts", c.phone.isEmpty ? "off" : "to \(c.phone) by \(c.textVia)")
                     if c.importedSettings != nil { row("Carried over", "your earlier settings file") }
                 } else {
-                    row("Hub", c.hubURL)
+                    row("Hub", state.keepsPairing ? "stays paired with \(state.doc?.paired?.host ?? "its hub")" : c.hubURL)
                     row("Codex", Detect.usesCodex() ? "watched too, in ~/.codex" : "not on this Mac")
                 }
             }
@@ -442,7 +446,7 @@ struct ReviewPage: View {
         }
         Text(c.role.runsBoard
              ? "The board starts now and again whenever you log in. You can change any of this later in this app, under Settings."
-             : "A small collector starts now and again whenever you log in. It watches this Mac's Claude and Codex sessions and streams them to the hub as they happen. It adds nothing to Claude's or Codex's own settings. After it starts, this Mac shows a code to approve on the hub.")
+             : "A small collector starts now and again whenever you log in. It watches this Mac's Claude and Codex sessions and streams them to the hub as they happen. It adds nothing to Claude's or Codex's own settings." + (state.keepsPairing ? "" : " After it starts, this Mac shows a code to approve on the hub."))
             .foregroundStyle(.secondary)
     }
 
@@ -472,6 +476,10 @@ struct WorkingView: View {
                     }
                     if let failure = state.failure {
                         Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        if let after = state.failureAfter {
+                            Text(after).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

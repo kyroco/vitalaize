@@ -2,7 +2,9 @@
 # Uses every screen of the Mac app the way a person does, and checks what
 # happened. Run it after any change to macos/Wallboard.
 #
-#   macos/uitest/run.sh                 every scenario
+#   macos/uitest/run.sh                 every scenario but the slow one
+#   macos/uitest/run.sh --all           the slow one too (a pairing nobody
+#                                       approves takes ten minutes to run out)
 #   macos/uitest/run.sh fresh-hub pair  only these
 #   macos/uitest/run.sh --list          name the scenarios
 #   macos/uitest/run.sh --keep ...      leave the throwaway boards running after
@@ -217,6 +219,7 @@ setting_is() { [ "$(setting "$1")" = "$2" ]; }
 # --- scenarios ----------------------------------------------------------------
 
 SCENARIOS=()
+SLOW=()
 for file in "$HERE"/scenarios/*.sh; do
   # shellcheck disable=SC1090
   . "$file"
@@ -225,9 +228,11 @@ done
 # --- the run ------------------------------------------------------------------
 
 WANTED=()
+ALL=0
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
+    --all) ALL=1 ;;
     --list)
       printf '%s\n' "${SCENARIOS[@]}"
       exit 0
@@ -235,7 +240,14 @@ for arg in "$@"; do
     *) WANTED+=("$arg") ;;
   esac
 done
-[ ${#WANTED[@]} -eq 0 ] && WANTED=("${SCENARIOS[@]}")
+if [ ${#WANTED[@]} -eq 0 ]; then
+  for name in "${SCENARIOS[@]}"; do
+    case " ${SLOW[*]+"${SLOW[*]}"} " in
+      *" $name "*) [ "$ALL" = 1 ] && WANTED+=("$name") ;;
+      *) WANTED+=("$name") ;;
+    esac
+  done
+fi
 
 build
 mkdir -p "$WORK/out"
