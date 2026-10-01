@@ -48,8 +48,13 @@ enum CLI {
                 return 1
             }
         case "--uninstall":
-            Setup.uninstall(deleteData: args.contains("--delete-data")) { print($0) }
-            return 0
+            do {
+                try Setup.uninstall(deleteData: args.contains("--delete-data")) { print($0) }
+                return 0
+            } catch {
+                print("Failed: \(error.localizedDescription)")
+                return 1
+            }
         case "--settings":
             guard let doc = Setup.settingsDoc() else {
                 print("Could not read the settings.")
@@ -168,6 +173,9 @@ final class AppState: ObservableObject {
     /// Said on the wizard's second step when the earlier settings file the
     /// setup carried over before is gone.
     @Published var importNote: String?
+    /// Where "Back" goes after a failure: the setup, or the first screen
+    /// when it was Remove that stopped.
+    @Published var failureBack: Screen = .wizard
     /// The earlier settings file the wizard offered to carry over, kept
     /// while its switch is off.
     @Published var offeredImport: String?
@@ -269,6 +277,7 @@ final class AppState: ObservableObject {
             if FileManager.default.fileExists(atPath: found.dataFolder + "/settings.exs"),
                let doc = Setup.settingsDoc(dataFolder: found.dataFolder) {
                 found = Setup.prefill(found, from: doc)
+                found.settingsReadFrom = found.dataFolder
             }
             let flows = found.repo.isEmpty ? [] : Detect.workflows(repo: found.repo)
             let profiles = Detect.awsProfiles()
@@ -311,7 +320,11 @@ final class AppState: ObservableObject {
             // Without the settings the wizard starts from the setup's own
             // record, and an answer left empty changes nothing saved.
             now.settingsRead = nil
-            if let doc { now = Setup.prefill(now, from: doc) }
+            now.settingsReadFrom = nil
+            if let doc {
+                now = Setup.prefill(now, from: doc)
+                now.settingsReadFrom = now.dataFolder
+            }
             // A paired collector stays paired unless a hub is picked again.
             if now.role == .collector, doc?.paired != nil { now.hubURL = "" }
             let repo = now.repo
@@ -367,6 +380,7 @@ final class AppState: ObservableObject {
     func install() {
         log = []
         failure = nil
+        failureBack = .wizard
         failureAfter = nil
         removing = false
         removed = nil
@@ -412,8 +426,21 @@ final class AppState: ObservableObject {
         removed = nil
         screen = .working
         let folder = Setup.dataFolder
+        let c = choices
         DispatchQueue.global().async {
-            Setup.uninstall(deleteData: deleteData) { line in DispatchQueue.main.async { self.log.append(line) } }
+            do {
+                try Setup.uninstall(deleteData: deleteData) { line in DispatchQueue.main.async { self.log.append(line) } }
+            } catch {
+                // Nothing was removed: say so, and what runs.
+                let after = Setup.runningNow(c)
+                DispatchQueue.main.async {
+                    self.removing = false
+                    self.failure = error.localizedDescription
+                    self.failureAfter = after
+                    self.failureBack = .status
+                }
+                return
+            }
             DispatchQueue.main.async {
                 self.removing = false
                 self.running = false

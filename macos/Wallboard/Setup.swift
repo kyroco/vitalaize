@@ -62,6 +62,8 @@ struct Choices: Codable {
     /// stay the same, its own timeline rows and deploy list are kept.
     var importedWorkflows: [String]? = nil
     var replaceOldBoard: Bool = true
+    /// The folder whose settings in use filled in the setup, when one did.
+    var settingsReadFrom: String? = nil
     /// True when the wizard started from the settings as they are now: a
     /// first setup, or a Reconfigure that read what is saved. An answer
     /// left empty is then the person's choice, not a question nobody
@@ -542,9 +544,9 @@ enum Setup {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = .prettyPrinted
-        var saved = record
-        saved.choices.hubKey = ""   // the key lives in the upload script, not here
-        try replace(data.appendingPathComponent("install.json"), with: try enc.encode(saved), backups: backups)
+        var written = record
+        written.choices.hubKey = ""   // the key lives in the upload script, not here
+        try replace(data.appendingPathComponent("install.json"), with: try enc.encode(written), backups: backups)
         dataFolder = c.dataFolder
         say("Done")
         return pairing
@@ -644,7 +646,9 @@ enum Setup {
     /// is in use once settings.exs is written is saved the way the Settings
     /// screen saves, which wins over both.
     static func agree(_ c: Choices, say: (String) -> Void) {
-        guard c.settingsRead == true, let doc = settingsDoc(dataFolder: c.dataFolder) else { return }
+        // Only when the setup started from the settings in use in this
+        // folder: then an answer that differs is one the person changed.
+        guard c.settingsReadFrom == c.dataFolder, let doc = settingsDoc(dataFolder: c.dataFolder) else { return }
         func plain(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
         let now = Dictionary(doc.sections.flatMap { $0.fields }.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
         let differ = wizardValues(c).filter { key, value in now[key].map { plain($0) != plain(value) } ?? false }
@@ -838,6 +842,8 @@ enum Setup {
             throw Failure.step("The collector did not start. Its log is at \(logFile.path).")
         }
         if fm.fileExists(atPath: backups.path) { say("The files as they were are in \(backups.path)") }
+        // An older install kept its log somewhere else, and that one stops here.
+        say("The log is at \(logFile.path)")
     }
 
     /// The port the board answers on now: the one saved in Settings when
@@ -1118,24 +1124,24 @@ enum Setup {
 
     // MARK: Uninstalling
 
-    static func uninstall(deleteData: Bool, say: (String) -> Void) {
+    static func uninstall(deleteData: Bool, say: (String) -> Void) throws {
         let record = installed()
         // Kept in the backup folder unless everything is being deleted, so
-        // a Remove by mistake can be put back by hand.
-        var copied = true
+        // a Remove by mistake can be put back by hand. When they cannot be
+        // kept, nothing is removed: it is still set up, and still starts
+        // when you log in.
         if !deleteData, let folder = dataFolder {
             let backups = backupFolder(URL(fileURLWithPath: folder))
             do {
                 try keep(agentPlist, in: backups)
                 try keep(URL(fileURLWithPath: folder + "/install.json"), in: backups)
             } catch {
-                copied = false
-                say("\(error.localizedDescription) The login item and the setup record are left in place; it is stopped and will not start again until the app is opened.")
+                throw Failure.step("\(error.localizedDescription) Nothing was removed. Check that \(folder) can be written to and use Remove again, or turn on deleting the database and settings too.")
             }
         }
         say(record?.choices.role.runsBoard == false ? "Stopping the collector" : "Stopping the board")
         Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
-        if copied { try? fm.removeItem(at: agentPlist) }
+        try? fm.removeItem(at: agentPlist)
         for folder in record?.hookedFolders ?? [] {
             say("Disconnecting \(folder)")
             unhook(folder: folder)
@@ -1147,7 +1153,7 @@ enum Setup {
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")
             try? fm.removeItem(atPath: folder)
-        } else if copied, let folder = dataFolder {
+        } else if let folder = dataFolder {
             try? fm.removeItem(atPath: folder + "/install.json")
         }
         dataFolder = nil

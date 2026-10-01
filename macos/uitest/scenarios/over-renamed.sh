@@ -58,6 +58,14 @@ scenario_over_renamed() {
   check "a failed write left all four files as they were" test "$before" = "$(sums)"
   check "the board still answers after the failed write" answers "$PORT"
 
+  # A Remove that cannot keep its copies: the backup folder cannot be written to.
+  chmod 555 "$DATA/backups"
+  drive aged-remove-fails
+  chmod 755 "$DATA/backups"
+  check "a Remove that could not keep its copies left all four files as they were" test "$before" = "$(sums)"
+  check "and the login item still runs" item_running "$LABEL"
+  check "and the board still answers" answers "$PORT"
+
   aged_install aged2 4985 keep-copy
   drive aged-open-copy
   check "with the copy kept, the board answers" answers "$PORT"

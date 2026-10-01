@@ -250,6 +250,9 @@ defmodule Wallboard.Collector.Sender do
         :exit, _ -> :ok
       end
 
+      # What the old client said last is about the old pairing.
+      drain()
+
       connect(%{
         state
         | client: nil,
@@ -259,6 +262,14 @@ defmodule Wallboard.Collector.Sender do
           forget: nil,
           warned?: false
       })
+    end
+  end
+
+  defp drain do
+    receive do
+      {:wallboard_link, _} -> drain()
+    after
+      0 -> :ok
     end
   end
 

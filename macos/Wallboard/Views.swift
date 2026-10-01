@@ -492,7 +492,11 @@ struct WorkingView: View {
             if let code = state.pairCode { PairCodeView(code: code) }
             if state.failure != nil {
                 HStack {
-                    Button("Back to the setup") { state.failure = nil; state.screen = .wizard }
+                    Button(state.failureBack == .wizard ? "Back to the setup" : "Back") {
+                        state.failure = nil
+                        state.screen = state.failureBack
+                        if state.failureBack == .status { state.refreshStatus() }
+                    }
                     Button("Open the log") { Shell.open(Setup.logFile) }
                 }
             }

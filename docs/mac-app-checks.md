@@ -164,6 +164,7 @@ stops:
 |---|---|---|
 | Open the log | Clicked | The app asks macOS to open `board.log` |
 | Back to the setup | Clicked | The review again, with every answer kept |
+| Back (when it was Remove that stopped) | Clicked | The first screen, with the board still running |
 
 ### 9. The first screen of a Mac that runs the board
 
@@ -289,7 +290,7 @@ replacement is written, and a dated copy of it is kept first, in
 | Opening the app over an older install (the mend) | The login item, and `settings.exs` when it loads a file that is gone | Copied to the backup folder first; the screen says where | `over-renamed`: both copies are in the backup folder, the database and saved settings are untouched |
 | Stop that board and run this one instead | The by-hand login item `local.wallboard.plist` (removed) | Copied to the backup folder first; the earlier settings file is not touched | `by-hand` |
 | Save in Settings | `settings.json` | Copied to the backup folder first; the board's code writes the new one beside it and swaps it in. The screen says where the copy is | `fresh-hub`: the copy is there. `over-renamed`: with the folder read-only, "Could not write to file … Check that the folder can be written to. Nothing was saved." and the file is unchanged |
-| Remove, data kept | The login item and `install.json` (removed) | Both are copied to the backup folder first. If a copy cannot be kept, they are left in place and the screen says so | `fresh-hub` (the copies; the case where a copy cannot be kept is not run) |
+| Remove, data kept | The login item and `install.json` (removed) | Both are copied to the backup folder first. If a copy cannot be kept, nothing is removed and the screen says so | `fresh-hub`; `over-renamed` for the copy that cannot be kept: "Nothing was removed", all four files as before, the board still running |
 | Remove, data deleted | The whole folder | Nothing is kept: the switch says so and is off unless turned on | `fresh-hub`, `hub-only` |
 | Pairing | The certificate in `collector/link/` | A new pairing replaces it only after the hub approves; a refused or unanswered one leaves the old pairing connected | `pair`: after a refusal the first screen still says "Connected to the hub at …" |
 
@@ -310,6 +311,7 @@ Each says what went wrong and what to do, and whether the board is running.
 | The board's port is used by another program | "Port N is already used by another program on this Mac … pick another port on the fourth step … Nothing was changed." | "Nothing of VitalAIze is running on this Mac." | `failures` |
 | The folder cannot be written to during Reconfigure | "Could not write … The file that was there is unchanged." | "The board that was set up before is still running at http://localhost:N." | `over-renamed` |
 | The folder cannot be written to during Save | "Could not write to file … Check that the folder can be written to. Nothing was saved." | Still running | `over-renamed` |
+| Remove cannot keep its copies | "Could not keep a copy of … Nothing was removed. Check that … can be written to and use Remove again, or turn on deleting the database and settings too." ([picture](mac-app-checks/pictures/over-renamed/a05-remove-failed.jpg)) | "The board that was set up before is still running at http://localhost:N." | `over-renamed` |
 | The board has a password | The first screen: "This board has a password. The first time a browser opens it, add ?token= and the password to the end of the address." | Running | `fresh-hub` |
 | The login item starts an app that is gone | The app mends it when opened and lists what it did | Running again | `over-renamed` |
 | The carried-over settings file is gone, and so is its copy | Names the file; "Settings beyond the ones this setup asks about were not carried over." | Running again | `over-renamed` |
@@ -358,8 +360,11 @@ can do. Do these on a Mac where VitalAIze is set up, in this order.
    should leave the login item alone while the copy in Applications is there.
 8. **Close the window.** The app quits and the board keeps running:
    `http://localhost:4747` should still answer.
-9. **Install the package.** Double-click `VitalAIze-(version).pkg`, go through
-   the installer's pages, and open the app from Applications. Over an older
+9. **Install the package.** First close any Installer window left open from an
+   earlier install: while one sits on its last page, opening a new package only
+   brings that old window forward and nothing is installed. Then double-click
+   `VitalAIze-(version).pkg`, go through the installer's pages, and open the
+   app from Applications. Over an older
    install, the first screen should say what it mended or restarted, then "The
    board is running".
 10. **Restart the Mac** and log in. Without opening the app, the board should
