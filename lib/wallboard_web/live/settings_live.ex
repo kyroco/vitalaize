@@ -1,7 +1,8 @@
 defmodule WallboardWeb.SettingsLive do
   @moduledoc """
   The settings page, at /settings: change the board without editing
-  settings.exs, and connect other Macs.
+  settings.exs, connect other Macs, and see or disconnect the machines
+  that stream to this hub.
 
   Who may open it: anyone on this Mac itself, or, when the board has a
   password, anyone who gave it (the router already checked). Without a
@@ -11,65 +12,40 @@ defmodule WallboardWeb.SettingsLive do
 
   use WallboardWeb, :live_view
 
-  alias Wallboard.{Settings, Store}
+  alias Wallboard.{Link, Poller, Settings, Store}
   alias Wallboard.Archive.{Collector, Ingest}
-  alias WallboardWeb.IngestController
+  alias WallboardWeb.{Auth, IngestController}
 
   @impl true
-  def mount(_params, _session, socket) do
-    allowed? = connected?(socket) and allowed?(socket)
+  def mount(_params, session, socket) do
+    who = if connected?(socket), do: Auth.who(socket, session), else: %{local?: false}
+    allowed? = connected?(socket) and Auth.may_decide?(who)
+
+    # The machines list follows machines coming and going, and new ones
+    # being approved.
+    if allowed? do
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, "link")
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Mailbox.topic())
+    end
 
     socket =
       assign(socket,
         allowed?: allowed?,
+        who: who,
         connected?: connected?(socket),
         errors: %{},
         notice: nil,
         restart?: false,
         show_key?: false,
-        confirm_new_key?: false
+        confirm_new_key?: false,
+        confirm_disconnect: nil
       )
 
     {:ok, if(allowed?, do: load(socket), else: socket)}
   end
 
-  defp allowed?(socket) do
-    settings = Settings.get()
-
-    local? =
-      case get_connect_info(socket, :peer_data) do
-        %{address: addr} -> this_mac?(addr)
-        _ -> false
-      end
-
-    local? or settings.token != nil
-  end
-
-  @doc """
-  True when a connection comes from this Mac: from localhost, or from one of
-  this Mac's own network addresses (opening the board by its network
-  address, like http://192.168.1.20:4747, connects from that address).
-  Another device cannot pass as one of these: it would never get the
-  replies needed to finish connecting.
-  """
-  def this_mac?(addr), do: addr |> unmap() |> then(&(loopback?(&1) or &1 in own_addresses()))
-
-  defp loopback?({127, _, _, _}), do: true
-  defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
-  defp loopback?(_), do: false
-
-  # An IPv4 address seen through IPv6 (::ffff:192.168.1.20) is the IPv4 one.
-  defp unmap({0, 0, 0, 0, 0, 65535, a, b}),
-    do: {div(a, 256), rem(a, 256), div(b, 256), rem(b, 256)}
-
-  defp unmap(addr), do: addr
-
-  defp own_addresses do
-    case :inet.getifaddrs() do
-      {:ok, ifs} -> for {_name, opts} <- ifs, {:addr, a} <- opts, do: a
-      _ -> []
-    end
-  end
+  @doc "True when a connection comes from this Mac (see `WallboardWeb.Auth.this_machine?/1`)."
+  defdelegate this_mac?(addr), to: Auth, as: :this_machine?
 
   defp load(socket) do
     settings = Settings.get()
@@ -80,9 +56,14 @@ defmodule WallboardWeb.SettingsLive do
       hub_url: IngestController.hub_url(settings),
       key: if(settings.archive.enabled, do: Ingest.token()),
       machines: machines(settings),
+      linked: linked(settings),
+      linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
   end
+
+  # How long "Tap again" stands after the first Disconnect tap.
+  @confirm_ms 8_000
 
   @kept "••••••••"
 
@@ -130,11 +111,69 @@ defmodule WallboardWeb.SettingsLive do
 
   defp machines(_), do: []
 
-  @impl true
-  def handle_event(_event, _params, %{assigns: %{allowed?: false}} = socket),
-    do: {:noreply, socket}
+  # The machines that stream to this hub, or nil when it takes none.
+  defp linked(settings) do
+    if Link.hub?(settings), do: Link.Machines.list(settings, local_sessions())
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
 
-  def handle_event("save", %{"s" => values}, socket) do
+  defp local_sessions do
+    for name <- [:claude, :codex], reduce: 0 do
+      n -> n + length((Poller.snapshot(name).facts || %{})[:sessions] || [])
+    end
+  rescue
+    _ -> 0
+  catch
+    :exit, _ -> 0
+  end
+
+  @impl true
+  def handle_info({:link, what, _machine}, socket) when what in [:up, :down],
+    do: {:noreply, relist(socket)}
+
+  def handle_info({:link, :hello, _machine, _info}, socket), do: {:noreply, relist(socket)}
+  def handle_info({:mailbox, :changed}, socket), do: {:noreply, relist(socket)}
+
+  # Only the latest question's own timer ends it.
+  def handle_info({:forget_disconnect, ref}, socket) do
+    if socket.assigns[:confirm_ref] == ref,
+      do: {:noreply, assign(socket, confirm_disconnect: nil)},
+      else: {:noreply, socket}
+  end
+
+  def handle_info(_, socket), do: {:noreply, socket}
+
+  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket),
+    do:
+      assign(socket,
+        linked: linked(settings),
+        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings)
+      )
+
+  defp relist(socket), do: socket
+
+  # Every change on this page is the owner's to make, and that is asked
+  # again each time: the board password may have changed since the page
+  # opened.
+  @impl true
+  def handle_event(event, params, socket) do
+    cond do
+      not socket.assigns.allowed? ->
+        {:noreply, socket}
+
+      not Auth.may_decide?(socket.assigns.who) ->
+        {:noreply,
+         assign(socket, confirm_disconnect: nil, notice: "Open this page again to do that.")}
+
+      true ->
+        event(event, params, socket)
+    end
+  end
+
+  defp event("save", %{"s" => values}, socket) do
     before = Settings.get()
 
     case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
@@ -159,7 +198,7 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
-  def handle_event("restart", _params, %{assigns: %{release?: true}} = socket) do
+  defp event("restart", _params, %{assigns: %{release?: true}} = socket) do
     # The login item starts the board again as soon as it stops.
     Task.start(fn ->
       Process.sleep(500)
@@ -169,16 +208,16 @@ defmodule WallboardWeb.SettingsLive do
     {:noreply, assign(socket, notice: "Restarting. This page reconnects in a few seconds.")}
   end
 
-  def handle_event("restart", _params, socket),
+  defp event("restart", _params, socket),
     do: {:noreply, assign(socket, notice: "Restart the board by hand to apply these changes.")}
 
-  def handle_event("toggle_key", _params, socket),
+  defp event("toggle_key", _params, socket),
     do: {:noreply, assign(socket, show_key?: !socket.assigns.show_key?)}
 
-  def handle_event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
+  defp event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
     do: {:noreply, assign(socket, confirm_new_key?: true)}
 
-  def handle_event("new_key", _params, socket) do
+  defp event("new_key", _params, socket) do
     Store.put_meta(
       "ingest_token",
       24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
@@ -194,10 +233,34 @@ defmodule WallboardWeb.SettingsLive do
      )}
   end
 
-  def handle_event("refresh_archive", _params, socket) do
+  # Disconnect takes two taps: the first asks, the second revokes the
+  # machine's certificate, which closes its stream at once and refuses it
+  # from then on. The question lapses after a few seconds, so a tap much
+  # later is a first tap again.
+  defp event("disconnect", %{"machine" => machine}, socket) do
+    cond do
+      socket.assigns.confirm_disconnect != machine ->
+        ref = make_ref()
+        Process.send_after(self(), {:forget_disconnect, ref}, @confirm_ms)
+        {:noreply, assign(socket, confirm_disconnect: machine, confirm_ref: ref)}
+
+      true ->
+        notice =
+          case Link.Hub.revoke(machine) do
+            {:ok, _} -> "#{machine} is disconnected. To connect it again, pair it again."
+            _ -> "#{machine} could not be disconnected just now. Try again in a moment."
+          end
+
+        {:noreply, socket |> relist() |> assign(confirm_disconnect: nil, notice: notice)}
+    end
+  end
+
+  defp event("refresh_archive", _params, socket) do
     Collector.refresh()
     {:noreply, assign(socket, notice: "Saving every session again in the background.")}
   end
+
+  defp event(_event, _params, socket), do: {:noreply, socket}
 
   defp restart_paths do
     for {_, fs} <- Settings.editable(), {path, _, _, true, _} <- fs, do: path
@@ -238,6 +301,40 @@ defmodule WallboardWeb.SettingsLive do
         Some changes apply when the board restarts.
         <button class="link-button" phx-click="restart">Restart now</button>
       </div>
+
+      <section :if={@linked} class="settings-section">
+        <div class="heading-row">
+          <h2 class="kicker">Connected machines</h2>
+          <span class="stat-note">
+            each machine watches its own Claude and Codex folders and reports all agent work
+          </span>
+        </div>
+        <div class="machine-list">
+          <div :for={m <- @linked} class="machine-row">
+            <b>{m.name}{if m.hub?, do: " (this hub)"}</b>
+            <span>{m.os || "not connected yet"}</span>
+            <span>{seen(m)} · {sessions(m.sessions)}</span>
+            <span class="machine-folders">{Enum.join(m.folders, ", ")}</span>
+            <button
+              :if={!m.hub?}
+              class={["machine-disconnect", @confirm_disconnect == m.name && "sure"]}
+              phx-click="disconnect"
+              phx-value-machine={m.name}
+            >
+              {if @confirm_disconnect == m.name, do: "Tap again", else: "Disconnect"}
+            </button>
+            <span :if={m.hub?}></span>
+          </div>
+        </div>
+        <p :if={!@linked_readable?} class="bad-ink stat-note">
+          The list of machines cannot be read just now, so machines may be missing here.
+          None of them has been removed.
+        </p>
+        <p class="stat-note">
+          A new machine asks to connect with a code; approve it in the mailbox on the board.
+          Disconnect takes a machine's certificate away at once.
+        </p>
+      </section>
 
       <form phx-submit="save" class="settings-form">
         <section :for={{section, fields} <- Settings.editable()} class="settings-section">
@@ -313,6 +410,21 @@ defmodule WallboardWeb.SettingsLive do
     </div>
     """
   end
+
+  defp seen(%{connected?: true}), do: "Seen now"
+  defp seen(%{seen_at: nil}), do: "Never seen"
+
+  defp seen(%{seen_at: at}) do
+    case System.os_time(:second) - at do
+      s when s < 90 -> "Seen a minute ago"
+      s when s < 3600 -> "Seen #{div(s, 60)} min ago"
+      s when s < 172_800 -> "Seen #{div(s, 3600)} h ago"
+      s -> "Seen #{div(s, 86_400)} days ago"
+    end
+  end
+
+  defp sessions(1), do: "1 session"
+  defp sessions(n), do: "#{n} sessions"
 
   attr :name, :string, required: true
   attr :type, :any, required: true

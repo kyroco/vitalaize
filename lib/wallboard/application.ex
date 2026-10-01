@@ -35,14 +35,20 @@ defmodule Wallboard.Application do
   defp archive_children(_), do: []
 
   # The port collectors stream to. After the database, which is where what
-  # they send goes.
+  # they send goes. Then the pairing door, which hands out the certificates
+  # that port asks for.
   defp link_children(settings) do
     if Wallboard.Link.hub?(settings) do
+      dir = Wallboard.Link.Authority.dir(settings)
+
       [
         # Listens for what the port saves, so it starts first.
         Wallboard.Link.Sessions,
-        {Wallboard.Link.Hub,
-         dir: Wallboard.Link.Authority.dir(settings), port: settings.link.port}
+        {Wallboard.Link.Hub, dir: dir, port: settings.link.port},
+        {Wallboard.Pairing.Door,
+         dir: dir,
+         link_port: settings.link.port,
+         hub_name: Wallboard.Archive.Collector.machine(settings)}
       ]
     else
       []

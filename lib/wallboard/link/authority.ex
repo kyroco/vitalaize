@@ -120,8 +120,8 @@ defmodule Wallboard.Link.Authority do
   Makes a key and a certificate for a machine. Returns `{:ok, files}` with
   `cert_pem`, `key_pem`, `ca_pem` and `serial`, or `{:error, reason}`.
 
-  For tests and for setting one machine up by hand. Pairing (VIT-39) uses
-  `sign/4`, so a machine's key never leaves it.
+  For tests and for setting one machine up by hand. Pairing
+  (`Wallboard.Pairing`) uses `sign/4`, so a machine's key never leaves it.
   """
   def issue(dir, machine, opts \\ []) do
     key = new_key()
@@ -149,6 +149,83 @@ defmodule Wallboard.Link.Authority do
     with {:ok, point} <- read_public(public_key_pem) do
       sign_public(dir, machine, point, opts)
     end
+  end
+
+  @doc """
+  Makes a key pair for a machine that is about to ask for a certificate
+  (see `Wallboard.Pairing`). Returns `%{key_pem, public_pem}`. The private
+  key stays with whoever called this; only `public_pem` goes to the hub.
+  """
+  def new_key_pair do
+    key = new_key()
+    point = ec_private_key(key, :publicKey)
+
+    public =
+      :public_key.pem_encode([
+        :public_key.pem_entry_encode(:SubjectPublicKeyInfo, {{:ECPoint, point}, @curve})
+      ])
+
+    %{key_pem: key_pem(key), public_pem: public}
+  end
+
+  @doc """
+  The bytes of a public key given as PEM text, the same on both ends of a
+  pairing. `{:ok, bytes}`, or `{:error, :bad_key}` for anything but one key
+  on this authority's curve.
+  """
+  def public_bytes(public_key_pem) when is_binary(public_key_pem) do
+    with {:ok, point} <- read_public(public_key_pem), do: {:ok, ec_point(point, :point)}
+  end
+
+  def public_bytes(_), do: {:error, :bad_key}
+
+  @doc """
+  The bytes of a certificate given as PEM text. `{:ok, bytes}`, or
+  `{:error, :bad_cert}` for anything but one certificate that can be read.
+  """
+  def cert_bytes(pem) when is_binary(pem) do
+    with [{:Certificate, der, :not_encrypted}] <- :public_key.pem_decode(pem),
+         {:OTPCertificate, _, _, _} <- :public_key.pkix_decode_cert(der, :otp) do
+      {:ok, der}
+    else
+      _ -> {:error, :bad_cert}
+    end
+  rescue
+    _ -> {:error, :bad_cert}
+  end
+
+  def cert_bytes(_), do: {:error, :bad_cert}
+
+  @doc """
+  True when `cert_pem` is a certificate for `machine`, made for the key
+  `public_pem`, and signed by the authority whose certificate is `ca_pem`.
+  A collector checks this before it keeps what a pairing handed it.
+  """
+  def issued_for?(cert_pem, ca_pem, machine, public_pem) do
+    with {:ok, der} <- cert_bytes(cert_pem),
+         {:ok, ca_der} <- cert_bytes(ca_pem),
+         {:ok, wanted} <- public_bytes(public_pem),
+         {:ok, _serial, ^machine} <- read_cert(der),
+         true <- :public_key.pkix_is_issuer(der, ca_der),
+         true <- :public_key.pkix_verify(der, cert_key(ca_der)) do
+      cert_key(der) == {ec_point(point: wanted), @curve}
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  @doc """
+  True when the list of machines can be read right now. `machines/1` gives
+  an empty list both for no machines and for a list it cannot read; this
+  tells the two apart.
+  """
+  def readable?(dir), do: match?({:ok, _}, read_index(dir))
+
+  @doc "True when a machine of this name holds a working certificate."
+  def working?(dir, machine) do
+    Enum.any?(machines(dir), &(&1.machine == machine and &1.revoked_at == nil))
   end
 
   @doc """
@@ -417,6 +494,19 @@ defmodule Wallboard.Link.Authority do
     if name, do: {:ok, serial_text(otp_tbs_certificate(tbs, :serialNumber)), name}, else: :error
   rescue
     _ -> :error
+  end
+
+  # The public key a certificate carries, as `:public_key` wants it for
+  # checking a signature.
+  defp cert_key(der) do
+    info =
+      der
+      |> :public_key.pkix_decode_cert(:otp)
+      |> otp_certificate(:tbsCertificate)
+      |> otp_tbs_certificate(:subjectPublicKeyInfo)
+
+    {otp_subject_public_key_info(info, :subjectPublicKey),
+     public_key_algorithm(otp_subject_public_key_info(info, :algorithm), :parameters)}
   end
 
   defp read_public(pem) do

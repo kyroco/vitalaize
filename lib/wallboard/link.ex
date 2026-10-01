@@ -22,6 +22,10 @@ defmodule Wallboard.Link do
     * `Wallboard.Link.Sessions`: on the hub, turns the saved events into
       live cards on the board and rows in the archive
       (`Wallboard.Link.Session` is one session's picture).
+    * `Wallboard.Pairing`: how a new machine gets its certificate, by a
+      code the owner approves in the mailbox.
+    * `Wallboard.Link.Machines`: the connected machines, for the settings
+      page, where one can be disconnected.
 
   ## Who may connect
 

@@ -12,7 +12,7 @@ defmodule WallboardWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, session: @session_options]],
+    websocket: [connect_info: [:peer_data, :uri, session: @session_options]],
     longpoll: false
 
   # Files asked for without a ?v= fingerprint are checked with the server on

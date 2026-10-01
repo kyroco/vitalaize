@@ -165,7 +165,9 @@
   # hub, encrypted, and only machines this hub has approved may connect.
   # Off until you turn it on. It listens on its own port, not the board's,
   # and needs the archive above. Its certificates are kept in a "link"
-  # folder beside the database.
+  # folder beside the database. A new machine asks to connect and shows a
+  # short code; you approve the same code in the mailbox (the envelope by
+  # the board's clock). Settings lists the machines and can disconnect one.
   link: %{
     enabled: false,
     port: 4748
