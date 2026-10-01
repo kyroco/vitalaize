@@ -1,0 +1,23 @@
+{
+ "total_count": 3,
+ "workflows": [
+  {
+   "id": 201,
+   "name": "CI",
+   "path": ".github/workflows/ci.yml",
+   "state": "active"
+  },
+  {
+   "id": 202,
+   "name": "CodeQL",
+   "path": ".github/workflows/codeql.yml",
+   "state": "active"
+  },
+  {
+   "id": 203,
+   "name": "Dependabot Updates",
+   "path": "dynamic/dependabot/dependabot-updates",
+   "state": "active"
+  }
+ ]
+}

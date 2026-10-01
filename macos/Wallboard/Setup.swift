@@ -728,7 +728,11 @@ enum Setup {
         if let v = values["brand.name"] { c.boardName = v }
         if let dirs = lines("claude.config_dirs"), !dirs.isEmpty { c.claudeFolders = dirs }
         if let repos = lines("github.repos"), let first = repos.first {
-            c.repo = first
+            // A line can carry a repository's own workflows after its name
+            // ("owner/name gate=ci.yml"). The first repository's are the
+            // three pickers, so only its name is taken; the others keep
+            // their lines as they are.
+            c.repo = first.split(separator: " ").first.map(String.init) ?? first
             c.otherRepos = Array(repos.dropFirst())
         }
         if let v = values["github.branch"] { c.branch = v }

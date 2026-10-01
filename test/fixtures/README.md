@@ -32,6 +32,11 @@ field Claude Code 2.1.284 sets for a waiting session (`state: "blocked"`, or
 session was not allowed to read the key, so its parsing test uses the reply
 shape from New Relic's NerdGraph documentation and says so.
 
+`github/workflows.json` is not a capture either. It is written by hand in the
+shape `gh api repos/<owner>/<name>/actions/workflows` answers in, per GitHub's
+REST documentation, with made-up workflows: two files and one of GitHub's own
+(Dependabot), whose path is not a file.
+
 The `collector/` files are not captures. They are written by hand in the
 shape Claude Code 2.1.284 and codex-cli 0.155.1 write their session files,
 with made-up content, for the tests of what a collector may send to the hub

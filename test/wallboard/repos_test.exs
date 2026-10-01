@@ -5,6 +5,8 @@ defmodule Wallboard.ReposTest do
   alias Wallboard.{GitRemote, Settings}
   alias Wallboard.Sources.GitHub
 
+  import Phoenix.LiveViewTest, only: [render_component: 2]
+
   @now ~U[2026-09-30 18:00:00Z]
 
   defp load(file) do
@@ -18,6 +20,7 @@ defmodule Wallboard.ReposTest do
       text =
         case Settings.current(settings, path, type) do
           nil -> ""
+          list when type == :repos -> Enum.map_join(list, "\n", &Settings.repo_line/1)
           list when is_list(list) -> Enum.join(list, "\n")
           v -> to_string(v)
         end
@@ -53,8 +56,198 @@ defmodule Wallboard.ReposTest do
       assert web.branch == "main"
       assert mobile.gate_workflow == "build.yml"
       assert Enum.map(mobile.lanes, & &1.label) == ["Build"]
-      # The shared lanes stay for the others.
+      # The shared workflow files and rows are the first repo's.
       assert Enum.map(api.lanes, & &1.label) == ["CI", "Staging", "Production"]
+      assert api.deploy_workflows == ["deploy-staging.yml", "deploy-production.yml"]
+    end
+
+    test "the first repo's workflow files are not lent to the others" do
+      {_file, settings} = load("several_repos.exs")
+      [_api, mobile, web] = Settings.github_repos(settings)
+
+      # web names none: no gate, no deploys, no rows of its own.
+      assert %{gate_workflow: nil, dev_deploy: nil, prod_deploy: nil} = web
+      assert web.deploy_workflows == [] and web.lanes == []
+      # mobile has only what its own entry names.
+      assert %{gate_workflow: "build.yml", dev_deploy: nil, deploy_workflows: []} = mobile
+      # What is not a workflow file is still shared.
+      assert web.gate_check == "ci" and web.poll_seconds == 30
+    end
+
+    test "a repo that names its workflows gets rows and a deploy list from them" do
+      settings =
+        Settings.merge(Settings.defaults(), %{
+          github: %{
+            repos: [
+              "acme/rockets",
+              %{repo: "acme/boosters", gate_workflow: "build.yml", prod_deploy: "ship.yml"}
+            ]
+          }
+        })
+
+      [_, boosters] = Settings.github_repos(settings)
+      assert boosters.deploy_workflows == ["ship.yml"]
+
+      assert boosters.lanes == [
+               %{label: "Gate", workflows: ["build.yml"]},
+               %{label: "Prod", workflows: ["ship.yml"]}
+             ]
+    end
+
+    test "a repo's own workflows can be typed after its name, and save and load as settings.json does" do
+      base = Settings.merge(Settings.defaults(), %{github: %{repos: ["acme/rockets"]}})
+
+      typed =
+        "acme/rockets\nacme/boosters gate=build.yml prod=ship.yml, acme/fins dev=\nacme/rockets"
+
+      values = %{page_values(base) | "github.repos" => typed}
+      assert {:ok, over} = Settings.check(values, base)
+
+      assert over.github.repos == [
+               "acme/rockets",
+               %{repo: "acme/boosters", gate_workflow: "build.yml", prod_deploy: "ship.yml"},
+               %{repo: "acme/fins", dev_deploy: nil}
+             ]
+
+      # Through the saved file and back.
+      saved = over |> Jason.encode!() |> Jason.decode!() |> Settings.atomize()
+      assert saved == over
+
+      after_ = Settings.apply_overrides(base, saved)
+      [rockets, boosters, fins] = Settings.github_repos(after_)
+      assert rockets.gate_workflow == "ci.yml"
+      assert boosters.gate_workflow == "build.yml" and boosters.prod_deploy == "ship.yml"
+      assert Enum.map(boosters.lanes, & &1.label) == ["Gate", "Prod"]
+      assert fins.gate_workflow == nil and fins.lanes == []
+
+      # A form shows them the way they were typed.
+      assert Settings.shown(after_)["github.repos"] ==
+               "acme/rockets\nacme/boosters gate=build.yml prod=ship.yml\nacme/fins dev="
+
+      # A saved key that is not one a form gives is not read.
+      assert %{github: %{repos: [%{repo: "a/b", gate_workflow: "x.yml"} = entry]}} =
+               Settings.atomize(%{
+                 "github" => %{
+                   "repos" => [%{"repo" => "a/b", "gate_workflow" => "x.yml", "lanes" => []}]
+                 }
+               })
+
+      refute Map.has_key?(entry, :lanes)
+    end
+
+    test "what is typed after a repo's name is checked" do
+      field =
+        Enum.find_value(Settings.editable(), fn {_, fs} ->
+          Enum.find(fs, &(elem(&1, 0) == [:github, :repos]))
+        end)
+
+      assert Settings.check_one(field, "acme/web, acme/api gate=ci.yml") == :ok
+      assert {:error, "gate=ci.yml: after" <> _} = Settings.check_one(field, "gate=ci.yml")
+      assert {:error, "lanes=x: after" <> _} = Settings.check_one(field, "a/b acme/api lanes=x")
+
+      # A file name, never a path, and never one that walks up the address.
+      for bad <- ["../x.yml", "..", ".", "a/b.yml", ".hidden"] do
+        assert {:error, message} = Settings.check_one(field, "a/b acme/api gate=#{bad}")
+        assert message =~ "is not a workflow file name"
+      end
+
+      # The first repo's workflows have fields of their own.
+      assert {:error, "acme/api is the first repository" <> _} =
+               Settings.check_one(field, "acme/api gate=ci.yml")
+    end
+
+    test "a form shows the first repo by name alone, and leaves out a workflow it could not take back" do
+      settings =
+        Settings.merge(Settings.defaults(), %{
+          github: %{
+            repos: [
+              %{repo: "acme/api", gate_workflow: "own.yml"},
+              %{repo: "acme/mobile", gate_workflow: "two words.yml", prod_deploy: "ship.yml"}
+            ]
+          }
+        })
+
+      assert Settings.shown(settings)["github.repos"] == "acme/api\nacme/mobile prod=ship.yml"
+
+      # Saved as shown, both keep what the file gives them.
+      assert {:ok, over} = Settings.check(page_values(settings), settings)
+      refute Map.has_key?(over, :github)
+      [api, mobile] = Settings.github_repos(settings)
+      assert mobile.gate_workflow == "two words.yml"
+      # The gate field shows the first repo's gate as it is in use, here the
+      # one its own entry in the file names.
+      assert api.gate_workflow == "own.yml"
+      assert Settings.shown(settings)["github.gate_workflow"] == "own.yml"
+    end
+
+    test "the workflow fields are the first repo's: what they show is in use, and what is saved there wins" do
+      file =
+        Settings.merge(Settings.defaults(), %{
+          github: %{
+            gate_workflow: "gate.yml",
+            repos: ["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]
+          }
+        })
+
+      # Moved to the top on a form, mobile keeps its own gate, and the gate
+      # field shows that one.
+      moved = Settings.apply_overrides(file, %{github: %{repos: ["acme/mobile", "acme/api"]}})
+
+      assert [%{repo: "acme/mobile", gate_workflow: "build.yml"}, api] =
+               Settings.github_repos(moved)
+
+      assert api.gate_workflow == nil
+      assert Settings.shown(moved)["github.gate_workflow"] == "build.yml"
+
+      # A gate saved in the field is the first repo's from then on.
+      values = %{page_values(moved) | "github.gate_workflow" => "other.yml"}
+      assert {:ok, over} = Settings.check(values, file)
+      assert over.github.gate_workflow == "other.yml"
+
+      set = Settings.apply_overrides(file, over)
+      assert [%{repo: "acme/mobile", gate_workflow: "other.yml"}, _] = Settings.github_repos(set)
+      assert Settings.shown(set)["github.gate_workflow"] == "other.yml"
+
+      # It does not reach the second repo's own gate.
+      second = Settings.apply_overrides(file, %{github: %{gate_workflow: "other.yml"}})
+
+      assert [%{gate_workflow: "other.yml"}, %{repo: "acme/mobile", gate_workflow: "build.yml"}] =
+               Settings.github_repos(second)
+    end
+
+    test "a line the Mac app writes into the settings file keeps what an older file gave the repo" do
+      {file, _} = load("several_repos.exs")
+      # Reconfigure writes the list as it showed it: mobile's line has its gate.
+      answers = %{github: %{repos: ["acme/api", "acme/mobile gate=build.yml", "acme/web"]}}
+      merged = Settings.merge(Settings.defaults(), Settings.apply_overrides(file, answers))
+
+      assert [
+               _,
+               %{repo: "acme/mobile", gate_workflow: "build.yml", lanes: [%{label: "Build"}]},
+               _
+             ] =
+               Settings.github_repos(merged)
+    end
+
+    test "a file entry written as a line, as the Mac app writes its list, is read the same way" do
+      settings =
+        Settings.merge(Settings.defaults(), %{
+          github: %{repos: ["acme/rockets", "acme/boosters gate=build.yml"]}
+        })
+
+      assert [_, %{repo: "acme/boosters", gate_workflow: "build.yml"}] =
+               Settings.github_repos(settings)
+
+      assert Settings.skipped_repos(settings) == []
+    end
+
+    test "a repo the file describes keeps its rows when a form saves workflows for it" do
+      {file, _} = load("several_repos.exs")
+      over = %{github: %{repos: ["acme/api", %{repo: "acme/mobile", gate_workflow: "ios.yml"}]}}
+      after_ = Settings.apply_overrides(Settings.merge(Settings.defaults(), file), over)
+
+      assert [_, %{repo: "acme/mobile", gate_workflow: "ios.yml", lanes: [%{label: "Build"}]}] =
+               Settings.github_repos(after_)
     end
 
     test "the setup app's answers laid over an earlier file keep a repo's own settings" do
@@ -119,16 +312,15 @@ defmodule Wallboard.ReposTest do
     test "the settings page shows the repos one per line, and a list saved there keeps a repo's own settings" do
       {file, settings} = load("several_repos.exs")
 
-      assert Settings.current(settings, [:github, :repos], :repos) ==
-               Settings.repo_names(settings)
+      assert Settings.shown(settings)["github.repos"] ==
+               "acme/api\nacme/mobile gate=build.yml\nacme/web"
 
       # Unchanged on the page: nothing is saved for GitHub.
-      values = %{page_values(settings) | "github.repos" => "acme/api\nacme/mobile\nacme/web\n"}
-      assert {:ok, over} = Settings.check(values, settings)
+      assert {:ok, over} = Settings.check(page_values(settings), settings)
       refute Map.has_key?(over, :github)
 
       # One removed: the list is saved by name, and mobile keeps its gate.
-      values = %{values | "github.repos" => "acme/mobile, acme/web"}
+      values = %{page_values(settings) | "github.repos" => "acme/mobile, acme/web"}
 
       assert {:ok, %{github: %{repos: ["acme/mobile", "acme/web"]}} = over} =
                Settings.check(values, settings)
@@ -174,12 +366,12 @@ defmodule Wallboard.ReposTest do
 
     %{
       id: id,
-      name: workflow,
+      name: Keyword.get(opts, :name, workflow),
       workflow: workflow,
       title: "change #{id}",
       event: Keyword.get(opts, :event, "push"),
-      branch: "main",
-      sha: "abc#{id}",
+      branch: Keyword.get(opts, :branch, "main"),
+      sha: Keyword.get(opts, :sha, "abc#{id}"),
       status: status,
       conclusion: if(status == :completed, do: Keyword.get(opts, :conclusion, "success")),
       started_at: DateTime.add(ended, -120),
@@ -274,6 +466,386 @@ defmodule Wallboard.ReposTest do
     assert names(t.red) == ~w(c d)
     assert names(t.running) == ~w(b)
     assert [%{repo_name: "d"}, %{repo_name: "c"}] = t.failures
+  end
+
+  # ---------------------------------------------------------------------------
+  # Two repositories whose workflow files differ
+
+  # rockets has a gate and deploys; boosters has ci.yml and CodeQL and
+  # names nothing. `more` is laid over the GitHub settings.
+  defp two_repos(runs, more \\ %{}) do
+    github =
+      Map.merge(
+        %{
+          repos: ["acme/rockets", "acme/boosters"],
+          gate_workflow: "gate.yml",
+          dev_deploy: "dev-deploy.yml",
+          prod_deploy: "prod-deploy.yml",
+          deploy_workflows: ["dev-deploy.yml", "prod-deploy.yml"],
+          lanes: [
+            %{label: "Gate", workflows: ["gate.yml"]},
+            %{label: "Dev deploy", workflows: ["dev-deploy.yml"]},
+            %{label: "Prod", workflows: ["prod-deploy.yml"]}
+          ]
+        },
+        more
+      )
+
+    settings = Settings.merge(Settings.defaults(), %{github: github})
+
+    facts = %{
+      repos:
+        for {repo, rs} <- runs do
+          {listed, rs} = Enum.split_with(rs, &match?({:workflows, _}, &1))
+          %{repo: repo, facts: Map.put(facts(rs), :workflows, listed[:workflows]), error: nil}
+        end
+    }
+
+    GitHub.repos(facts, settings, @now)
+  end
+
+  defp labels(repo), do: Enum.map(repo.s.lanes, & &1.label)
+
+  describe "two repos whose workflow files differ" do
+    test "each column's chart shows that repo's own runs in the window" do
+      [rockets, boosters] =
+        two_repos([
+          {"acme/rockets",
+           [
+             run(1, "gate.yml", ago_min: 200),
+             run(2, "prod-deploy.yml", ago_min: 90),
+             run(3, "pricing.yml", name: "Pricing snapshot", ago_min: 30)
+           ]},
+          {"acme/boosters",
+           [
+             run(4, "codeql.yml", name: "CodeQL", ago_min: 100),
+             run(5, "ci.yml", name: "CI", ago_min: 20, conclusion: "failure"),
+             run(6, "ci.yml", name: "CI", status: :in_progress, ago_min: 0)
+           ]}
+        ])
+
+      # Its own rows first, under their short labels, then what else ran.
+      assert labels(rockets) == ["Gate", "Prod", "Pricing snapshot"]
+      # No rows of its own: what ran, the latest first.
+      assert labels(boosters) == ["CI", "CodeQL"]
+
+      assert [%{bars: [%{kind: :fail}, %{kind: :run}]}, %{bars: [%{kind: :pass}]}] =
+               boosters.s.lanes
+
+      assert rockets.s.lanes_more == 0
+    end
+
+    test "a repo with runs never shows an empty chart, whatever its rows are" do
+      # Only workflows that have no row ran, as on the day this was found.
+      [rockets, boosters] =
+        two_repos([
+          {"acme/rockets",
+           [
+             run(1, "pricing.yml", name: "Pricing snapshot", ago_min: 40),
+             run(2, "overnight.yml", name: "Overnight", ago_min: 300)
+           ]},
+          {"acme/boosters", [run(3, "ci.yml", name: "CI", ago_min: 10)]}
+        ])
+
+      assert labels(rockets) == ["Pricing snapshot", "Overnight"]
+      assert labels(boosters) == ["CI"]
+    end
+
+    test "a repo with no runs in the window has no rows, and the chart says so in words" do
+      [rockets, boosters] =
+        two_repos([
+          {"acme/rockets", [run(1, "gate.yml", ago_min: 7 * 60)]},
+          {"acme/boosters", []}
+        ])
+
+      assert rockets.s.lanes == [] and boosters.s.lanes == []
+      assert rockets.s.lanes_more == 0
+
+      html =
+        render_component(&WallboardWeb.BoardLive.timeline/1,
+          lanes: rockets.s.lanes,
+          more: rockets.s.lanes_more,
+          now: @now
+        )
+
+      assert html =~ "No runs in the last 6 hours"
+      refute html =~ "lane-track"
+
+      # With runs: a row each, and no such words.
+      [busy, _] = two_repos([{"acme/rockets", [run(2, "gate.yml", [])]}, {"acme/boosters", []}])
+
+      html =
+        render_component(&WallboardWeb.BoardLive.timeline/1,
+          lanes: busy.s.lanes,
+          more: busy.s.lanes_more,
+          now: @now
+        )
+
+      assert html =~ "Gate" and html =~ "lane-track"
+      refute html =~ "No runs in the last 6 hours"
+    end
+
+    test "the chart shows six rows at most and says how many more ran" do
+      runs = for n <- 1..8, do: run(n, "w#{n}.yml", name: "Flow #{n}", ago_min: n * 10)
+      [_, boosters] = two_repos([{"acme/rockets", []}, {"acme/boosters", runs}])
+
+      assert labels(boosters) == for(n <- 1..6, do: "Flow #{n}")
+      assert boosters.s.lanes_more == 2
+
+      html =
+        render_component(&WallboardWeb.BoardLive.timeline/1,
+          lanes: boosters.s.lanes,
+          more: boosters.s.lanes_more,
+          now: @now
+        )
+
+      assert html =~ "+2 more workflows ran"
+
+      # Its own rows count toward the six and are never the ones cut.
+      own = for n <- 1..7, do: %{label: "Own #{n}", workflows: ["o#{n}.yml"]}
+      own_runs = for n <- 1..7, do: run(100 + n, "o#{n}.yml", ago_min: 300)
+
+      one = %{lanes: own, repos: ["acme/rockets"]}
+      [mixed] = two_repos([{"acme/rockets", Enum.take(own_runs, 4) ++ runs}], one)
+      [crowded] = two_repos([{"acme/rockets", own_runs ++ runs}], one)
+
+      assert labels(mixed) == ["Own 1", "Own 2", "Own 3", "Own 4", "Flow 1", "Flow 2"]
+      assert mixed.s.lanes_more == 6
+      assert labels(crowded) == for(n <- 1..7, do: "Own #{n}")
+      assert crowded.s.lanes_more == 8
+    end
+
+    test "a repo with no gate workflow shows main green or red from its latest runs on main" do
+      main = fn runs ->
+        [_, boosters] = two_repos([{"acme/rockets", []}, {"acme/boosters", runs}])
+        {boosters.s.main && boosters.s.main.conclusion, boosters.s.main_from}
+      end
+
+      # Every workflow on the newest commit passed.
+      assert main.([
+               run(1, "ci.yml", sha: "new", ago_min: 20),
+               run(2, "codeql.yml", sha: "new", ago_min: 25),
+               run(3, "ci.yml", sha: "old", ago_min: 300, conclusion: "failure")
+             ]) == {"success", :runs}
+
+      # One of them failed.
+      assert main.([
+               run(1, "ci.yml", sha: "new", ago_min: 20),
+               run(2, "codeql.yml", sha: "new", ago_min: 25, conclusion: "failure")
+             ]) == {"failure", :runs}
+
+      # A failed run that was run again and passed: the newest run counts.
+      assert main.([
+               run(1, "ci.yml", sha: "new", ago_min: 10),
+               run(2, "ci.yml", sha: "new", ago_min: 40, conclusion: "failure")
+             ]) == {"success", :runs}
+
+      # Only a push to main is a run on main: not a pull request's run (even
+      # from a branch called main), a review's, a nightly's or another branch's.
+      assert main.([
+               run(1, "ci.yml", sha: "new", ago_min: 30),
+               run(2, "ci.yml",
+                 sha: "pr",
+                 ago_min: 5,
+                 conclusion: "failure",
+                 event: "pull_request"
+               ),
+               run(3, "ci.yml", sha: "br", ago_min: 5, conclusion: "failure", branch: "fix"),
+               run(4, "ci.yml",
+                 sha: "fork",
+                 ago_min: 4,
+                 conclusion: "failure",
+                 event: "pull_request_review"
+               ),
+               run(5, "stale.yml",
+                 sha: "new",
+                 ago_min: 3,
+                 conclusion: "failure",
+                 event: "schedule"
+               )
+             ]) == {"success", :runs}
+
+      # The tests failed on the last commit. On the new one the quick lint
+      # passed and the tests are still going: main is not green yet.
+      assert main.([
+               run(1, "lint.yml", sha: "new", ago_min: 1),
+               run(2, "ci.yml", sha: "new", status: :in_progress, ago_min: 0),
+               run(3, "ci.yml", sha: "old", ago_min: 30, conclusion: "failure"),
+               run(4, "lint.yml", sha: "old", ago_min: 30)
+             ]) == {"failure", :runs}
+
+      # An old commit's run made again does not become the newest commit:
+      # it keeps the place its first start gave it.
+      again = %{
+        run(2, "ci.yml", sha: "old", ago_min: 1)
+        | started_at: DateTime.add(@now, -180)
+      }
+
+      assert main.([
+               run(1, "ci.yml", sha: "new", ago_min: 20, conclusion: "failure"),
+               Map.put(again, :created_at, DateTime.add(@now, -3600))
+             ]) == {"failure", :runs}
+
+      # A push that starts only another workflow does not hide the failure,
+      # while that workflow runs or once it passes.
+      failed = run(1, "ci.yml", sha: "old", ago_min: 30, conclusion: "failure")
+
+      assert main.([failed, run(2, "docs.yml", sha: "new", status: :in_progress, ago_min: 0)]) ==
+               {"failure", :runs}
+
+      assert main.([failed, run(2, "docs.yml", sha: "new", ago_min: 2)]) == {"failure", :runs}
+
+      # A run with no commit named is passed over, not a crash.
+      assert main.([%{run(1, "ci.yml", ago_min: 5) | sha: nil}]) == {nil, :runs}
+
+      # A run still going, or a cancelled one, decides nothing.
+      assert main.([
+               run(1, "ci.yml", sha: "newer", status: :in_progress, ago_min: 0),
+               run(2, "ci.yml", sha: "newer", ago_min: 2, conclusion: "cancelled"),
+               run(3, "ci.yml", sha: "new", ago_min: 30)
+             ]) == {"success", :runs}
+
+      assert main.([]) == {nil, :runs}
+    end
+
+    test "the first repo keeps its gate: other green runs on main do not stand in for it" do
+      [rockets, _] =
+        two_repos([
+          {"acme/rockets",
+           [
+             run(1, "pricing.yml", ago_min: 10),
+             run(2, "gate.yml", ago_min: 60, conclusion: "failure")
+           ]},
+          {"acme/boosters", []}
+        ])
+
+      assert rockets.s.main.conclusion == "failure" and rockets.s.main_from == :gate
+    end
+
+    test "a gate file the repo does not have is no gate, and one not checked yet still is" do
+      runs = [run(1, "ci.yml", ago_min: 10)]
+      one = fn workflows -> [{"acme/rockets", [{:workflows, workflows} | runs]}] end
+
+      # GitHub lists the repo's workflow files, and gate.yml is not one.
+      [r] = two_repos(one.(["ci.yml"]), %{repos: ["acme/rockets"]})
+      assert r.s.main.conclusion == "success" and r.s.main_from == :runs
+
+      # It is one: main waits for a gate run.
+      [r] = two_repos(one.(["ci.yml", "gate.yml"]), %{repos: ["acme/rockets"]})
+      assert r.s.main == nil and r.s.main_from == :gate
+
+      # The list has not been read: the setting is taken at its word.
+      [r] = two_repos(one.(nil), %{repos: ["acme/rockets"]})
+      assert r.s.main == nil and r.s.main_from == :gate
+    end
+
+    test "the status line counts a repo with no gate, and none is left unknown" do
+      repos =
+        two_repos([
+          {"acme/rockets", [run(1, "gate.yml", ago_min: 30)]},
+          {"acme/boosters", [run(2, "ci.yml", ago_min: 20)]}
+        ])
+
+      t = GitHub.totals(repos)
+      assert names(t.green) == ~w(rockets boosters)
+      assert t.unknown == [] and t.red == []
+
+      red =
+        two_repos([
+          {"acme/rockets", [run(1, "gate.yml", ago_min: 30)]},
+          {"acme/boosters", [run(2, "ci.yml", ago_min: 20, conclusion: "failure")]}
+        ])
+
+      assert names(GitHub.totals(red).red) == ~w(boosters)
+    end
+
+    test "the status line never says a repo with no gate is waiting for a gate run" do
+      note = fn runs -> runs |> two_repos() |> WallboardWeb.BoardLive.main_unknown_note() end
+
+      # Neither has a run today: each is named under its own reason.
+      assert note.([{"acme/rockets", []}, {"acme/boosters", []}]) ==
+               "rockets: no gate run today; boosters: no push to main ran today"
+
+      # Only the one with no gate.
+      [_, boosters] = two_repos([{"acme/rockets", []}, {"acme/boosters", []}])
+
+      assert WallboardWeb.BoardLive.main_unknown_note([boosters]) ==
+               "boosters: no push to main ran today"
+    end
+
+    test "an old settings file with one lanes list loads, and the first repo's chart is as it was" do
+      {_file, settings} = load("one_repo.exs")
+
+      runs = [
+        run(1, "gate.yml", ago_min: 200, branch: "trunk"),
+        run(2, "prod-deploy.yml", ago_min: 90, branch: "trunk", conclusion: "failure")
+      ]
+
+      [shop] =
+        GitHub.repos(
+          %{repos: [%{repo: "acme/shop", facts: facts(runs), error: nil}]},
+          settings,
+          @now
+        )
+
+      # The rows, their labels and their order are the file's.
+      assert [
+               %{label: "Gate", bars: [%{id: 1, kind: :pass, length: 120}]},
+               %{label: "Prod", bars: [%{id: 2, kind: :fail, length: 120}]}
+             ] = shop.s.lanes
+
+      assert shop.s.main.id == 1 and shop.s.main_from == :gate
+
+      # What does change, for every repo: a row is drawn only when one of
+      # its workflows ran in the six hours.
+      [gate_only] =
+        GitHub.repos(
+          %{repos: [%{repo: "acme/shop", facts: facts(Enum.take(runs, 1)), error: nil}]},
+          settings,
+          @now
+        )
+
+      assert labels(gate_only) == ["Gate"]
+
+      # The same file with a second repo added on the settings page: the
+      # first repo's chart does not change, and the second borrows nothing.
+      two =
+        Settings.apply_overrides(settings, %{github: %{repos: ["acme/shop", "acme/boosters"]}})
+
+      facts = %{
+        repos: [
+          %{repo: "acme/shop", facts: facts(runs), error: nil},
+          %{
+            repo: "acme/boosters",
+            facts: facts([run(3, "ci.yml", name: "CI", branch: "trunk")]),
+            error: nil
+          }
+        ]
+      }
+
+      assert [again, boosters] = GitHub.repos(facts, two, @now)
+      assert again.s.lanes == shop.s.lanes
+      assert labels(boosters) == ["CI"]
+      assert boosters.s.main.conclusion == "success"
+    end
+  end
+
+  test "a run's first start is read from GitHub's answer, apart from its latest start" do
+    json = ~s({"workflow_runs": [{"id": 1, "status": "completed", "created_at":
+      "2026-09-30T10:00:00Z", "run_started_at": "2026-09-30T17:00:00Z"}]})
+
+    assert {:ok, [%{created_at: ~U[2026-09-30 10:00:00Z], started_at: ~U[2026-09-30 17:00:00Z]}]} =
+             GitHub.parse_runs(json)
+  end
+
+  test "parse_workflows/1 reads a repo's workflow files by name" do
+    json = Wallboard.Fixtures.read!("github/workflows.json")
+    assert GitHub.parse_workflows(json) == {:ok, ["ci.yml", "codeql.yml", "dependabot-updates"]}
+    assert {:error, _} = GitHub.parse_workflows(~s({"message": "Not Found"}))
+
+    # Only the first page of more: a file past it must not look missing.
+    assert {:error, "GitHub lists more" <> _} =
+             GitHub.parse_workflows(~s({"total_count": 130, "workflows": [{"path": "a/ci.yml"}]}))
   end
 
   describe "GitRemote" do

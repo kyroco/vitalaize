@@ -149,7 +149,8 @@ defmodule Wallboard.Sources.GitHubTest do
     test "the timeline puts runs of the last 6 hours in their lanes", %{s: s} do
       lanes = Map.new(s.lanes, &{&1.label, &1.bars})
       assert [%{kind: :fail}] = lanes["Maintenance"]
-      assert lanes["Production"] == []
+      # A row is drawn for what ran: Production had no run in the window.
+      refute Map.has_key?(lanes, "Production")
       assert Enum.all?(lanes["CI"], &(&1.start + &1.length > 0))
     end
 

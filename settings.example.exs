@@ -104,12 +104,15 @@
   # GitHub, read through the `gh` command, which must be signed in
   # (gh auth login).
   github: %{
-    # Several repositories: list them here, and everything else in this
-    # section applies to each. An entry can be a map that changes any of it
-    # for that one repository, for example
+    # Several repositories: list them here. The workflow files named below
+    # (the gate, the deploys and the timeline rows) are the first one's. An
+    # entry can be a map that names another repository's own, or changes
+    # anything else in this section for it, for example
     #   repos: ["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]
-    # The Git tab gives up to four a column each; Dev and Prod follow the
-    # first. Left empty, the board follows `repo` alone.
+    # A repository that names no gate workflow gets main's state from the
+    # runs its pushes to main started. The Git tab gives up to four a column
+    # each; Dev and Prod follow the first. Left empty, the board follows
+    # `repo` alone.
     repos: [],
     repo: "your-org/your-repo",
     branch: "main",
@@ -124,6 +127,8 @@
     # Deploy workflows to track even when their last run is days old.
     deploy_workflows: ["deploy-staging.yml", "deploy-production.yml"],
     # Rows of the "last 6 hours" timeline, each with its workflow files.
+    # A row shows when one of its workflows ran in those hours; any other
+    # workflow that ran gets a row under its own name, after these.
     lanes: [
       %{label: "CI", workflows: ["ci.yml"]},
       %{label: "Staging", workflows: ["deploy-staging.yml"]},
