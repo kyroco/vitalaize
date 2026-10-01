@@ -60,6 +60,40 @@ defmodule Wallboard.LinkTest do
     rows
   end
 
+  # Sends every log line to the test, so a test can wait for one line
+  # however late the process that writes it gets to it.
+  defmodule LogTap do
+    def log(%{msg: msg}, %{config: %{pid: pid}}) do
+      text =
+        case msg do
+          {:string, text} -> IO.chardata_to_string(text)
+          {:report, report} -> inspect(report)
+          {format, args} -> format |> :io_lib.format(args) |> IO.chardata_to_string()
+        end
+
+      send(pid, {:log_line, text})
+    end
+  end
+
+  defp tap_logs do
+    id = :"log-tap-#{System.unique_integer([:positive])}"
+    :ok = :logger.add_handler(id, LogTap, %{config: %{pid: self()}})
+    on_exit(fn -> :logger.remove_handler(id) end)
+  end
+
+  defp await_log(part, left \\ 5_000) do
+    start = System.monotonic_time(:millisecond)
+
+    receive do
+      {:log_line, text} ->
+        if text =~ part,
+          do: :ok,
+          else: await_log(part, max(left - (System.monotonic_time(:millisecond) - start), 0))
+    after
+      left -> flunk("no log line with #{inspect(part)}")
+    end
+  end
+
   defp quietly(fun) do
     fun.()
   rescue
@@ -680,20 +714,23 @@ defmodule Wallboard.LinkTest do
       items = [%Proto.Item{body: {:summary, %Proto.Summary{title: title}}}]
       big = %Proto.Event{session_id: "s1", file: "s1.jsonl", position: 1, items: items}
 
-      log =
-        capture_log(fn ->
-          {channel, stream} = raw_stream(port, papa)
-          wait_until(fn -> Hub.connected() != %{} end)
-          # The hub hangs up part way through, which the sender may notice.
-          quietly(fn ->
-            GRPC.Stub.send_request(stream, %Proto.FromCollector{seq: 1, body: {:event, big}})
-          end)
+      tap_logs()
 
-          wait_until(fn -> Hub.connected() == %{} end)
-          quietly(fn -> GRPC.Stub.disconnect(channel) end)
+      capture_log(fn ->
+        {channel, stream} = raw_stream(port, papa)
+        wait_until(fn -> Hub.connected() != %{} end)
+        # The hub hangs up part way through, which the sender may notice.
+        quietly(fn ->
+          GRPC.Stub.send_request(stream, %Proto.FromCollector{seq: 1, body: {:event, big}})
         end)
 
-      assert log =~ "is over the limit of #{Link.limits().max_message_bytes}"
+        wait_until(fn -> Hub.connected() == %{} end)
+        # The refusal is written down by the stream as it ends, which can
+        # be a moment after the hub has let go of it.
+        await_log("is over the limit of #{Link.limits().max_message_bytes}")
+        quietly(fn -> GRPC.Stub.disconnect(channel) end)
+      end)
+
       assert saved("papa") == []
     end
 
