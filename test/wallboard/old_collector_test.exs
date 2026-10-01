@@ -427,7 +427,53 @@ defmodule Wallboard.OldCollectorTest do
       assert results == [%{script: script, kept_for: settings}]
       assert File.read!(settings) == text
       assert File.exists?(script)
-      assert hd(OldHooks.report(results)) =~ "Take the hook that runs it out of that file by hand"
+      assert hd(OldHooks.report(results)) =~ "still mentions wallboard-upload.sh"
+    end
+
+    test "a hook that spells its folder another way keeps its script", %{dir: dir, home: home} do
+      script_text = "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n"
+
+      # The folder is reached through a link, and the hook names the real one.
+      real = Path.join(dir, "dotfiles/claude")
+      File.mkdir_p!(real)
+      linked = Path.join(home, ".claude")
+      File.ln_s!(real, linked)
+      File.write!(Path.join(real, "wallboard-upload.sh"), script_text)
+      text = ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{real}/wallboard-upload.sh"}]}]}}\n)
+      File.write!(Path.join(real, "settings.json"), text)
+
+      results = OldHooks.retire(%{claude: [linked], codex: []})
+      settings = Path.join(linked, "settings.json")
+      assert results == [%{script: Path.join(linked, "wallboard-upload.sh"), kept_for: settings}]
+      assert File.read!(settings) == text
+      assert File.exists?(Path.join(real, "wallboard-upload.sh"))
+
+      # A doubled slash, as 0.2.0 wrote it when the folder was given with
+      # one at its end, in a file that cannot be written.
+      work = Path.join(home, ".claude-work")
+      File.mkdir_p!(work)
+      File.write!(Path.join(work, "wallboard-upload.sh"), script_text)
+      work_settings = Path.join(work, "settings.json")
+
+      File.write!(
+        work_settings,
+        ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{work}//wallboard-upload.sh"}]}]}}\n)
+      )
+
+      File.chmod!(work_settings, 0o444)
+
+      assert [%{file: ^work_settings, error: _}, %{kept_for: ^work_settings}] =
+               OldHooks.retire(%{claude: [work], codex: []})
+
+      assert File.exists?(Path.join(work, "wallboard-upload.sh"))
+
+      # Writable, that spelling is the script in its own folder: both go.
+      File.chmod!(work_settings, 0o644)
+
+      assert [%{file: ^work_settings, hooks: 1}, %{script: _}] =
+               OldHooks.retire(%{claude: [work], codex: []})
+
+      refute File.exists?(Path.join(work, "wallboard-upload.sh"))
     end
 
     test "odd but valid files: null values are kept, a name given twice is left alone" do

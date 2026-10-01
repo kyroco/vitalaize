@@ -166,16 +166,38 @@ defmodule Wallboard.Setup.OldHooks do
     e -> [%{file: path, error: Map.get(e, :reason, :failed)}]
   end
 
-  # True when a hooks file still names the script, or may: a hook its
-  # owner changed (more on its command line, say), a file that was left
-  # alone, or one that cannot be opened to look.
-  defp names?(file, script) do
+  # True when a hooks file still has a hook that mentions an upload
+  # script, or may have: a hook its owner changed (more on its command
+  # line, say), one that spells its folder another way (through a link,
+  # with a doubled slash), a file that was left alone, or one that cannot
+  # be opened to look. Any mention counts, whichever folder it names: two
+  # spellings of one folder cannot be told apart from here, and a script
+  # kept for nothing costs less than a hook left running a missing one.
+  defp names?(file, _script) do
     case File.read(file) do
-      {:ok, text} -> String.contains?(text, [script, String.replace(script, "/", "\\/")])
-      {:error, :enoent} -> false
-      {:error, _} -> true
+      {:ok, text} ->
+        case Jason.decode(text) do
+          {:ok, data} -> Enum.any?(commands(data), &String.contains?(&1, @script))
+          _ -> String.contains?(text, @script)
+        end
+
+      {:error, :enoent} ->
+        false
+
+      {:error, _} ->
+        true
     end
   end
+
+  # Every hook's command in a decoded hooks file.
+  defp commands(%{"hooks" => %{} = hooks}) do
+    for {_, groups} when is_list(groups) <- hooks,
+        %{"hooks" => list} when is_list(list) <- groups,
+        %{"command" => command} when is_binary(command) <- list,
+        do: command
+  end
+
+  defp commands(_), do: []
 
   # A file this cannot read is worth a word only when it names the script.
   defp mentions?(path) do
@@ -577,8 +599,8 @@ defmodule Wallboard.Setup.OldHooks do
             "#{file}. Every other hook is as it was, and the file from before is #{backup}."
 
         %{script: script, kept_for: file} ->
-          "Left the old upload script #{script} where it is, because #{file} still names " <>
-            "it. Take the hook that runs it out of that file by hand, then delete the script."
+          "Left the old upload script #{script} where it is, because a hook in #{file} " <>
+            "still mentions #{@script}. Take that hook out by hand, then delete the script."
 
         %{script: script} ->
           "Deleted the old upload script #{script}."
