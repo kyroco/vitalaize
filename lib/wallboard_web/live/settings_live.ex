@@ -2,26 +2,26 @@ defmodule WallboardWeb.SettingsLive do
   @moduledoc """
   The settings page, at /settings: what the board is set to, the
   machines that stream to this hub (and a button to disconnect one), and
-  how to connect another Mac.
+  the sessions saved from each machine.
 
   It shows settings and cannot change them. What it can still do changes
-  no setting: disconnect a machine, make a new key for the Macs that
-  upload, and let the mailbox ask again about a repository that was
-  ignored there. Settings are changed on the machine itself, in the
+  no setting: disconnect a machine, and let the mailbox ask again about a
+  repository that was ignored there. Settings are changed on the machine
+  itself, in the
   VitalAIze app or with `vitalaize setup` (see `Wallboard.Setup`), which
   save them and restart only what a change needs.
 
   Who may open it: anyone on this Mac itself, or, when the board has a
   password, anyone who gave it (the router already checked). Without a
   password, other devices on the network are turned away, since the page
-  holds the phone number, the AWS profiles and the key other Macs use.
+  holds the phone number and the AWS profiles.
   """
 
   use WallboardWeb, :live_view
 
   alias Wallboard.{Link, Poller, Settings, Store}
-  alias Wallboard.Archive.{Collector, Ingest}
-  alias WallboardWeb.{Auth, IngestController}
+  alias Wallboard.Archive.Collector
+  alias WallboardWeb.Auth
 
   @impl true
   def mount(_params, session, socket) do
@@ -41,8 +41,6 @@ defmodule WallboardWeb.SettingsLive do
         who: who,
         connected?: connected?(socket),
         notice: nil,
-        show_key?: false,
-        confirm_new_key?: false,
         confirm_disconnect: nil
       )
 
@@ -58,8 +56,6 @@ defmodule WallboardWeb.SettingsLive do
     assign(socket,
       settings: settings,
       values: values(settings),
-      hub_url: IngestController.hub_url(settings),
-      key: if(settings.archive.enabled, do: Ingest.token()),
       machines: machines(settings),
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
@@ -159,31 +155,6 @@ defmodule WallboardWeb.SettingsLive do
       true ->
         event(event, params, socket)
     end
-  end
-
-  defp event("toggle_key", _params, socket),
-    do: {:noreply, assign(socket, show_key?: !socket.assigns.show_key?)}
-
-  # A new key is to the Macs that upload what Disconnect is to a machine
-  # that streams: it takes their way in away. It changes no setting, so it
-  # stays on this page.
-  defp event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
-    do: {:noreply, assign(socket, confirm_new_key?: true)}
-
-  defp event("new_key", _params, socket) do
-    Store.put_meta(
-      "ingest_token",
-      24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-    )
-
-    {:noreply,
-     socket
-     |> load()
-     |> assign(
-       confirm_new_key?: false,
-       show_key?: true,
-       notice: "New key made. Run the connect command again on each other Mac."
-     )}
   end
 
   # Disconnect takes two taps: the first asks, the second revokes the
@@ -325,35 +296,7 @@ defmodule WallboardWeb.SettingsLive do
         </dl>
       </section>
 
-      <section :if={@key} class="settings-section">
-        <h2 class="kicker">Connect another Mac</h2>
-        <p class="detail-note">
-          Run this once in Terminal on the other Mac. It saves a small script and adds two hooks to
-          that Mac's Claude settings (backing them up first). After that, each session is sent here
-          when a turn ends and when it closes, in the background, so Claude never waits on it.
-        </p>
-        <p class="detail-note">
-          When that Mac has Codex, its Codex sessions come too, through two hooks in Codex's
-          hooks.json. Codex runs a new hook only once you trust it, so type /hooks in Codex there
-          afterwards and trust the two wallboard-upload.sh hooks.
-        </p>
-        <pre class="settings-code">{install_command(@hub_url, if(@show_key?, do: @key, else: "••••••••"))}</pre>
-        <div class="row">
-          <button class="link-button" phx-click="toggle_key">
-            {if @show_key?, do: "Hide key", else: "Show key"}
-          </button>
-          <button class="link-button" phx-click="new_key">
-            {if @confirm_new_key?,
-              do: "Tap again: other Macs stop sending until reconnected",
-              else: "Make a new key"}
-          </button>
-        </div>
-        <p class="stat-note">
-          Other Macs reach this board at {@hub_url}. This Mac does not need it: the board reads its own sessions.
-        </p>
-      </section>
-
-      <section :if={@key} class="settings-section">
+      <section :if={@settings.archive.enabled} class="settings-section">
         <h2 class="kicker">Saved sessions by Mac</h2>
         <table class="dtable settings-table">
           <tr>
@@ -398,7 +341,4 @@ defmodule WallboardWeb.SettingsLive do
     do: String.replace(text, "\n", ", ")
 
   defp shown(_type, text), do: text
-
-  defp install_command(hub, key),
-    do: ~s(curl -fsS -H "Authorization: Bearer #{key}" #{hub}/ingest/install.sh | sh)
 end

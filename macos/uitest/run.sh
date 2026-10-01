@@ -25,6 +25,11 @@
 # Approve in the hub's mailbox), sqlite3. Apple silicon only, as the app is.
 set -uo pipefail
 
+# The board's code looks for old upload hooks in the folders these name, on
+# top of the throwaway home's. Unset, a run started from a shell that names
+# your own Claude or Codex folder cannot reach it.
+unset CLAUDE_CONFIG_DIR CODEX_HOME
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$ROOT/macos/uitest"
 WORK="${VITALAIZE_UITEST_WORK:-$ROOT/macos/build/uitest}"

@@ -846,9 +846,6 @@ defmodule Wallboard.SetupTest do
         confirm_disconnect: nil,
         settings: settings,
         values: Settings.shown(settings),
-        key: nil,
-        show_key?: false,
-        hub_url: "http://hub:4747",
         machines: [],
         ignored_repos: []
       }
@@ -876,6 +873,12 @@ defmodule Wallboard.SetupTest do
 
       assert html =~ "open the VitalAIze app"
       assert html =~ "vitalaize setup"
+
+      # No Connect command, key or upload address is offered any more.
+      for part <- ["Connect another Mac", "/ingest", "Bearer", "Make a new key"],
+          do: refute(html =~ part)
+
+      assert html =~ "Saved sessions by Mac"
     end
 
     test "a save sent to it by hand changes nothing", %{dir: dir, saved: saved} do

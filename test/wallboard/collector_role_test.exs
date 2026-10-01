@@ -64,7 +64,6 @@ defmodule Wallboard.CollectorRoleTest do
     WallboardWeb.Endpoint,
     Wallboard.Pollers,
     Wallboard.Store,
-    Wallboard.Remote,
     Wallboard.Archive.StatusRecorder,
     Wallboard.Archive.Collector,
     Wallboard.Archive.GitHubCollector,
@@ -131,7 +130,6 @@ defmodule Wallboard.CollectorRoleTest do
           WallboardWeb.Endpoint,
           Wallboard.Pollers,
           Wallboard.Store,
-          Wallboard.Remote,
           Wallboard.Archive.StatusRecorder,
           Wallboard.Archive.Collector,
           Wallboard.Archive.GitHubCollector

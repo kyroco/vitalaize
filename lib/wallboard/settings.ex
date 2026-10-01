@@ -695,9 +695,7 @@ defmodule Wallboard.Settings do
        [
          {[:archive, :backfill_days], "Days to save on first start", :integer, false, nil},
          {[:archive, :settle_seconds], "Save a session after it is quiet for (seconds)", :integer,
-          false, nil},
-         {[:archive, :hub_url], "Address other Macs use", :string, false,
-          "Empty uses this Mac's network address"}
+          false, nil}
        ]},
       {"Collector",
        [
@@ -868,9 +866,6 @@ defmodule Wallboard.Settings do
 
       path == [:new_relic, :api_key_ref] and not String.starts_with?(value, "op://") ->
         {:error, "use the op:// address from 1Password, not the key itself"}
-
-      path == [:archive, :hub_url] and not (value =~ ~r{^https?://[^\s/]+}) ->
-        {:error, "use an address like http://192.168.1.20:4747"}
 
       path == [:alerts, :slack_webhook] and not (value =~ ~r{^https://\S+$}) ->
         {:error, "use the https:// address Slack gave you"}

@@ -46,7 +46,7 @@ It needs `gh` signed in for the GitHub step, and `node` for the hub's mailbox.
 | Fresh Mac, collector only | `pair` | An empty home, and a hub in a second home | Passed |
 | Fresh Mac with a board started by hand | `by-hand` | A `local.wallboard` login item and `~/projects/wallboard/settings.exs` | Passed |
 | Fresh Mac, picking a folder an older board left | `kept-folder` | A folder with that board's settings, a port saved in them, and a name its own settings page kept in the database | Passed |
-| Installing over 0.2.0 | `over-0-2-0` | 0.2.0's settings file and setup record, its board still running | Passed |
+| Installing over 0.2.0 | `over-0-2-0` | 0.2.0's settings file and setup record, its board still running, and its upload hook in Claude's settings beside a hook of the person's own | Passed |
 | Installing over an install from before the rename | `over-renamed` | Data in `Vitalize`, a login item that starts an app that is gone, a carried-over settings file that is gone | Passed |
 | Reconfigure | `fresh-hub`, `pair`, `over-renamed`, `over-0-2-0`, `failures` | A Mac that is already set up | Passed |
 | Uninstall, then set up again | `fresh-hub`, `pair`, `hub-only` | Remove with the data kept, Remove with the data deleted | Passed |
@@ -252,7 +252,6 @@ Pictures: [top](mac-app-checks/pictures/fresh-hub/10-settings.jpg),
 | Long-running after, Keep an idle session on Live for, Days to save on first start, Save a session after it is quiet for | Typed, saved | In use |
 | Main branch, Gate workflow file, Dev deploy workflow file, Prod deploy workflow file | Typed, saved | In use |
 | Dev profile, Prod profile | Typed, saved | In use. With no database or cluster named in `settings.exs`, the board says that is what is missing |
-| Address other Macs use | Typed, saved | In use |
 | Back | Clicked | The first screen, with no "Restarting" left on it |
 
 ### 13. Settings on a collector
@@ -293,6 +292,7 @@ replacement is written, and a dated copy of it is kept first, in
 | Stop that board and run this one instead | The by-hand login item `local.wallboard.plist` (removed) | Copied to the backup folder first; the earlier settings file is not touched | `by-hand` |
 | Save in Settings | `settings.json` | Copied to the backup folder first; the board's code writes the new one beside it and swaps it in. The screen says where the copy is | `fresh-hub`: the copy is there. `over-renamed`: with the folder read-only, "Could not write to file … Check that the folder can be written to. Nothing was saved." and the file is unchanged |
 | Remove, data kept | The login item and `install.json` (removed) | Both are copied to the backup folder first. If a copy cannot be kept, nothing is removed and the screen says so | `fresh-hub`; `over-renamed` for the copy that cannot be kept: "Nothing was removed", all four files as before, the board still running |
+| Taking out 0.2.0's upload hooks (first setup, Reconfigure and Remove) | Claude's `settings.json` and Codex's `hooks.json`; the script `wallboard-upload.sh` (deleted) | The file is copied beside itself first, as `settings.json.before-collector` (then `-2`, `-3`, never over an earlier copy), and the new one is written beside it and swapped in. The copy is beside the file and not in the backup folder, so it is still there after Remove with the data deleted. The script is not kept: it holds the hub's old key | `over-0-2-0`: after Reconfigure the upload hook is gone, the person's own hook is still there, the copy holds the file as it was, and the script is gone. Remove runs the same code; the board's own tests cover it (`test/wallboard/old_collector_test.exs`), no scenario does |
 | Remove, data deleted | The whole folder | Nothing is kept: the switch says so and is off unless turned on | `fresh-hub`, `hub-only` |
 | Pairing | The certificate in `collector/link/` | A new pairing replaces it only after the hub approves; a refused or unanswered one leaves the old pairing connected | `pair`: after a refusal the first screen still says "Connected to the hub at …" |
 

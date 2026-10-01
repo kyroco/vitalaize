@@ -33,10 +33,18 @@ defmodule Wallboard.Setup do
 
   Both pair a collector with its hub by code (`Wallboard.Pairing.pair/1`)
   and say what pairing answered, whatever it was.
+
+  ## A machine set up by 0.2.0
+
+  Both also take out the upload hooks VitalAIze 0.2.0 added to this
+  machine's Claude and Codex settings (`retire_old_hooks/2`), since the
+  hub takes no uploads any more. `remove/1` is the other end: it takes out
+  those hooks and this machine's certificate, for `vitalaize remove` and
+  the app's Remove.
   """
 
   alias Wallboard.{Pairing, Settings}
-  alias Wallboard.Setup.Service
+  alias Wallboard.Setup.{OldHooks, Service}
 
   @marker "VITALAIZE_JSON"
   @code_marker "VITALAIZE_CODE"
@@ -208,13 +216,160 @@ defmodule Wallboard.Setup do
   end
 
   # ---------------------------------------------------------------------------
+  # Hooks from before the streaming collector, and removing VitalAIze
+
+  @doc """
+  Takes the upload hooks VitalAIze 0.2.0 added out of this machine's
+  Claude and Codex settings, and deletes its upload script (see
+  `Wallboard.Setup.OldHooks`). Every other hook stays as it was, and each
+  file changed is copied first. Returns what it did as sentences, none
+  when there was nothing of the kind.
+
+  Options, for tests: `home`, `env` and `data` (`OldHooks.folders/2`).
+  """
+  def retire_old_hooks(settings, opts \\ []) do
+    settings
+    |> OldHooks.folders(Keyword.take(opts, [:home, :env, :data]))
+    |> OldHooks.retire()
+    |> OldHooks.report()
+  end
+
+  @doc """
+  Takes VitalAIze's traces off this machine, short of its program and its
+  settings: the old upload hooks, and the certificate and hub address
+  pairing saved. Returns what it did as sentences. The service is the
+  caller's to stop first (the VitalAIze app does, and `vitalaize remove`).
+  """
+  def remove(opts \\ []) do
+    settings = settings_or_defaults()
+    retire_old_hooks(settings, opts) ++ forget_hub(settings)
+  end
+
+  # A settings file that does not load must not keep VitalAIze on the
+  # machine: the usual folders are still looked in.
+  defp settings_or_defaults do
+    Settings.load!()
+  rescue
+    _ -> Settings.normalize(Settings.defaults())
+  end
+
+  # Only the four files pairing saved go, never whatever else a folder of
+  # that name may hold; the folder goes when that leaves it empty.
+  defp forget_hub(settings) do
+    dir = Pairing.dir(settings)
+    files = for name <- ~w(key.pem cert.pem ca.pem hub.json), do: Path.join(dir, name)
+    there = Enum.filter(files, &File.regular?/1)
+
+    # A hub keeps its own authority in a `link` folder too, beside its
+    # database. Should a hub's settings put both in one place, it is left
+    # alone: ca.pem there is the authority's, and every machine's approval
+    # rests on it.
+    hubs_own? =
+      settings.role != :collector and
+        Path.expand(dir) == Path.expand(Wallboard.Link.Authority.dir(settings))
+
+    cond do
+      there == [] or not OldHooks.allowed?(dir) ->
+        []
+
+      hubs_own? ->
+        [
+          "Left #{dir} as it is: this hub keeps its own certificates there too. " <>
+            "Delete key.pem, cert.pem and hub.json in it by hand."
+        ]
+
+      Enum.all?(there, &(File.rm(&1) == :ok)) ->
+        File.rmdir(dir)
+
+        [
+          "Deleted this machine's certificate and its hub's address (#{dir}). " <>
+            "On the hub's board, open Settings and Disconnect this machine."
+        ]
+
+      true ->
+        ["Could not delete this machine's certificate in #{dir}. Delete that folder by hand."]
+    end
+  end
+
+  @doc """
+  `vitalaize remove`, in a terminal: asks first, then stops the service
+  and takes it out of what starts at login (Linux; a Mac's login item is
+  the app's), then `remove/1`. Settings and saved sessions stay.
+
+  Options: `io`, and for tests `remove/1`'s and
+  `Wallboard.Setup.Service`'s.
+  """
+  def remove_here(opts \\ []) do
+    io = Keyword.get(opts, :io, :stdio)
+
+    say(io, """
+    This stops VitalAIze on this machine and takes it out of what starts at
+    login. It also takes out the upload hooks an earlier version added to
+    Claude and Codex, and this machine's certificate for its hub. Your
+    settings and saved sessions stay where they are.
+    """)
+
+    if yes?(gets(io, "Remove VitalAIze from this machine? (yes or no) [no]: ")) do
+      # The certificate is not taken from under a collector that still runs.
+      case stop_service(opts) do
+        {:ok, line} ->
+          say(io, line)
+          Enum.each(remove(opts), &say(io, &1))
+
+          say(io, """
+          Done. Your settings are still in #{Path.dirname(Settings.saved_path())}.
+          Delete that folder, and the folder VitalAIze was unpacked in, to remove the rest.
+          """)
+
+        {:error, line} ->
+          say(io, line)
+          say(io, "Nothing removed.")
+      end
+    else
+      say(io, "Nothing removed.")
+    end
+
+    :ok
+  end
+
+  defp stop_service(opts) do
+    case {Service.kind(opts), Service.asked?(opts), Service.state(opts)} do
+      # No answer is not "no service": it may be running all the same.
+      {:systemd, false, _} ->
+        {:error,
+         "Could not ask systemd whether VitalAIze runs here. Run vitalaize remove from " <>
+           "your own login session, not from another user's or a scheduled job."}
+
+      {_, _, :none} ->
+        {:ok,
+         "VitalAIze is not set up as a service here. If you started it by hand, stop it now."}
+
+      {:systemd, _, _} ->
+        with :ok <- Service.uninstall(opts),
+             false <- Service.state(opts) == :running do
+          {:ok, "Stopped VitalAIze. It no longer starts when you log in."}
+        else
+          {:error, why} -> {:error, "Could not stop the service: #{why}"}
+          true -> {:error, "Could not stop the service: it still runs."}
+        end
+
+      _ ->
+        {:error,
+         "VitalAIze runs as a login item on this Mac. Open the VitalAIze app and choose " <>
+           "Remove VitalAIze there: it stops it first. If you built it from source and " <>
+           "have no app, run scripts/login-item.sh off, then this again."}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # The terminal command
 
   @doc """
-  The start of `vitalaize setup`. With no arguments it asks its questions;
-  `--json show`, `--json save`, `--json pair [address]` and `--json hubs`
-  are for the VitalAIze app. Stops with status 1 when it could not do
-  what was asked.
+  The start of `vitalaize setup` and `vitalaize remove`. With no arguments
+  it asks setup's questions; `remove` takes VitalAIze off this machine;
+  `--json show`, `--json save`, `--json pair [address]`, `--json hubs`,
+  `--json retire` and `--json remove` are for the VitalAIze app. Stops
+  with status 1 when it could not do what was asked.
   """
   def main(args \\ argv()) do
     # Run by itself, beside the board or with none running: only what
@@ -230,7 +385,8 @@ defmodule Wallboard.Setup do
         case args do
           ["--json" | rest] -> json(rest)
           [] -> run()
-          _ -> {:error, "Usage: vitalaize setup"}
+          ["remove"] -> remove_here()
+          _ -> {:error, "Usage: vitalaize setup, or vitalaize remove"}
         end
       rescue
         # Our own messages say what to do. Anything else may quote a line
@@ -275,12 +431,13 @@ defmodule Wallboard.Setup do
 
   @doc """
   Asks what this machine should do and the settings that go with it, in a
-  terminal, then saves, pairs a collector with its hub, and offers to keep
-  VitalAIze running. Enter keeps a value; `-` empties it.
+  terminal, then saves, takes out the old upload hooks, pairs a collector
+  with its hub, and offers to keep VitalAIze running. Enter keeps a value;
+  `-` empties it.
 
   Options: `io` (the device to read and write, standard input and output
-  unless given), and for tests `pair`, `discover`, `poll_ms`, and
-  `Wallboard.Setup.Service`'s `run` and `os`.
+  unless given), and for tests `pair`, `discover`, `poll_ms`,
+  `retire_old_hooks/2`'s, and `Wallboard.Setup.Service`'s `run` and `os`.
   """
   def run(opts \\ []) do
     io = Keyword.get(opts, :io, :stdio)
@@ -308,6 +465,8 @@ defmodule Wallboard.Setup do
     with %{} <- values,
          {:ok, result} <- save(values, opts) do
       Enum.each(report(result), &say(io, &1))
+      # Before pairing, so the new collector never runs beside the old hooks.
+      Enum.each(retire_old_hooks(Settings.get(), opts), &say(io, &1))
       if result.role == :collector, do: pairing(io, opts)
       keep_running(io, result, opts)
       :ok
@@ -565,6 +724,10 @@ defmodule Wallboard.Setup do
       first, on a line that starts with `VITALAIZE_CODE`; the answer
       follows when the owner has decided.
     * `["hubs"]`: the hubs found on the local network.
+    * `["retire"]`: takes out the old upload hooks (`retire_old_hooks/2`)
+      and answers `lines`, what it did.
+    * `["remove"]`: `remove/1`, and answers `lines`. It works beside a
+      settings file that does not load.
   """
   def json(args, opts \\ [])
 
@@ -683,8 +846,13 @@ defmodule Wallboard.Setup do
     emit(opts, %{hubs: discover.()})
   end
 
+  def json(["retire"], opts),
+    do: emit(opts, %{ok: true, lines: retire_old_hooks(settings_or_defaults(), opts)})
+
+  def json(["remove"], opts), do: emit(opts, %{ok: true, lines: remove(opts)})
+
   def json(_other, _opts),
-    do: {:error, "Usage: --json show | save | forget | pair [address] | hubs"}
+    do: {:error, "Usage: --json show | save | forget | pair [address] | hubs | retire | remove"}
 
   defp quiet_address("", opts) do
     case opts[:discover].() do

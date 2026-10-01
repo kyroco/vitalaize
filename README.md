@@ -32,10 +32,17 @@ machines, known limits, building from source and how it works.
 If you run 0.2.0 on Linux, upgrade. Every copy of that download had the same
 built-in secret for remote control, so if you started the board by hand
 (not with `systemd.sh`), anyone on your network who also had the download
-could run commands on your machine. 0.3.0 turns remote control off. On a
-machine connected by 0.2.0 or earlier, run the command from the hub's
-Settings page (Connect another Mac) once more, or on a Mac with the app, run
-its setup again, to add the new hooks.
+could run commands on your machine. 0.3.0 turns remote control off.
+
+A machine connected by 0.2.0 or earlier sent its sessions with upload hooks.
+0.3.0 replaces those with the collector, and the hub no longer takes uploads:
+it refuses them, so such a machine's sessions stop arriving until it is moved
+across. On each of those machines, install 0.3.0 and set it up as a collector (the
+app on a Mac, `bin/vitalaize setup` on Linux). Setup takes VitalAIze's old
+hooks out of that machine's Claude and Codex settings, leaves every other
+hook as it was, and keeps a copy of each file it changes beside it
+(`settings.json.before-collector`). Sessions the hub saved before stay in
+the archive and trends.
 
 ## Install on a Mac
 
@@ -121,18 +128,19 @@ The database lives in `~/.local/share/vitalaize`. To have other machines
 find the hub on the network by themselves, install `avahi-utils` on the hub;
 without it, collectors type the hub's address.
 
-A Linux machine can be a collector too: run the command from the hub's
-Settings page (Connect another Mac) there. It hooks up `~/.claude`, or the
-folder in `CLAUDE_CONFIG_DIR`, so run it once per Claude folder. It needs
-`python3` and `curl`, and to report prompts you approve or deny as they
-happen, `claude` and `perl`. Like the app, the command hooks up Codex too
-when the machine has it. Codex runs a new hook only once you trust it, so
-afterwards type `/hooks` in Codex on that machine and trust the two
-`wallboard-upload.sh` hooks.
+A Linux machine can be a collector too: unpack the download on it, run
+`bin/vitalaize setup` and answer `collector`. It finds the hub on your
+network or takes its address, and shows a short code; approve the same code
+in the mailbox on the hub's board. Nothing is typed or pasted.
 
-Sessions from other machines travel to the hub unencrypted, so connect
-machines only on a network you trust. See the known limits in the
-[wiki](https://github.com/kyroco/vitalaize/wiki) before you do.
+To take VitalAIze off a Linux machine, run `bin/vitalaize remove`. It stops
+VitalAIze, takes it out of what starts at login, deletes the machine's
+certificate for its hub and takes out any upload hooks an earlier version
+added. On a Mac, **Remove VitalAIze** in the app does the same.
+
+A collector streams to its hub over an encrypted connection, and only a
+machine you approved in the mailbox can send. See the known limits in the
+[wiki](https://github.com/kyroco/vitalaize/wiki).
 
 ## Questions and ideas
 
