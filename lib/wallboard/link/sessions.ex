@@ -27,10 +27,15 @@ defmodule Wallboard.Link.Sessions do
   has its cards taken down.
 
   A collector says every live session's status again each time it
-  connects. So a hub that restarted or lost its data has its cards back
-  once the machine is, and a session the collector no longer speaks of
-  five minutes after it connected has ended without the hub being told
-  (the collector lost its own place, say): its card comes down.
+  connects, all in one go. So a hub that restarted or lost its data has
+  its cards back once the machine is. And a session the collector leaves
+  out has ended without the hub being told (the collector lost its own
+  place, say): five minutes after the machine first spoke of another
+  session of the same tool, and still nothing of this one, the hub notes
+  the end itself, as an event like any other, and the card comes down. A
+  collector that is slow to speak at all (a long backlog) takes no card
+  down. A machine's only session is never taken down this way: there is
+  no other for it to speak of.
 
   ## Saved
 
@@ -65,8 +70,8 @@ defmodule Wallboard.Link.Sessions do
   @keep_seconds 10 * 60
   # A stale card comes down after this long.
   @stale_seconds 24 * 3600
-  # How long a machine that connected has to say each live session's
-  # status again before a session it left out counts as ended.
+  # How long after a machine first says a session's status again a
+  # session of the same tool that it left out counts as ended.
   @reap_ms 5 * 60 * 1000
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -105,6 +110,8 @@ defmodule Wallboard.Link.Sessions do
       # machine => when its stream closed, and when it last opened
       down: %{},
       up: %{},
+      # {machine, tool} => when it first said a status since it connected
+      spoke: %{},
       started: now,
       # {machine, session id} => the start of the wait an alert was last
       # asked for, so no wait alerts twice
@@ -176,8 +183,15 @@ defmodule Wallboard.Link.Sessions do
         entry = state.sessions[key] || %{s: read(machine, id), said: nil}
         s = Enum.reduce(events, entry.s, &take(&2, &1))
         record_statuses(s, events)
-        said = if Enum.any?(events, &status?/1), do: steady(), else: entry.said
-        state = maybe_alert(state, key, s)
+        status? = Enum.any?(events, &status?/1)
+        said = if status?, do: steady(), else: entry.said
+
+        spoke =
+          if status?,
+            do: Map.put_new(state.spoke, {machine, tool(s)}, said),
+            else: state.spoke
+
+        state = maybe_alert(%{state | spoke: spoke}, key, s)
         put_in(state.sessions[key], %{s: s, dirty?: true, heard: now, said: said})
       end)
 
@@ -185,40 +199,15 @@ defmodule Wallboard.Link.Sessions do
   end
 
   def handle_info({:link, :up, machine}, state) do
-    at = steady()
-    Process.send_after(self(), {:reap, machine, at}, state.reap_ms)
-
     state = %{
       state
       | connected: MapSet.put(state.connected, machine),
-        up: Map.put(state.up, machine, at)
+        up: Map.put(state.up, machine, steady()),
+        # What it has said since is counted from here.
+        spoke: Map.reject(state.spoke, fn {{m, _tool}, _} -> m == machine end)
     }
 
     {:noreply, publish(state)}
-  end
-
-  # The machine connected a while ago and has been connected since. A live
-  # session it has not spoken of in that time has ended.
-  def handle_info({:reap, machine, at}, state) do
-    if MapSet.member?(state.connected, machine) and state.up[machine] == at do
-      sessions =
-        Map.new(state.sessions, fn
-          {{^machine, id} = key, %{s: s, said: said} = entry} ->
-            if Session.live?(s) and (said == nil or said < at) do
-              Store.put_status(machine, id, Session.name(s), :gone, s.status.at)
-              {key, %{entry | s: Session.ended(s), dirty?: true}}
-            else
-              {key, entry}
-            end
-
-          other ->
-            other
-        end)
-
-      {:noreply, publish(%{state | sessions: sessions})}
-    else
-      {:noreply, state}
-    end
   end
 
   def handle_info({:link, :down, machine}, state) do
@@ -243,18 +232,22 @@ defmodule Wallboard.Link.Sessions do
 
   def handle_info(:save, state) do
     Process.send_after(self(), :save, state.save_ms)
-    {:noreply, state |> save_changed() |> tidy()}
+    {:noreply, state |> reap() |> save_changed() |> tidy()}
   end
 
   # The alert for a wait that began at `since`, sent only if that same wait
   # is still on.
   def handle_info({:alert, key, since}, state) do
+    {machine, _} = key
+
     with %{s: s} <- state.sessions[key],
-         true <- Session.waiting?(s) and Session.since(s) == since do
+         true <- Session.waiting?(s) and Session.since(s) == since,
+         # A machine cut off since: the old hooks alert for it if it has
+         # them, and the wait is looked at again when it is back.
+         true <- MapSet.member?(state.connected, machine) || :cut_off do
       {ok?, sent} =
         Wallboard.Remote.alert_allowed?(state.sent, System.os_time(:millisecond))
 
-      {machine, _} = key
       name = "#{Session.name(s)} on #{machine}"
 
       if ok? do
@@ -266,6 +259,7 @@ defmodule Wallboard.Link.Sessions do
 
       {:noreply, %{state | sent: sent}}
     else
+      :cut_off -> {:noreply, %{state | alerted: Map.delete(state.alerted, key)}}
       _ -> {:noreply, state}
     end
   end
@@ -284,6 +278,45 @@ defmodule Wallboard.Link.Sessions do
   # ---------------------------------------------------------------------------
 
   defp steady, do: System.monotonic_time(:millisecond)
+
+  defp tool(s), do: s.tool || "claude"
+
+  # Ends the sessions a connected machine has left out (see the module
+  # doc). The end is saved as an event under the machine, a second after
+  # the session's last status, so it is there after a restart too and
+  # comes back through the database like any other.
+  defp reap(state) do
+    now = steady()
+
+    for {{machine, id}, %{s: s, said: said}} <- state.sessions,
+        MapSet.member?(state.connected, machine),
+        Session.live?(s),
+        up = state.up[machine],
+        up != nil and (said == nil or said < up),
+        first = state.spoke[{machine, tool(s)}],
+        first != nil and now - first >= state.reap_ms do
+      event = Wallboard.Collector.Filter.ended(%{session_id: id}, nil)
+      at = s.status.at + 1
+      event = %{event | at: at}
+
+      Store.put_collector_events(
+        machine,
+        [
+          %{
+            session_id: id,
+            file: "",
+            position: 0,
+            at: at,
+            kind: "end",
+            event: Proto.Event.encode(event)
+          }
+        ],
+        System.os_time(:second)
+      )
+    end
+
+    state
+  end
 
   defp connected do
     Wallboard.Link.Hub.connected() |> Map.keys() |> MapSet.new()

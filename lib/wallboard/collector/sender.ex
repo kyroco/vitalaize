@@ -239,11 +239,21 @@ defmodule Wallboard.Collector.Sender do
   defp pump(%{forget: files} = state) when files != nil, do: state
 
   defp pump(state) do
+    case Outbox.stats(state.outbox) do
+      # A number past the outbox's last is from an outbox that is gone (its
+      # folder was cleared): it says nothing about this one.
+      %{acked: acked, seq: seq} ->
+        state
+        |> save_skip(Map.reject(state.skip, fn {_, floor} -> floor > seq end))
+        |> pump(acked)
+
+      _ ->
+        state
+    end
+  end
+
+  defp pump(state, acked) do
     with %{bytes: bytes} when bytes < @high_water <- Client.status(state.client),
-         %{acked: acked, seq: seq} <- Outbox.stats(state.outbox),
-         # A number past the outbox's last is from an outbox that is gone
-         # (its folder was cleared): it says nothing about this one.
-         state = save_skip(state, Map.reject(state.skip, fn {_, floor} -> floor > seq end)),
          [_ | _] = events <- Outbox.read(state.outbox, acked, @batch) do
       send = for {seq, event} <- events, not skipped?(state.skip, seq, event), do: event
       if send != [], do: :ok = Client.push(state.client, send)

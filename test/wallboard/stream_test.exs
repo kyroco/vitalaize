@@ -736,6 +736,9 @@ defmodule Wallboard.StreamTest do
 
     test "a new wait that follows an old one in the same batch still alerts, once", c do
       start_hub(c)
+      # As if its stream were open: a cut-off machine's wait is left to
+      # its hooks, and looked at again when it is back.
+      Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       at = &DateTime.add(now, &1)
 
@@ -790,7 +793,43 @@ defmodule Wallboard.StreamTest do
     end
 
     @tag reap_ms: 400
-    test "a session its collector no longer speaks of after it connected has ended", c do
+    test "a session its collector leaves out when it speaks of the others has ended", c do
+      other = "0b0b0b0b-1111-4222-8333-444444444444"
+      start_hub(c)
+      pair(c)
+      w = start_collector(c)
+      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+      busy = %{"status" => "busy"}
+      agents(c, [{@claude_id, busy}, {other, busy}])
+      look(w)
+      wait_until(fn -> card(@claude_id) != nil and card(other) != nil end)
+      drained(w)
+
+      # The collector loses its place while one session ends: it has no
+      # memory of that session, so it sends no end for it.
+      kill_collector(w)
+      File.rm_rf!(Path.join(c.collector.collector.dir, "outbox"))
+      agents(c, [{other, busy}])
+      w = start_collector(c)
+      look(w)
+      wait_until(fn -> card(@claude_id) == nil end)
+      # The one it does speak of stays.
+      assert %{status: :working, stale: false} = card(other)
+
+      # The end is an event like any other, so it holds after a restart.
+      assert Enum.any?(Store.collector_events("papa", @claude_id), &(&1.kind == "end"))
+      :ok = Sessions.save()
+      assert "gone" in Enum.map(Store.get_session("papa", @claude_id).events, & &1.status)
+      drained(w)
+      kill_collector(w)
+      kill_hub()
+      start_hub(c)
+      wait_until(fn -> card(other) != nil end)
+      assert card(@claude_id) == nil
+    end
+
+    @tag reap_ms: 400
+    test "a collector that has not spoken yet takes no card down", c do
       start_hub(c)
       pair(c)
       w = start_collector(c)
@@ -800,17 +839,12 @@ defmodule Wallboard.StreamTest do
       wait_until(fn -> card(@claude_id) != nil end)
       drained(w)
 
-      # The collector loses its place while the session ends: it has no
-      # memory of the session, so it sends no end.
+      # Back, and saying nothing: no look, as with a long backlog ahead.
       kill_collector(w)
-      File.rm_rf!(Path.join(c.collector.collector.dir, "outbox"))
-      agents(c, [])
-      w = start_collector(c)
-      look(w)
-      wait_until(fn -> card(@claude_id) == nil end)
-
-      :ok = Sessions.save()
-      assert "gone" in Enum.map(Store.get_session("papa", @claude_id).events, & &1.status)
+      start_collector(c)
+      wait_until(fn -> not card(@claude_id).stale end)
+      Process.sleep(900)
+      assert %{status: :working, stale: false} = card(@claude_id)
     end
 
     @tag reap_ms: 400

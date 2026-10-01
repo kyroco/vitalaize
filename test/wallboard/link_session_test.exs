@@ -125,6 +125,21 @@ defmodule Wallboard.LinkSessionTest do
     assert Session.live?(back) and Session.state(back) == :idle
   end
 
+  test "a status said again unchanged keeps when it began, but not across an end" do
+    later = &DateTime.add(@now, &1)
+
+    waiting =
+      &status(:needs, why: :question, question: "Deploy?", at: later.(&1), since: later.(&1))
+
+    again = fold([waiting.(0), waiting.(60)])
+    assert Session.since(again) == DateTime.to_unix(@now)
+
+    ended = Filter.ended(%{session_id: @id}, later.(30))
+    anew = fold([waiting.(0), ended, waiting.(60)])
+    assert Session.waiting?(anew)
+    assert Session.since(anew) == DateTime.to_unix(later.(60))
+  end
+
   test "a card of a machine that is not connected is stale, and keeps its status" do
     s = fold(main() ++ [status(:working, at: @now)])
     down = DateTime.to_unix(@now) + 60

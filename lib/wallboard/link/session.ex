@@ -16,7 +16,10 @@ defmodule Wallboard.Link.Session do
   was read (`position`), and the totals it carries are for the file up to
   there, so the part from the furthest position wins and the rest change
   nothing. A status carries its time, and the latest wins. So the same
-  events give the same session whatever order they come in.
+  events give the same session whatever order they come in, with one
+  exception: a status said again unchanged keeps the time it first began,
+  which depends on the status before it having arrived. The link sends a
+  session's statuses in the order they were made.
 
   ## What differs from a transcript
 
@@ -89,9 +92,11 @@ defmodule Wallboard.Link.Session do
             }
 
             # A collector says a status again after every reconnect. The
-            # same status said again began when it first began.
+            # same status said again began when it first began. Only for a
+            # session that is live: after an end, the same words are a new
+            # status.
             same? =
-              s.status != nil and
+              live?(s) and
                 Map.drop(s.status, [:since, :at]) == Map.drop(new, [:since, :at])
 
             new = if same?, do: %{new | since: first(s.status.since, new.since)}, else: new
@@ -186,13 +191,6 @@ defmodule Wallboard.Link.Session do
   """
   def live?(%{status: nil}), do: false
   def live?(%{status: status, ended_at: ended}), do: ended == nil or status.at > ended
-
-  @doc """
-  The session with its end noted by the hub itself, at the time of its
-  last status: for one its collector stopped speaking of.
-  """
-  def ended(%{status: %{at: at}} = s), do: %{s | ended_at: max(s.ended_at || 0, at)}
-  def ended(s), do: s
 
   @doc "True when the session is live and waits on its person."
   def waiting?(s), do: live?(s) and s.status.state == :WAITING
