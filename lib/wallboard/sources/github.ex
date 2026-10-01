@@ -7,11 +7,17 @@ defmodule Wallboard.Sources.GitHub do
     * one REST call for every run created in the last 24 hours
     * one GraphQL call for the merge queue and the open pull requests
     * one REST call per run in progress, for its jobs (the step it is on)
-    * every `deploy_poll_seconds`, one REST call per deploy workflow, so the
-      last dev and prod deploys show even when they are days old
+    * every `deploy_poll_seconds`, one REST call for the repository's
+      workflow files and one per deploy workflow among them, so the last dev
+      and prod deploys show even when they are days old
 
   At the default 30 seconds with two runs going that is about 600 calls an
   hour for each repository, so six repositories stay inside GitHub's 5,000.
+
+  A repository's gate and deploy workflows are its own (see
+  `Wallboard.Settings.github_repos/1`). One with no gate workflow, or whose
+  gate file is not among its workflow files, gets main's state from the
+  latest finished runs on its main branch.
 
   The facts are `%{repos: [%{repo: "owner/name", facts: ..., error: ...}]}`
   in settings order. A repository whose read fails keeps its last facts with
@@ -121,6 +127,7 @@ defmodule Wallboard.Sources.GitHub do
          runs: runs,
          deploys: deploys.runs,
          deploys_checked_at: deploys.checked_at,
+         workflows: deploys.workflows,
          queue: repo.queue,
          prs: repo.prs,
          jobs: jobs
@@ -134,10 +141,25 @@ defmodule Wallboard.Sources.GitHub do
         DateTime.diff(now, prev.deploys_checked_at, :second) < gh.deploy_poll_seconds
 
     if fresh? do
-      %{runs: prev.deploys, checked_at: prev.deploys_checked_at}
+      %{runs: prev.deploys, checked_at: prev.deploys_checked_at, workflows: prev[:workflows]}
     else
+      # The repository's workflow files, or nil when they could not be
+      # read: then every file named in settings is taken to be there, and
+      # the last list read is kept.
+      workflows =
+        with {:ok, json} <- api(["repos/#{gh.repo}/actions/workflows?per_page=100"]),
+             {:ok, files} <- parse_workflows(json) do
+          files
+        else
+          _ -> prev && prev[:workflows]
+        end
+
+      # A deploy file the repository does not have is not asked for: the
+      # call would fail every time and spend GitHub's hourly limit on
+      # nothing.
       runs =
         gh.deploy_workflows
+        |> Enum.filter(&(is_nil(workflows) or &1 in workflows))
         |> Enum.flat_map(fn file ->
           case api(["repos/#{gh.repo}/actions/workflows/#{file}/runs?per_page=10"]) do
             {:ok, json} ->
@@ -152,12 +174,10 @@ defmodule Wallboard.Sources.GitHub do
         end)
 
       # If every deploy call failed, keep what we had rather than blanking the
-      # tiles, and wait the usual time before asking again: a repository
-      # without these workflow files fails every time, and asking on every
-      # poll would spend GitHub's hourly limit on nothing.
+      # tiles, and wait the usual time before asking again.
       if runs == [] and prev,
-        do: %{runs: prev.deploys, checked_at: now},
-        else: %{runs: runs, checked_at: now}
+        do: %{runs: prev.deploys, checked_at: now, workflows: workflows},
+        else: %{runs: runs, checked_at: now, workflows: workflows}
     end
   end
 
@@ -219,6 +239,20 @@ defmodule Wallboard.Sources.GitHub do
       pr: pr_number(r),
       url: r["html_url"]
     }
+  end
+
+  @doc """
+  Parses the list of a repository's workflows from the REST API into their
+  file names, like "ci.yml".
+  """
+  def parse_workflows(text) do
+    case Jason.decode(text) do
+      {:ok, %{"workflows" => list}} when is_list(list) ->
+        {:ok, for(%{"path" => path} when is_binary(path) <- list, do: Path.basename(path))}
+
+      _ ->
+        {:error, "GitHub returned workflows in an unexpected shape"}
+    end
   end
 
   @doc "Drops the parenthetical tail GitHub workflow names often carry."
@@ -363,13 +397,19 @@ defmodule Wallboard.Sources.GitHub do
       )
       |> Enum.filter(&(DateTime.compare(&1.updated_at, day_ago) == :gt))
 
+    gate = gate_workflow(gh, facts[:workflows])
+    {rows, more} = lanes(all, gh.lanes, now)
+
     %{
-      main: main_state(completed, gh),
+      main: main_state(completed, gate, gh.branch),
+      # Whether main's state is the gate workflow's or, with none, what the
+      # latest runs on main say.
+      main_from: if(gate, do: :gate, else: :runs),
       queue: facts.queue,
       last_merge:
         Enum.find(
           completed,
-          &(&1.workflow == gh.gate_workflow and &1.event == "merge_group" and
+          &((is_nil(gate) or &1.workflow == gate) and &1.event == "merge_group" and
               &1.conclusion == "success")
         ),
       running: running,
@@ -378,7 +418,9 @@ defmodule Wallboard.Sources.GitHub do
       prod: deploy_state(all, gh.prod_deploy),
       recent: completed |> Enum.take(6) |> Enum.map(&recent_run(&1, gh)),
       prs: facts.prs,
-      lanes: lanes(all, gh.lanes, now)
+      lanes: rows,
+      # How many more workflows ran in the window than the rows shown.
+      lanes_more: more
     }
   end
 
@@ -482,15 +524,59 @@ defmodule Wallboard.Sources.GitHub do
     |> Enum.sort_by(fn {_, [latest | _]} -> -unix(latest.updated_at || latest.started_at) end)
   end
 
-  defp main_state(completed, gh) do
+  # The repository's gate workflow file, or nil when it names none or has
+  # no such file. `workflows` is its workflow files, nil when not known.
+  defp gate_workflow(%{gate_workflow: file}, workflows) when is_binary(file) and file != "" do
+    if is_nil(workflows) or file in workflows, do: file
+  end
+
+  defp gate_workflow(_gh, _workflows), do: nil
+
+  # The run that says how main is: the latest finished gate run.
+  defp main_state(completed, gate, branch) when is_binary(gate) do
     Enum.find(completed, fn r ->
-      r.workflow == gh.gate_workflow and r.conclusion in ["success", "failure"] and
-        (r.event == "merge_group" or (r.event == "push" and r.branch == gh.branch))
+      r.workflow == gate and r.conclusion in ["success", "failure"] and
+        (r.event == "merge_group" or (r.event == "push" and r.branch == branch))
     end)
   end
 
+  # With no gate: the newest commit on main that has a finished run (the
+  # one whose run started last). Main is green when the newest run of every
+  # workflow that finished on that commit passed, and red when one failed;
+  # the run returned is the failed one, or the one that finished last. Pull
+  # request runs are not runs on main, whatever their branch is called.
+  defp main_state(completed, nil, branch) do
+    on_main =
+      completed
+      |> Enum.filter(fn r ->
+        ((r.branch == branch and r.sha) && r.conclusion in ["success", "failure"]) and
+          r.event not in ["pull_request", "pull_request_target", "dynamic"]
+      end)
+      |> Enum.sort_by(&unix(&1.started_at), :desc)
+
+    case on_main do
+      [] ->
+        nil
+
+      [newest | _] ->
+        latest =
+          on_main
+          |> Enum.filter(&(&1.sha == newest.sha))
+          |> Enum.uniq_by(&(&1.workflow || &1.name))
+
+        Enum.find(
+          latest,
+          Enum.max_by(latest, &unix(&1.updated_at)),
+          &(&1.conclusion == "failure")
+        )
+    end
+  end
+
   defp deploy_state(all, file) do
-    runs = all |> Enum.filter(&(&1.workflow == file)) |> Enum.sort_by(&unix(&1.started_at), :desc)
+    runs =
+      all
+      |> Enum.filter(&(is_binary(file) and &1.workflow == file))
+      |> Enum.sort_by(&unix(&1.started_at), :desc)
 
     %{
       latest: List.first(runs),
@@ -573,36 +659,57 @@ defmodule Wallboard.Sources.GitHub do
     end)
   end
 
+  # The most rows the timeline shows.
+  @max_lanes 6
+
+  # The timeline's rows: one for each workflow with a run in the last 6
+  # hours. The repository's own rows (`lanes` in its settings) come first, in
+  # their order and under their labels; then every other workflow that ran,
+  # the latest first, under its name. Returns the first `@max_lanes` rows
+  # and how many more there are, so no rows means nothing ran.
   defp lanes(all, lanes, now) do
     window_start = DateTime.add(now, -6 * 3600, :second)
+    ended = fn r -> if r.status == :completed, do: r.updated_at || r.started_at, else: now end
 
-    Enum.map(lanes, fn lane ->
-      bars =
-        all
-        |> Enum.filter(&(&1.workflow in lane.workflows and &1.started_at))
-        |> Enum.filter(fn r ->
-          ended = if r.status == :completed, do: r.updated_at, else: now
-          DateTime.compare(ended, window_start) == :gt
-        end)
-        |> Enum.map(fn r ->
-          ended = if r.status == :completed, do: r.updated_at, else: now
+    in_window =
+      Enum.filter(all, &(&1.started_at && DateTime.compare(ended.(&1), window_start) == :gt))
 
-          %{
-            id: r.id,
-            start: DateTime.diff(r.started_at, window_start, :second),
-            length: max(DateTime.diff(ended, r.started_at, :second), 0),
-            kind:
-              cond do
-                r.status != :completed -> :run
-                r.conclusion == "failure" -> :fail
-                r.conclusion == "success" -> :pass
-                true -> :other
-              end
-          }
-        end)
+    bar = fn r ->
+      %{
+        id: r.id,
+        start: DateTime.diff(r.started_at, window_start, :second),
+        length: max(DateTime.diff(ended.(r), r.started_at, :second), 0),
+        kind:
+          cond do
+            r.status != :completed -> :run
+            r.conclusion == "failure" -> :fail
+            r.conclusion == "success" -> :pass
+            true -> :other
+          end
+      }
+    end
 
-      %{label: lane.label, bars: bars}
-    end)
+    named = lanes |> Enum.flat_map(& &1.workflows) |> MapSet.new()
+
+    own =
+      for lane <- lanes,
+          runs = Enum.filter(in_window, &(&1.workflow in lane.workflows)),
+          runs != [],
+          do: %{label: lane.label, bars: Enum.map(runs, bar)}
+
+    others =
+      in_window
+      |> Enum.reject(&MapSet.member?(named, &1.workflow))
+      |> Enum.group_by(&(&1.workflow || &1.name))
+      |> Enum.map(fn {_, runs} ->
+        latest = Enum.max_by(runs, &unix(ended.(&1)))
+        {unix(ended.(latest)), %{label: latest.name, bars: Enum.map(runs, bar)}}
+      end)
+      |> Enum.sort_by(fn {at, row} -> {-at, row.label} end)
+      |> Enum.map(&elem(&1, 1))
+
+    {shown, rest} = Enum.split(own ++ others, @max_lanes)
+    {shown, length(rest)}
   end
 
   defp unix(nil), do: 0

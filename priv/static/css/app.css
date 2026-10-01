@@ -168,7 +168,7 @@ button { font: inherit; }
 .legend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-body); }
 .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .sw.fail { background: var(--accent); } .sw.okfill { background: var(--ok); }
-.lane { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; gap: 8px; height: 20px; border-top: 1px solid var(--track); }
+.lane { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 8px; height: 20px; border-top: 1px solid var(--track); }
 .lane:first-child { border-top: 0; }
 .lane.axis { border-top: 0; height: 14px; }
 .lane-name { font-size: 11px; color: var(--text-body); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -179,6 +179,7 @@ button { font: inherit; }
 .lbar.run { background: var(--surface); border: 2px solid var(--warn); }
 .tick { position: absolute; top: 0; transform: translateX(-50%); font-size: 10px; color: var(--text-muted); white-space: nowrap; }
 .tick.now { left: auto; right: 0; transform: none; }
+.lane-more { font-size: 11px; color: var(--text-muted); text-align: right; padding-top: 4px; }
 
 /* Git tab: one column per busy repository, up to four, and the quiet rest
    below as one line each. Tapping a column's head or a line opens it. */

@@ -803,6 +803,9 @@ defmodule WallboardWeb.BoardLive do
 
   # With one repository the tiles read as they always did. With more, each
   # adds up every repository and names the ones that matter.
+  defp main_tile([%{s: %{main: nil}} = one], _t),
+    do: %{value: "Unknown", sub: no_main_run([one])}
+
   defp main_tile([one], _t), do: main_tile(one.s && one.s.main)
 
   defp main_tile(_repos, t) do
@@ -826,8 +829,16 @@ defmodule WallboardWeb.BoardLive do
         %{value: value, tone: :ok, sub: "last ", at: latest}
 
       {[], unknown} ->
-        %{value: value, sub: "#{names(unknown)}: no gate run today"}
+        %{value: value, sub: "#{names(unknown)}: #{no_main_run(unknown)}"}
     end
+  end
+
+  # Why main's state is not known. A repository with a gate workflow waits
+  # for a gate run; one without waits for any run on main.
+  defp no_main_run(repos) do
+    if Enum.all?(repos, &match?(%{s: %{main_from: :runs}}, &1)),
+      do: "no run on main today",
+      else: "no gate run today"
   end
 
   defp main_tile(nil), do: %{value: "Unknown", sub: "no gate run today"}
@@ -2060,7 +2071,7 @@ defmodule WallboardWeb.BoardLive do
         <h3 class="kicker">Recent</h3>
         <.recent_list runs={@r.s.recent} />
         <h3 class="kicker">Runs · last 6 hours</h3>
-        <.timeline lanes={@r.s.lanes} now={@now} />
+        <.timeline lanes={@r.s.lanes} more={@r.s.lanes_more} now={@now} />
       <% else %>
         <div class="empty-box small">
           {if @r.error, do: "Could not read it yet", else: "Loading from GitHub…"}
@@ -2196,7 +2207,8 @@ defmodule WallboardWeb.BoardLive do
         <div class="detail-meta">
           <span>Main {String.downcase(main_word(@r))}</span>
           <span :if={@r.s && @r.s.main}>
-            gate <.ago at={@r.s.main.updated_at} fmt="when" />
+            {if @r.s.main_from == :gate, do: "gate", else: "latest run"}
+            <.ago at={@r.s.main.updated_at} fmt="when" />
           </span>
           <span :if={@r.s && @r.s.last_merge}>
             last merge #{@r.s.last_merge.pr} <.ago at={@r.s.last_merge.updated_at} fmt="when" />
@@ -2310,19 +2322,28 @@ defmodule WallboardWeb.BoardLive do
   # 6-hour timeline
 
   attr :lanes, :list, required: true
+  attr :more, :integer, default: 0
   attr :now, :any, required: true
 
   @window 6 * 3600
 
-  # Bars: teal passed, red failed, an outline still running. Every other
-  # hour is marked, which fits a column a quarter of the board wide.
-  defp timeline(assigns) do
+  # One row for each workflow that ran. Bars: teal passed, red failed, an
+  # outline still running. Every other hour is marked, which fits a column
+  # a quarter of the board wide. With no rows, nothing ran, and it says so.
+  @doc false
+  def timeline(%{lanes: []} = assigns) do
+    ~H"""
+    <div class="empty-box small">No runs in the last 6 hours</div>
+    """
+  end
+
+  def timeline(assigns) do
     assigns = assign(assigns, hours: assigns.now |> hour_marks() |> every_other())
 
     ~H"""
     <div class="timeline" aria-label="Runs, last 6 hours">
       <div :for={lane <- @lanes} class="lane">
-        <span class="lane-name">{lane.label}</span>
+        <span class="lane-name" title={lane.label}>{lane.label}</span>
         <div class="lane-track">
           <span
             :for={b <- lane.bars}
@@ -2337,6 +2358,9 @@ defmodule WallboardWeb.BoardLive do
           <.ago :for={{at, left} <- @hours} at={at} fmt="hour" class="tick" style={"left: #{left}%"} />
           <span class="tick now">now</span>
         </div>
+      </div>
+      <div :if={@more > 0} class="lane-more">
+        +{@more} more {if @more == 1, do: "workflow", else: "workflows"} ran
       </div>
     </div>
     """

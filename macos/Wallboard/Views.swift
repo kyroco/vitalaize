@@ -283,7 +283,7 @@ struct GitHubPage: View {
             } header: {
                 Text("Other repositories")
             } footer: {
-                Text("Each gets its own column on the board's Git tab, using the workflows above. Dev and Prod follow the first repository.")
+                Text("Each gets its own column on the board's Git tab and shows its own workflow runs. The workflows above are the first repository's, and Dev and Prod follow it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

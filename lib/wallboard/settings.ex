@@ -30,6 +30,20 @@ defmodule Wallboard.Settings do
 
   @roles %{"hub" => :hub, "collector" => :collector, "both" => :both}
 
+  # The workflows a repository can name for itself on a form, and the word
+  # for each there.
+  @repo_words [gate_workflow: "gate", dev_deploy: "dev", prod_deploy: "prod"]
+  @repo_keys Keyword.keys(@repo_words)
+
+  # What a repository that names no workflows has.
+  @no_workflows %{
+    gate_workflow: nil,
+    dev_deploy: nil,
+    prod_deploy: nil,
+    deploy_workflows: [],
+    lanes: []
+  }
+
   @defaults %{
     # What this machine does:
     #   "both"       runs the board and saves this machine's own sessions
@@ -168,10 +182,12 @@ defmodule Wallboard.Settings do
         }
       }
     },
-    # Everything here applies to each repository in `repos`; an entry there
-    # can be a map that changes any of it for that one repository. With
-    # `repos` empty the board follows `repo` alone, as files from before
-    # several repositories do.
+    # The repositories are listed in `repos`; an entry there can be a map
+    # that changes any of this for that one repository. The workflow files
+    # named here (the gate, the deploys and the timeline rows) are the first
+    # repository's: another repository names its own in its entry, or has
+    # none. With `repos` empty the board follows `repo` alone, as files from
+    # before several repositories do.
     github: %{
       repos: [],
       repo: "your-org/your-repo",
@@ -679,7 +695,9 @@ defmodule Wallboard.Settings do
       {"GitHub",
        [
          {[:github, :repos], "Repositories", :repos, false,
-          "owner/name, one per line. Dev and Prod follow the first one"},
+          "owner/name, one per line. Dev and Prod follow the first one, and the workflow " <>
+            "files below are its own. Another repository can name its own after its name: " <>
+            "owner/name gate=ci.yml dev=deploy-dev.yml prod=deploy.yml"},
          {[:github, :branch], "Main branch", :string, false, nil},
          {[:github, :gate_workflow], "Gate workflow file", :string, false, nil},
          {[:github, :dev_deploy], "Dev deploy workflow file", :string, false, nil},
@@ -768,7 +786,9 @@ defmodule Wallboard.Settings do
 
   defp to_text(_, nil), do: ""
 
-  defp to_text(type, list) when type in [:lines, :repos, :folders],
+  defp to_text(:repos, list), do: Enum.map_join(List.wrap(list), "\n", &repo_line/1)
+
+  defp to_text(type, list) when type in [:lines, :folders],
     do: Enum.join(List.wrap(list), "\n")
 
   defp to_text(_, v), do: to_string(v)
@@ -808,19 +828,22 @@ defmodule Wallboard.Settings do
   @doc "What `shown/1` puts in place of a secret that is set."
   def kept, do: @kept
 
-  @doc "A field's value as the settings page shows it: the repositories by name."
-  def current(settings, [:github, :repos], :repos), do: repo_names(settings)
+  @doc """
+  A field's value as the settings page shows it: each repository by name,
+  or as a map when it names workflows of its own.
+  """
+  def current(settings, [:github, :repos], :repos), do: repo_fields(settings)
   def current(%{role: _} = settings, [:role], _type), do: settings |> role() |> Atom.to_string()
   def current(settings, path, _type), do: get_in(settings, path)
 
   defp parse(:boolean, raw, _path), do: {:ok, raw in ["true", "on"]}
 
   defp parse(:repos, raw, _path) do
-    names = raw |> String.split(~r/[\s,]+/) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
-
-    case Enum.reject(names, &repo_name?/1) do
-      [] -> {:ok, names}
-      [bad | _] -> {:error, "#{bad} is not owner/name"}
+    with {:ok, entries} <- parse_repos(raw) do
+      {:ok,
+       entries
+       |> Enum.uniq_by(& &1.repo)
+       |> Enum.map(fn entry -> if map_size(entry) == 1, do: entry.repo, else: entry end)}
     end
   end
 
@@ -909,7 +932,8 @@ defmodule Wallboard.Settings do
   def track_repo(name) do
     # The example name a board with no repositories set starts with is not
     # one to keep in front of a real one.
-    names = repo_names(get()) -- [@defaults.github.repo]
+    settings = get()
+    names = repo_names(settings) -- [@defaults.github.repo]
 
     cond do
       not repo_name?(name) or Enum.any?(String.split(name, "/"), &(&1 in [".", ".."])) ->
@@ -919,12 +943,18 @@ defmodule Wallboard.Settings do
         :ok
 
       true ->
-        save_repos(names ++ [name])
+        # As the form shows them, so a repository keeps the workflows it names.
+        settings
+        |> repo_fields()
+        |> Enum.map(&repo_line/1)
+        |> Enum.reject(&(&1 == @defaults.github.repo))
+        |> Kernel.++([name])
+        |> save_repos()
     end
   end
 
-  defp save_repos(names) do
-    with {:ok, saved} <- change(%{"github.repos" => Enum.join(names, "\n")}) do
+  defp save_repos(lines) do
+    with {:ok, saved} <- change(%{"github.repos" => Enum.join(lines, "\n")}) do
       write_saved!(saved)
       # The board is running: what is only read at the start stays.
       reload!()
@@ -976,10 +1006,27 @@ defmodule Wallboard.Settings do
 
         case get_in(map, keys) do
           nil -> if has_path?(map, keys), do: put_path(acc, path, nil), else: acc
-          v -> put_path(acc, path, v)
+          v -> put_path(acc, path, saved_value(path, v))
         end
     end
   end
+
+  # A repository saved with workflows of its own is a map; only the keys a
+  # form can give it are read.
+  defp saved_value([:github, :repos], list) when is_list(list) do
+    Enum.map(list, fn
+      %{"repo" => name} = entry when is_binary(name) ->
+        for key <- @repo_keys, text = Atom.to_string(key), is_map_key(entry, text), into: %{} do
+          {key, if(is_binary(entry[text]), do: entry[text])}
+        end
+        |> Map.put(:repo, name)
+
+      other ->
+        other
+    end)
+  end
+
+  defp saved_value(_path, value), do: value
 
   # Before several repositories, the page saved one as github.repo. It stays
   # that, so a board updated in place keeps following it just as before: it
@@ -993,8 +1040,8 @@ defmodule Wallboard.Settings do
 
   @doc """
   Lays the settings page's saved values over the file's. The page saves
-  repositories by name; one the file describes with a map of its own
-  settings keeps them.
+  a repository by name, or with the workflows it names; one the file
+  describes with a map of its own settings keeps the rest of them.
   """
   def apply_overrides(file, overrides), do: file |> merge(overrides) |> keep_repo_details(file)
 
@@ -1006,8 +1053,14 @@ defmodule Wallboard.Settings do
 
     update_in(settings, [:github, :repos], fn repos ->
       Enum.map(List.wrap(repos), fn
-        name when is_binary(name) -> Map.get(details, name, name)
-        entry -> entry
+        name when is_binary(name) ->
+          Map.get(details, name, name)
+
+        %{repo: name} = entry when is_binary(name) ->
+          merge(Map.get(details, String.trim(name), %{}), entry)
+
+        entry ->
+          entry
       end)
     end)
   end
@@ -1017,24 +1070,124 @@ defmodule Wallboard.Settings do
   GitHub settings for it: the shared ones with that entry's own laid over
   them. The first is the one Dev and Prod read. With `repos` empty it is
   `repo` alone.
+
+  The workflow files in the shared settings (`gate_workflow`, `dev_deploy`,
+  `prod_deploy`, `deploy_workflows` and `lanes`) are the first repository's
+  alone. Another repository has only the ones its own entry names, and its
+  timeline rows and deploy list follow from those unless it lists them.
   """
   def github_repos(settings) do
     shared = Map.drop(settings.github, [:repos])
+    bare = Map.merge(shared, @no_workflows)
 
     settings.github
     |> repo_entries()
-    |> Enum.map(fn
-      name when is_binary(name) ->
-        Map.put(shared, :repo, String.trim(name))
-
-      %{repo: name} = entry when is_binary(name) ->
-        shared |> merge(entry) |> Map.put(:repo, String.trim(name))
-
-      _ ->
-        nil
-    end)
+    |> Enum.map(&repo_entry/1)
     |> Enum.filter(&(&1 && repo_name?(&1.repo)))
     |> Enum.uniq_by(& &1.repo)
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {entry, 0} -> merge(shared, entry)
+      {entry, _} -> bare |> merge(entry) |> own_rows(entry)
+    end)
+  end
+
+  # The deploy list and the timeline rows of a repository that names its
+  # workflows but lists neither.
+  defp own_rows(gh, entry) do
+    gh
+    |> Map.put(
+      :deploy_workflows,
+      entry[:deploy_workflows] || Enum.reject([gh.dev_deploy, gh.prod_deploy], &is_nil/1)
+    )
+    |> Map.put(
+      :lanes,
+      entry[:lanes] ||
+        for(
+          {label, file} when is_binary(file) <- [
+            {"Gate", gh.gate_workflow},
+            {"Dev deploy", gh.dev_deploy},
+            {"Prod", gh.prod_deploy}
+          ],
+          do: %{label: label, workflows: [file]}
+        )
+    )
+  end
+
+  # One entry of `repos` as a map with its trimmed name, or nil. A name can
+  # carry workflows of its own the way a form writes them:
+  # "owner/name gate=ci.yml".
+  defp repo_entry(%{repo: name} = entry) when is_binary(name),
+    do: %{entry | repo: String.trim(name)}
+
+  defp repo_entry(line) when is_binary(line) do
+    case parse_repos(line) do
+      {:ok, [entry]} -> entry
+      _ -> %{repo: String.trim(line)}
+    end
+  end
+
+  defp repo_entry(_), do: nil
+
+  @doc """
+  The repositories as a form shows and saves them, in settings order: a
+  name, or a map of the name and the workflows that entry names for itself
+  (`gate_workflow`, `dev_deploy`, `prod_deploy`).
+  """
+  def repo_fields(settings) do
+    settings.github
+    |> repo_entries()
+    |> Enum.map(&repo_entry/1)
+    |> Enum.filter(&(&1 && repo_name?(&1.repo)))
+    |> Enum.uniq_by(& &1.repo)
+    |> Enum.map(fn entry ->
+      case Map.take(entry, @repo_keys) do
+        own when own == %{} -> entry.repo
+        own -> Map.put(own, :repo, entry.repo)
+      end
+    end)
+  end
+
+  @doc ~S(One of `repo_fields/1` as a line of text: "owner/name gate=ci.yml".)
+  def repo_line(name) when is_binary(name), do: name
+
+  def repo_line(%{repo: name} = entry) do
+    own =
+      for {key, word} <- @repo_words, is_map_key(entry, key), do: "#{word}=#{entry[key]}"
+
+    Enum.join([name | own], " ")
+  end
+
+  # Repositories as typed: names apart by commas, spaces or lines, each
+  # with gate=, dev= and prod= after it for workflows of its own. Returns
+  # {:ok, [%{repo: name, ...}]} or {:error, message}.
+  defp parse_repos(text) do
+    words = Map.new(@repo_words, fn {key, word} -> {word, key} end)
+
+    text
+    |> String.split(~r/[\s,]+/, trim: true)
+    |> Enum.reduce_while([], fn token, acc ->
+      case {String.split(token, "=", parts: 2), acc} do
+        {[name], _} ->
+          if repo_name?(name),
+            do: {:cont, [%{repo: name} | acc]},
+            else: {:halt, {:error, "#{name} is not owner/name"}}
+
+        {[word, file], [entry | rest]} when is_map_key(words, word) ->
+          if file =~ ~r/\A[\w.-]*\z/,
+            do: {:cont, [Map.put(entry, words[word], blank_to_nil(file)) | rest]},
+            else: {:halt, {:error, "#{file} is not a workflow file name, like ci.yml"}}
+
+        _ ->
+          {:halt,
+           {:error,
+            "#{token}: after a repository, write gate=, dev= or prod= and a workflow file"}}
+      end
+    end)
+    |> case do
+      {:error, _} = error -> error
+      entries -> {:ok, Enum.reverse(entries)}
+    end
   end
 
   @doc """
@@ -1044,15 +1197,11 @@ defmodule Wallboard.Settings do
   def skipped_repos(settings) do
     settings.github
     |> repo_entries()
-    |> Enum.map(fn
-      %{repo: name} when is_binary(name) -> String.trim(name)
-      name when is_binary(name) -> String.trim(name)
-      other -> other
-    end)
-    |> Enum.reject(&repo_name?/1)
-    |> Enum.map(fn
-      name when is_binary(name) -> name
-      other -> inspect(other)
+    |> Enum.flat_map(fn raw ->
+      case repo_entry(raw) do
+        %{repo: name} -> if repo_name?(name), do: [], else: [name]
+        nil -> [inspect(raw)]
+      end
     end)
   end
 

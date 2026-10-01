@@ -178,6 +178,8 @@ defmodule Wallboard.Archive.Trends do
       case settings
            |> Wallboard.Settings.github_repos()
            |> Enum.map(& &1.gate_workflow)
+           # A repository with no gate workflow has no gate runs to name.
+           |> Enum.reject(&is_nil/1)
            |> Enum.uniq() do
         [one] -> one
         _ -> "gate"
