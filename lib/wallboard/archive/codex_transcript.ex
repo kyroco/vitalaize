@@ -197,9 +197,10 @@ defmodule Wallboard.Archive.CodexTranscript do
         behind = DateTime.diff(stamp, own)
 
         cond do
-          # A chat can be copied seconds after its last turn ended: a line
-          # stamped with copied ones is one of them however near its clock.
-          behind > @copied_seconds or (behind > @lived_seconds and near?(stamp, t.copied_at)) ->
+          # A chat can be copied in the very second its last turn ended: a
+          # line stamped with copied ones is one of them however near its
+          # clock.
+          behind > @copied_seconds or near?(stamp, t.copied_at) ->
             %{t | copied_at: stamp, clock: own}
 
           behind <= @lived_seconds ->
@@ -214,6 +215,10 @@ defmodule Wallboard.Archive.CodexTranscript do
     end
   end
 
+  # A reply's tokens are only ever written by a session at work, so the
+  # session's times have begun by then whatever came before, and the reply
+  # keeps its time.
+  defp turn_line("token_usage_record", _p, _stamp, t), do: %{t | turned: true}
   defp turn_line(_type, _p, _stamp, t), do: t
 
   # A turn's own time: when it started on the line that starts it, when it

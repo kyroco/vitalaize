@@ -211,12 +211,31 @@ defmodule Wallboard.CodexCopyTest do
 
   # One of the 44 real ones ended five seconds before it was copied.
   test "a chat copied seconds after its last turn ended is still a copy" do
-    ended = DateTime.to_unix(@copied) - 5
-    lines = Fixtures.codex_copy(@one, @copied, [{@began, @began + 42}, {ended - 100, ended}])
-    t = CodexTranscript.read_lines(Enum.join(lines, "\n"))
+    for gap <- [0, 1, 5, 40] do
+      ended = DateTime.to_unix(@copied) - gap
+      lines = Fixtures.codex_copy(@one, @copied, [{@began, @began + 42}, {ended - 100, ended}])
+      t = CodexTranscript.read_lines(Enum.join(lines, "\n"))
 
-    assert CodexTranscript.copy?(t)
-    assert {DateTime.to_unix(t.first_at), DateTime.to_unix(t.last_at)} == {@began, ended}
+      assert CodexTranscript.copy?(t)
+      assert {DateTime.to_unix(t.first_at), DateTime.to_unix(t.last_at)} == {@began, ended}
+    end
+  end
+
+  test "a reply written before any turn line keeps its time" do
+    at = ~U[2026-10-01 18:40:00Z]
+
+    lines =
+      [
+        %{type: "session_meta", payload: %{id: @real}},
+        %{
+          type: "token_usage_record",
+          payload: %{response_id: "r1", usage: %{input_tokens: 10, output_tokens: 2}}
+        }
+      ]
+      |> Enum.map(&Jason.encode!(Map.put(&1, :timestamp, DateTime.to_iso8601(at))))
+
+    t = CodexTranscript.read_lines(Enum.join(lines, "\n"))
+    assert {t.first_at, t.last_at, t.requests["r1"].at} == {at, at, at}
   end
 
   test "a short id is shown whole" do
