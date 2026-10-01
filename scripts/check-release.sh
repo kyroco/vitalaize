@@ -1,7 +1,8 @@
 #!/bin/sh
 # Unpacks a Linux download, starts the board from it and checks that the page
 # answers, then stops it. Then it starts the same download as a collector
-# and checks that it comes up and opens no port. CI runs this on every
+# and checks that it comes up and opens no port, and last answers
+# `vitalaize setup` from a script and checks it saved. CI runs this on every
 # download it builds, so a download that cannot start never reaches a
 # release.
 #
@@ -128,3 +129,19 @@ if grep -q 'Running WallboardWeb.Endpoint' "$WORK/board.log"; then
   failed "A collector must not start the board's web server."
 fi
 echo "The collector started from $(basename "$1") and opened no port."
+
+# vitalaize setup, answered by a script: keep the role, open the first
+# section (Board), give the board a new name, keep the rest, save. Its
+# answer must land in settings.json beside the settings file.
+kill "$BOARD" 2>/dev/null || true
+wait "$BOARD" 2>/dev/null || true
+BOARD=
+[ -x "$ROOT/bin/vitalaize" ] || failed "No vitalaize/bin/vitalaize in $1"
+printf '\n1\nRelease check\n\n\n\n\n\n\n' |
+  env -i PATH="$PATH" HOME="$WORK/home" LANG=C.UTF-8 \
+    WALLBOARD_SETTINGS="$WORK/settings.exs" \
+    "$ROOT/bin/vitalaize" setup >"$WORK/board.log" 2>&1 ||
+  failed "vitalaize setup stopped with an error."
+grep -q '"name": "Release check"' "$WORK/settings.json" 2>/dev/null ||
+  failed "vitalaize setup did not save the board's name in settings.json."
+echo "vitalaize setup from $(basename "$1") saved a setting from scripted answers."

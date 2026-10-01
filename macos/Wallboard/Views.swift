@@ -10,6 +10,7 @@ struct RootView: View {
         case .wizard: WizardView()
         case .working: WorkingView()
         case .status: StatusView()
+        case .settings: SettingsView()
         }
     }
 }
@@ -66,7 +67,7 @@ struct WizardView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canContinue)
                 } else {
-                    Button(state.choices.role.runsBoard ? "Install and start the board" : "Connect this Mac") { state.install() }
+                    Button(state.choices.role.runsBoard ? "Install and start the board" : "Start the collector and pair") { state.install() }
                         .keyboardShortcut(.defaultAction)
                         .disabled(!state.isAppleSilicon)
                 }
@@ -80,7 +81,7 @@ struct WizardView: View {
         switch (c.role.runsBoard, state.step) {
         case (_, 1): return !c.claudeFolders.isEmpty && (c.role == .collector || !c.dataFolder.isEmpty)
         case (true, 2): return c.repo.contains("/")
-        case (false, 2): return c.hubURL.hasPrefix("http") && !c.hubKey.isEmpty
+        case (false, 2): return !c.hubURL.trimmingCharacters(in: .whitespaces).isEmpty
         default: return true
         }
     }
@@ -335,7 +336,7 @@ struct HubPage: View {
     init() { _finder = ObservedObject(wrappedValue: HubFinderHolder.shared) }
 
     var body: some View {
-        Text("Pick the hub this Mac sends its Claude sessions to, then paste its key. The key is on the hub's settings page, under Connect another Mac (Show key).")
+        Text("Pick the hub this Mac streams its Claude and Codex sessions to. This Mac then shows a short code; approve the same code in the mailbox on the hub's board. Nothing is typed or pasted.")
             .foregroundStyle(.secondary)
         GroupBox("Hubs on your network") {
             VStack(alignment: .leading, spacing: 8) {
@@ -357,9 +358,10 @@ struct HubPage: View {
         }
         Form {
             TextField("Hub address", text: $state.choices.hubURL, prompt: Text("http://192.168.1.20:4747"))
-            SecureField("Hub key", text: $state.choices.hubKey)
         }
         .formStyle(.grouped)
+        Text("The hub must take collectors: on the hub, turn on Collectors on other machines in its settings.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 }
 
@@ -389,14 +391,14 @@ struct ReviewPage: View {
                     if c.importedSettings != nil { row("Carried over", "your earlier settings file") }
                 } else {
                     row("Hub", c.hubURL)
-                    row("Codex", Detect.usesCodex() ? "sent too, from ~/.codex" : "not on this Mac")
+                    row("Codex", Detect.usesCodex() ? "watched too, in ~/.codex" : "not on this Mac")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(6)
         }
         Text(c.role.runsBoard
-             ? "The board starts now and again whenever you log in. You can change any of this later from the board's settings page, or here with Reconfigure."
-             : "Each Claude and Codex session on this Mac is sent to the hub when a turn ends and when it closes, in the background. The hooks are added to each Claude folder's settings.json and to Codex's hooks.json, each backed up first. Codex runs a new hook only once you trust it with /hooks in Codex.")
+             ? "The board starts now and again whenever you log in. You can change any of this later in this app, under Settings."
+             : "A small collector starts now and again whenever you log in. It watches this Mac's Claude and Codex sessions and streams them to the hub as they happen. It adds nothing to Claude's or Codex's own settings. After it starts, this Mac shows a code to approve on the hub.")
             .foregroundStyle(.secondary)
     }
 
@@ -430,6 +432,7 @@ struct WorkingView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let code = state.pairCode { PairCodeView(code: code) }
             if state.failure != nil {
                 HStack {
                     Button("Back to the setup") { state.failure = nil; state.screen = .wizard }
@@ -447,6 +450,7 @@ struct StatusView: View {
     @EnvironmentObject var state: AppState
     @State private var confirmRemove = false
     @State private var deleteData = false
+    @State private var showPair = false
 
     var body: some View {
         let c = state.choices
@@ -471,19 +475,43 @@ struct StatusView: View {
                 }
                 HStack {
                     Button("Open the board") { state.open("/") }.keyboardShortcut(.defaultAction)
-                    Button("Settings") { state.open("/settings") }
+                    Button("Settings") { state.openSettings() }
                     Button("Restart the board") {
                         Setup.restartBoard()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { state.refreshStatus() }
                     }
                     Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
                 }
-                Text("Other Macs connect from the board's settings page (Connect another Mac), or by running this app there and picking Collector only.")
+                Text("Other machines connect by running this app there (or vitalaize setup on Linux) and picking Collector only. Each shows a code; approve it in the mailbox on the board.")
                     .foregroundStyle(.secondary)
             } else {
                 GroupBox {
-                    Text("This Mac sends its Claude sessions to \(c.hubURL).").padding(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Circle().fill(state.running ? Color.green : Color.red).frame(width: 10, height: 10)
+                            Text(state.running ? "The collector is running" : "The collector is not running")
+                            Spacer()
+                            Button("Check again") { state.refreshStatus() }
+                        }
+                        if let hub = state.doc?.paired {
+                            Text("Paired with the hub at \(hub.host) as \(hub.machine).")
+                        } else if state.doc != nil {
+                            Text("Not paired with a hub yet, so nothing is sent.").foregroundStyle(.red)
+                        }
+                        if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
+                    }
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button(state.doc?.paired == nil ? "Pair with a hub…" : "Pair again…") { showPair = true }
+                        .keyboardShortcut(.defaultAction)
+                    Button("Settings") { state.openSettings() }
+                    Button("Restart the collector") {
+                        Setup.restartBoard()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { state.refreshStatus() }
+                    }
+                    Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
                 }
             }
 
@@ -496,10 +524,11 @@ struct StatusView: View {
             }
         }
         .padding(24)
+        .sheet(isPresented: $showPair) { PairSheet(shown: $showPair) }
         .sheet(isPresented: $confirmRemove) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Remove VitalAIze from this Mac?").font(.headline)
-                Text("This stops the board and takes out the hooks it added. Your Claude settings otherwise stay as they are.")
+                Text("This stops VitalAIze on this Mac and takes away its login item. Upload hooks an earlier version added to Claude or Codex are taken out too. Your Claude settings otherwise stay as they are.")
                     .foregroundStyle(.secondary)
                 Toggle("Also delete the database and settings in \(Setup.dataFolder ?? "")", isOn: $deleteData)
                 HStack {
@@ -510,6 +539,184 @@ struct StatusView: View {
             }
             .padding(24)
             .frame(width: 460)
+        }
+    }
+}
+
+// MARK: - Pairing
+
+/// The code to approve on the hub, as large as mockup 8 shows it.
+struct PairCodeView: View {
+    let code: PairCode
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Connect to \(code.hub.isEmpty ? "the hub" : code.hub)").font(.headline)
+            Text("Open the mailbox on the board and approve this code. It matches only this machine and expires in \(code.expires_in / 60) minutes.")
+                .foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text(code.code).font(.system(size: 44, weight: .bold, design: .monospaced)).textSelection(.enabled)
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Waiting for the hub to approve…").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+}
+
+/// Picks a hub and pairs with it, from the collector's first screen.
+struct PairSheet: View {
+    @EnvironmentObject var state: AppState
+    @ObservedObject var finder: HubFinder
+    @Binding var shown: Bool
+    @State private var address = ""
+
+    init(shown: Binding<Bool>) {
+        _shown = shown
+        _finder = ObservedObject(wrappedValue: HubFinderHolder.shared)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Pair with a hub").font(.headline)
+            if let code = state.pairCode {
+                PairCodeView(code: code)
+            } else if state.pairing {
+                HStack { ProgressView().controlSize(.small); Text("Asking the hub…").foregroundStyle(.secondary) }
+            } else {
+                Text("Pick the hub, or type its address. This Mac then shows a code to approve in the mailbox on the hub's board.")
+                    .foregroundStyle(.secondary)
+                ForEach(finder.hubs) { hub in
+                    Button { address = hub.url } label: {
+                        HStack {
+                            Image(systemName: address == hub.url ? "largecircle.fill.circle" : "circle")
+                            Text(hub.name)
+                            Text(hub.url).foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                TextField("Hub address", text: $address, prompt: Text("http://192.168.1.20:4747"))
+                if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
+            }
+            HStack {
+                Spacer()
+                Button(state.pairing ? "Hide" : "Close") { shown = false }
+                if !state.pairing {
+                    Button("Pair") { state.pair(hub: address) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+        .onAppear { finder.start() }
+    }
+}
+
+// MARK: - Settings
+
+/// This Mac's settings, shown and saved here with no browser. The list of
+/// settings comes from the board's own code, the same one `vitalaize setup`
+/// asks about, and both save to the same file.
+struct SettingsView: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Settings").font(.title2.bold())
+                Spacer()
+                if state.busy { ProgressView().controlSize(.small) }
+            }
+            .padding([.horizontal, .top], 24)
+            .padding(.bottom, 12)
+            Divider()
+
+            if let doc = state.doc {
+                Form {
+                    // What this Mac does is changed with Reconfigure, which
+                    // also writes the files that go with a role.
+                    ForEach(doc.sections.filter { $0.title != "This machine" }) { section in
+                        Section(section.title) {
+                            ForEach(section.fields) { field in SettingRow(field: field) }
+                        }
+                    }
+                    Section {
+                        Text("To change what this Mac does (board, collector or both), go back and use Reconfigure.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .formStyle(.grouped)
+            } else {
+                Spacer()
+                Text(state.busy ? "Reading the settings…" : "The settings could not be read.")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                Spacer()
+            }
+
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(state.saveLines, id: \.self) { Text($0).fixedSize(horizontal: false, vertical: true) }
+                if !state.saveErrors.isEmpty {
+                    Text("Nothing was saved. Fix what is marked above and save again.").foregroundStyle(.red)
+                }
+                HStack {
+                    Button("Back") { state.screen = .status; state.refreshStatus() }
+                    Spacer()
+                    Text("A change that needs it restarts \(state.choices.role.runsBoard ? "the board" : "the collector"); the rest apply by themselves.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Save") { state.saveSettings() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(state.busy || state.doc == nil)
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
+/// One setting, drawn by its kind.
+struct SettingRow: View {
+    @EnvironmentObject var state: AppState
+    let field: SettingsField
+
+    private var text: Binding<String> {
+        Binding(get: { state.value(field) }, set: { state.edits[field.key] = $0 })
+    }
+
+    private var title: String { field.label + (field.restart ? " (restarts)" : "") }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch field.type {
+            case "boolean":
+                Toggle(title, isOn: Binding(get: { state.value(field) == "true" },
+                                            set: { state.edits[field.key] = $0 ? "true" : "false" }))
+            case "choice":
+                Picker(title, selection: text) {
+                    ForEach(field.options, id: \.self) { Text($0).tag($0) }
+                }
+            case "secret":
+                SecureField(title, text: text)
+            case "lines", "repos", "folders":
+                Text(title)
+                TextEditor(text: text)
+                    .font(.body.monospaced())
+                    .frame(minHeight: field.type == "repos" ? 90 : 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.25)))
+            default:
+                TextField(title, text: text)
+            }
+            if let help = field.help {
+                Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = state.saveErrors[field.key] {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
         }
     }
 }

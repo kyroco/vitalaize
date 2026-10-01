@@ -76,8 +76,10 @@ defmodule Wallboard.CollectorRoleTest do
        c do
     children = Wallboard.Application.children(settings("collector", c.dir))
 
+    # Settings.Watch takes up what the app or `vitalaize setup` saves.
     assert ids(children) == [
              Wallboard.TaskSupervisor,
+             Settings.Watch,
              Outbox,
              Watcher,
              Wallboard.Collector.Sender

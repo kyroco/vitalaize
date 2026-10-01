@@ -50,6 +50,10 @@ defmodule Wallboard.RepoPromptsTest do
   # ---------------------------------------------------------------------------
   # Helpers
 
+  # The saved settings (settings.json), beside this test's settings file.
+  defp saved(c), do: Path.join(c.dir, "settings.json")
+  defp saved_json(c), do: c |> saved() |> File.read!() |> Jason.decode!()
+
   defp start_hub(c, opts \\ []) do
     start_supervised!({Store, path: Path.join(c.dir, "wallboard.db")})
     start_prompts(c, opts)
@@ -373,9 +377,14 @@ defmodule Wallboard.RepoPromptsTest do
       assert Settings.repo_names(Settings.get()) == ["acme/shop", "Acme/billing-api"]
     end
 
-    test "keeps what the settings page saved before", c do
+    test "keeps what an older settings page saved, and what the app saved", c do
       start_hub(c)
-      Settings.save_overrides(%{github: %{branch: "trunk"}, alerts: %{phone: "+15550100"}})
+      # An older board's page kept its values in the database; the app and
+      # `vitalaize setup` save in settings.json, and so does Track.
+      Store.put_meta("settings_overrides", Jason.encode!(%{github: %{branch: "trunk"}}))
+      File.write!(saved(c), Jason.encode!(%{alerts: %{phone: "+15550100"}}))
+      Settings.load!()
+
       assert :ok = Settings.track_repo("acme/billing-api")
       assert :ok = Settings.track_repo("ACME/Billing-API")
 
@@ -383,7 +392,58 @@ defmodule Wallboard.RepoPromptsTest do
       assert Settings.repo_names(settings) == ["acme/shop", "acme/billing-api"]
       assert settings.github.branch == "trunk"
       assert settings.alerts.phone == "+15550100"
+
+      assert saved_json(c) == %{
+               "alerts" => %{"phone" => "+15550100"},
+               "github" => %{"repos" => ["acme/shop", "acme/billing-api"]}
+             }
+
       assert {:error, :not_a_repo} = Settings.track_repo("not a repo")
+    end
+
+    test "adds to a list the app saved, and is still there after a restart", c do
+      start_hub(c)
+      File.write!(saved(c), Jason.encode!(%{github: %{repos: ["acme/web", "acme/shop"]}}))
+      Settings.load!()
+
+      assert :ok = Settings.track_repo("acme/billing-api")
+      names = ["acme/web", "acme/shop", "acme/billing-api"]
+      assert Settings.repo_names(Settings.get()) == names
+      assert saved_json(c) == %{"github" => %{"repos" => names}}
+
+      # A start reads it back from the files.
+      assert Settings.repo_names(Settings.load!()) == names
+    end
+
+    test "does not load an open board again: the mailbox stays open under the owner's hand", c do
+      start_hub(c)
+      shown = Settings.get()
+      assert :ok = Settings.track_repo("acme/billing-api")
+      tracked = Settings.get()
+      assert tracked != shown
+      refute WallboardWeb.BoardLive.reload_for?(shown, tracked)
+
+      # Any other setting saved since still loads an open board again.
+      saved_now = Map.put(saved_json(c), "rotate_seconds", 7)
+      File.write!(saved(c), Jason.encode!(saved_now))
+      later = Settings.load!()
+      assert WallboardWeb.BoardLive.reload_for?(shown, later)
+      assert WallboardWeb.BoardLive.reload_for?(tracked, later)
+      refute WallboardWeb.BoardLive.reload_for?(later, later)
+    end
+
+    test "takes up nothing that waits for a restart", c do
+      start_hub(c)
+      assert Settings.get().token == nil
+
+      # A board password saved from another program, with no restart yet.
+      File.write!(saved(c), Jason.encode!(%{token: "hunter2"}))
+      assert :ok = Settings.track_repo("acme/billing-api")
+
+      assert Settings.repo_names(Settings.get()) == ["acme/shop", "acme/billing-api"]
+      assert Settings.get().token == nil
+      # Both are in the file for the next start.
+      assert %{"token" => "hunter2", "github" => %{"repos" => [_, _]}} = saved_json(c)
     end
 
     test "a repo added in settings by hand drops its item, and open boards hear of it", c do
@@ -399,30 +459,65 @@ defmodule Wallboard.RepoPromptsTest do
       assert_receive {:mailbox, :changed}
     end
 
-    test "a settings page drawn before the Track keeps the repo when it saves", c do
+    test "a repo added in the app or with vitalaize setup drops its item, and open boards hear of it",
+         c do
+      start_hub(c)
+      streamed("air", "s1", "acme/billing-api")
+      settled()
+      assert [_] = Mailbox.items()
+      assert_receive {:mailbox, :changed}
+      refute_received {:mailbox, :changed}
+
+      start_supervised!(
+        {Wallboard.Settings.Watch, name: :watch_repos, every_ms: 20, listener: self()}
+      )
+
+      # Another program saves the list, and the running board takes it up.
+      names = ["acme/shop", "acme/billing-api"]
+      File.write!(saved(c), Jason.encode!(%{github: %{repos: names}}))
+      assert_receive {:settings, :reloaded}, 2_000
+      assert Settings.repo_names(Settings.get()) == names
+      assert Mailbox.items() == []
+      # Told at once, not at the next round five minutes on.
+      assert_receive {:mailbox, :changed}, 2_000
+    end
+
+    test "a settings page drawn before the Track cannot undo it: the page saves nothing", c do
       start_hub(c)
       shown = Settings.get()
       assert :ok = Settings.track_repo("acme/billing-api")
-      now = Settings.get()
 
-      # The page sends its box as it was drawn.
-      sent = %{"github.repos" => "acme/shop", "github.branch" => "main"}
-      kept = SettingsLive.keep_tracked(sent, shown, now)
-      assert kept["github.repos"] == "acme/shop\nacme/billing-api"
-      assert kept["github.branch"] == "main"
+      page = %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          allowed?: true,
+          who: %{local?: true},
+          settings: shown,
+          values: SettingsLive.values(shown),
+          ignored_repos: [],
+          notice: nil
+        }
+      }
 
-      # A page drawn after it, with the repo taken out by hand, stays as sent.
-      assert SettingsLive.keep_tracked(sent, now, now) == sent
-      # And a repo is never put in twice.
-      twice = %{"github.repos" => "acme/shop\nACME/Billing-API"}
-      assert SettingsLive.keep_tracked(twice, shown, now) == twice
+      # The Save an older page sent, with its Repositories box as it was drawn.
+      sent = %{"s" => %{"github.repos" => "acme/shop", "github.branch" => "main"}}
+      assert {:noreply, _} = SettingsLive.handle_event("save", sent, page)
+
+      names = ["acme/shop", "acme/billing-api"]
+      assert Settings.repo_names(Settings.get()) == names
+      assert saved_json(c) == %{"github" => %{"repos" => names}}
+
+      # The open page hears the mailbox changed and shows the new list.
+      assert {:noreply, page} = SettingsLive.handle_info({:mailbox, :changed}, page)
+      assert Settings.repo_names(page.assigns.settings) == names
+      assert page.assigns.values["github.repos"] == Enum.join(names, "\n")
     end
 
     test "saved settings that cannot be read are left alone", c do
       start_hub(c)
-      Store.put_meta("settings_overrides", "not json")
+      File.write!(saved(c), "{ not json")
       assert {:error, :unreadable} = Settings.track_repo("acme/billing-api")
-      assert Store.get_meta("settings_overrides") == "not json"
+      assert File.read!(saved(c)) == "{ not json"
     end
 
     test "on a board with no repos set, the example name is not kept", c do
@@ -431,19 +526,11 @@ defmodule Wallboard.RepoPromptsTest do
         "%{archive: %{path: #{inspect(Path.join(c.dir, "wallboard.db"))}}}"
       )
 
-      shown = Settings.load!()
+      Settings.load!()
       start_hub(c)
       assert :ok = Settings.track_repo("acme/billing-api")
-      now = Settings.get()
-      assert Settings.repo_names(now) == ["acme/billing-api"]
-
-      # A settings page drawn before it shows the example; its Save does
-      # not bring the example back.
-      sent = %{"github.repos" => "your-org/your-repo"}
-
-      assert SettingsLive.keep_tracked(sent, shown, now) == %{
-               "github.repos" => "acme/billing-api"
-             }
+      assert Settings.repo_names(Settings.get()) == ["acme/billing-api"]
+      assert saved_json(c) == %{"github" => %{"repos" => ["acme/billing-api"]}}
     end
   end
 

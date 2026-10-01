@@ -69,6 +69,7 @@ defmodule Wallboard.Application do
   defp collector_children(settings) do
     [
       {Task.Supervisor, name: Wallboard.TaskSupervisor},
+      Wallboard.Settings.Watch,
       {Wallboard.Collector.Outbox,
        dir: Path.join(settings.collector.dir, "outbox"),
        max_bytes: settings.collector.outbox_mb * 1_000_000},
@@ -142,7 +143,9 @@ defmodule Wallboard.Application do
 
     [
       {Phoenix.PubSub, name: Wallboard.PubSub},
-      {Task.Supervisor, name: Wallboard.TaskSupervisor}
+      {Task.Supervisor, name: Wallboard.TaskSupervisor},
+      # Takes up what the VitalAIze app or `vitalaize setup` saves.
+      Wallboard.Settings.Watch
     ] ++
       archive_children(settings) ++
       if(new_relic?,

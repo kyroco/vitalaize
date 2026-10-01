@@ -136,6 +136,10 @@ defmodule Wallboard.HubTest do
     }
 
     values = %{
+      "role" => "both",
+      "port" => "4747",
+      "link.port" => "4748",
+      "new_relic.region" => "us",
       "rotate_seconds" => "30",
       "alerts.phone" => "",
       "alerts.via" => "SMS",

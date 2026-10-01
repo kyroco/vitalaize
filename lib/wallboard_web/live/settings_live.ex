@@ -1,8 +1,15 @@
 defmodule WallboardWeb.SettingsLive do
   @moduledoc """
-  The settings page, at /settings: change the board without editing
-  settings.exs, connect other Macs, and see or disconnect the machines
-  that stream to this hub.
+  The settings page, at /settings: what the board is set to, the
+  machines that stream to this hub (and a button to disconnect one), and
+  how to connect another Mac.
+
+  It shows settings and cannot change them. What it can still do changes
+  no setting: disconnect a machine, make a new key for the Macs that
+  upload, and let the mailbox ask again about a repository that was
+  ignored there. Settings are changed on the machine itself, in the
+  VitalAIze app or with `vitalaize setup` (see `Wallboard.Setup`), which
+  save them and restart only what a change needs.
 
   Who may open it: anyone on this Mac itself, or, when the board has a
   password, anyone who gave it (the router already checked). Without a
@@ -33,9 +40,7 @@ defmodule WallboardWeb.SettingsLive do
         allowed?: allowed?,
         who: who,
         connected?: connected?(socket),
-        errors: %{},
         notice: nil,
-        restart?: false,
         show_key?: false,
         confirm_new_key?: false,
         confirm_disconnect: nil
@@ -66,42 +71,13 @@ defmodule WallboardWeb.SettingsLive do
   # How long "Tap again" stands after the first Disconnect tap.
   @confirm_ms 8_000
 
-  @kept "••••••••"
-
   @doc """
-  The page's field values. A secret that is set (a webhook address, a key,
-  the board password) goes to the browser as dots, never as itself, so
-  anyone who can open the page cannot read it from the page source.
+  The page's field values (see `Wallboard.Settings.shown/1`): a secret
+  that is set goes to the browser as dots, never as itself.
   """
-  def values(settings) do
-    for {_, fs} <- Settings.editable(), {path, _, type, _, _} <- fs, into: %{} do
-      value = Settings.current(settings, path, type)
-      text = if type == :secret and value != nil, do: @kept, else: to_text(type, value)
-      {Enum.join(path, "."), text}
-    end
-  end
+  defdelegate values(settings), to: Settings, as: :shown
 
-  @doc """
-  Turns a secret that came back as dots into the value it stands for now.
-  `shown` is the settings the page was drawn from: only a secret that was set
-  there went out as dots, so dots typed into an empty field are kept as
-  typed, and dots from a page drawn before the secret changed elsewhere
-  follow the newest value.
-  """
-  def unmask(values, shown, current) do
-    for {_, fs} <- Settings.editable(), {path, _, :secret, _, _} <- fs, reduce: values do
-      acc ->
-        key = Enum.join(path, ".")
-
-        if Map.get(acc, key) == @kept and get_in(shown, path) != nil,
-          do: Map.put(acc, key, to_text(:secret, get_in(current, path))),
-          else: acc
-    end
-  end
-
-  defp to_text(_, nil), do: ""
-  defp to_text(type, list) when type in [:lines, :repos], do: Enum.join(List.wrap(list), "\n")
-  defp to_text(_, v), do: to_string(v)
+  defdelegate unmask(values, shown, current), to: Settings
 
   defp machines(%{archive: %{enabled: true}}) do
     Store.query(
@@ -136,7 +112,7 @@ defmodule WallboardWeb.SettingsLive do
     do: {:noreply, relist(socket)}
 
   def handle_info({:link, :hello, _machine, _info}, socket), do: {:noreply, relist(socket)}
-  def handle_info({:mailbox, :changed}, socket), do: {:noreply, relist(socket)}
+  def handle_info({:mailbox, :changed}, socket), do: {:noreply, socket |> reread() |> relist()}
 
   # Only the latest question's own timer ends it.
   def handle_info({:forget_disconnect, ref}, socket) do
@@ -148,61 +124,24 @@ defmodule WallboardWeb.SettingsLive do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket) do
-    socket
-    |> assign(
+    assign(socket,
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       ignored_repos: Wallboard.RepoPrompts.ignored()
     )
-    |> tracked_since()
   end
 
   defp relist(socket), do: socket
 
-  # A repo tracked from the mailbox while this page is open goes into its
-  # Repositories box, so the page shows it. What the page was drawn from
-  # (`settings`) stays as it was: a browser does not always take the new
-  # box (it leaves a box someone is typing in alone), and Save puts the
-  # repo back from that difference either way.
-  defp tracked_since(%{assigns: %{values: values, settings: shown}} = socket),
-    do: assign(socket, values: keep_tracked(values, shown, Settings.get()))
-
-  defp tracked_since(socket), do: socket
-
-  # The repos the board follows now that it did not when `shown` was read.
-  defp added(shown, now) do
-    had = shown |> Settings.repo_names() |> Enum.map(&String.downcase/1)
-    Enum.reject(Settings.repo_names(now), &(String.downcase(&1) in had))
+  # A repo tracked from the mailbox while this page is open shows in its
+  # list at once. The page sends no settings back, so one drawn before a
+  # Track cannot undo it.
+  defp reread(%{assigns: %{allowed?: true}} = socket) do
+    settings = Settings.get()
+    assign(socket, settings: settings, values: values(settings))
   end
 
-  @doc """
-  The form's values with any repo tracked since the page was drawn (`shown`)
-  put back at the end of the Repositories box: the box is sent whole, and a
-  page drawn before a Track in the mailbox would otherwise undo it. The
-  example name a board with no repos starts with leaves the box then, as
-  it left the list.
-  """
-  def keep_tracked(values, shown, now) do
-    case added(shown, now) do
-      [] ->
-        values
-
-      names ->
-        example = String.downcase(Settings.defaults().github.repo)
-        following = now |> Settings.repo_names() |> Enum.map(&String.downcase/1)
-
-        lines =
-          values
-          |> Map.get("github.repos", "")
-          |> to_string()
-          |> String.split(~r/[\s,]+/, trim: true)
-          |> Enum.reject(&(String.downcase(&1) == example and example not in following))
-
-        has = Enum.map(lines, &String.downcase/1)
-        missing = Enum.reject(names, &(String.downcase(&1) in has))
-        Map.put(values, "github.repos", Enum.join(lines ++ missing, "\n"))
-    end
-  end
+  defp reread(socket), do: socket
 
   # Every change on this page is the owner's to make, and that is asked
   # again each time: the board password may have changed since the page
@@ -222,50 +161,12 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
-  defp event("save", %{"s" => values}, socket) do
-    before = Settings.get()
-    values = keep_tracked(values, socket.assigns.settings, before)
-
-    case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
-      {:ok, overrides} ->
-        after_ = Settings.save_overrides(overrides)
-        # A repo added here by hand takes its ask out of the mailbox now.
-        Wallboard.RepoPrompts.refresh()
-
-        restart? =
-          socket.assigns.restart? or
-            Enum.any?(restart_paths(), &(get_in(before, &1) != get_in(after_, &1)))
-
-        {:noreply,
-         socket
-         |> load()
-         |> assign(
-           errors: %{},
-           restart?: restart?,
-           notice: "Saved. Most changes apply within a minute."
-         )}
-
-      {:error, errors} ->
-        {:noreply, assign(socket, errors: errors, values: values, notice: nil)}
-    end
-  end
-
-  defp event("restart", _params, %{assigns: %{release?: true}} = socket) do
-    # The login item starts the board again as soon as it stops.
-    Task.start(fn ->
-      Process.sleep(500)
-      System.stop(0)
-    end)
-
-    {:noreply, assign(socket, notice: "Restarting. This page reconnects in a few seconds.")}
-  end
-
-  defp event("restart", _params, socket),
-    do: {:noreply, assign(socket, notice: "Restart the board by hand to apply these changes.")}
-
   defp event("toggle_key", _params, socket),
     do: {:noreply, assign(socket, show_key?: !socket.assigns.show_key?)}
 
+  # A new key is to the Macs that upload what Disconnect is to a machine
+  # that streams: it takes their way in away. It changes no setting, so it
+  # stays on this page.
   defp event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
     do: {:noreply, assign(socket, confirm_new_key?: true)}
 
@@ -325,10 +226,6 @@ defmodule WallboardWeb.SettingsLive do
 
   defp event(_event, _params, socket), do: {:noreply, socket}
 
-  defp restart_paths do
-    for {_, fs} <- Settings.editable(), {path, _, _, true, _} <- fs, do: path
-  end
-
   @impl true
   def render(%{connected?: false} = assigns) do
     ~H"""
@@ -343,8 +240,8 @@ defmodule WallboardWeb.SettingsLive do
     <div class="settings-page">
       <h1 class="settings-title">Settings</h1>
       <p class="detail-note">
-        Open this page on the Mac that runs the board. To change settings from another device,
-        first give the board a password on that Mac.
+        Open this page on the machine that runs the board. To see it from another device,
+        first give the board a password on that machine.
       </p>
       <a class="link-button" href="/">Back to the board</a>
     </div>
@@ -360,10 +257,11 @@ defmodule WallboardWeb.SettingsLive do
         <a class="link-button" href="/">Back to the board</a>
       </div>
       <p :if={@notice} class="settings-notice">{@notice}</p>
-      <div :if={@restart?} class="settings-restart">
-        Some changes apply when the board restarts.
-        <button class="link-button" phx-click="restart">Restart now</button>
-      </div>
+      <p class="settings-where">
+        Settings are shown here and changed on this machine: open the VitalAIze app, or run
+        <code>vitalaize setup</code>
+        in a terminal. Either saves the change and restarts only what needs it.
+      </p>
 
       <section :if={@linked} class="settings-section">
         <div class="heading-row">
@@ -399,43 +297,33 @@ defmodule WallboardWeb.SettingsLive do
         </p>
       </section>
 
-      <form phx-submit="save" class="settings-form">
-        <section :for={{section, fields} <- Settings.editable()} class="settings-section">
-          <h2 class="kicker">{section}</h2>
-          <label :for={{path, label, type, restart, help} <- fields} class="settings-field">
-            <span class="settings-label">
-              {label}<span :if={restart} class="muted-ink"> · after restart</span>
-            </span>
-            <.field
-              name={"s[#{Enum.join(path, ".")}]"}
-              type={type}
-              value={@values[Enum.join(path, ".")]}
-            />
-            <span :if={help} class="stat-note">{help}</span>
-            <span :if={@errors[Enum.join(path, ".")]} class="bad-ink stat-note">
-              {@errors[Enum.join(path, ".")]}
-            </span>
-          </label>
-          <div :if={section == "GitHub" and @ignored_repos != []} class="settings-field">
-            <span class="settings-label">Ignored repositories</span>
-            <div :for={repo <- @ignored_repos} class="row ignored-repo">
-              <span>{repo}</span>
-              <button type="button" class="link-button" phx-click="ask_again" phx-value-repo={repo}>
-                Ask again
-              </button>
-            </div>
-            <span class="stat-note">
-              You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
-            </span>
+      <section
+        :for={{section, fields} <- Settings.editable(@settings.role)}
+        class="settings-section"
+      >
+        <h2 class="kicker">{section}</h2>
+        <dl class="settings-values">
+          <div :for={{path, label, type, _restart, _help} <- fields} class="settings-value">
+            <dt>{label}</dt>
+            <dd>{shown(type, @values[Enum.join(path, ".")])}</dd>
           </div>
-        </section>
-        <div class="row">
-          <button type="submit" class="settings-save">Save</button>
-          <span class="stat-note">
-            Values saved here win over settings.exs.
-          </span>
-        </div>
-      </form>
+          <%!-- Ask again changes what the mailbox asks, not a setting, so it stays here. --%>
+          <div :if={section == "GitHub" and @ignored_repos != []} class="settings-value">
+            <dt>Ignored repositories</dt>
+            <dd>
+              <div :for={repo <- @ignored_repos} class="row ignored-repo">
+                <span>{repo}</span>
+                <button type="button" class="link-button" phx-click="ask_again" phx-value-repo={repo}>
+                  Ask again
+                </button>
+              </div>
+              <p class="detail-note">
+                You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
+              </p>
+            </dd>
+          </div>
+        </dl>
+      </section>
 
       <section :if={@key} class="settings-section">
         <h2 class="kicker">Connect another Mac</h2>
@@ -501,58 +389,15 @@ defmodule WallboardWeb.SettingsLive do
   defp sessions(1), do: "1 session"
   defp sessions(n), do: "#{n} sessions"
 
-  attr :name, :string, required: true
-  attr :type, :any, required: true
-  attr :value, :string, default: ""
+  # A value as the page shows it: a secret as dots, a list one per line.
+  defp shown(_type, value) when value in [nil, ""], do: "not set"
+  defp shown(:boolean, "true"), do: "yes"
+  defp shown(:boolean, _), do: "no"
 
-  defp field(%{type: {:choice, options}} = assigns) do
-    assigns = assign(assigns, options: options)
+  defp shown(type, text) when type in [:lines, :repos, :folders],
+    do: String.replace(text, "\n", ", ")
 
-    ~H"""
-    <select name={@name} class="settings-input">
-      <option :for={o <- @options} value={o} selected={o == @value}>{o}</option>
-    </select>
-    """
-  end
-
-  # An unticked box sends nothing, so a hidden "false" goes first and the
-  # box, when ticked, replaces it.
-  defp field(%{type: :boolean} = assigns) do
-    ~H"""
-    <input type="hidden" name={@name} value="false" />
-    <input
-      type="checkbox"
-      name={@name}
-      value="true"
-      checked={@value == "true"}
-      class="settings-check"
-    />
-    """
-  end
-
-  defp field(%{type: type} = assigns) when type in [:lines, :repos] do
-    ~H"""
-    <textarea name={@name} class="settings-input" rows={if @type == :repos, do: 6, else: 3}>{@value}</textarea>
-    """
-  end
-
-  defp field(%{type: :secret} = assigns) do
-    ~H"""
-    <input type="password" name={@name} value={@value} class="settings-input" autocomplete="off" />
-    """
-  end
-
-  defp field(%{type: :integer} = assigns) do
-    ~H"""
-    <input type="number" min="0" name={@name} value={@value} class="settings-input" />
-    """
-  end
-
-  defp field(assigns) do
-    ~H"""
-    <input type="text" name={@name} value={@value} class="settings-input" autocomplete="off" />
-    """
-  end
+  defp shown(_type, text), do: text
 
   defp install_command(hub, key),
     do: ~s(curl -fsS -H "Authorization: Bearer #{key}" #{hub}/ingest/install.sh | sh)

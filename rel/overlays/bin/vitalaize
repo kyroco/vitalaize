@@ -1,0 +1,44 @@
+#!/bin/sh
+# VitalAIze's own commands. bin/wallboard, beside this, starts and stops it.
+#
+#   bin/vitalaize setup    change this machine's settings from the terminal:
+#                          what it does (board, collector or both), the
+#                          settings that go with that, and, for a collector,
+#                          pairing with its hub by code. It saves, and
+#                          restarts VitalAIze only when a change needs it.
+#
+# setup writes settings.json beside settings.exs, the same file the Mac app
+# writes, so either can change what the other saved. It reads plain lines,
+# so a script can answer its questions.
+set -e
+
+SELF=$(cd "$(dirname "$0")" && pwd -P)
+
+usage() {
+  echo "Usage: vitalaize setup" >&2
+  exit 1
+}
+
+case "${1:-}" in
+  setup)
+    shift
+    # Inside the Mac app the settings are not beside the program: they are
+    # in the data folder the app remembers.
+    if [ -z "${WALLBOARD_SETTINGS:-}" ] && [ "$(uname)" = Darwin ]; then
+      case "$SELF" in
+        *.app/Contents/Resources/board/bin)
+          folder=$(defaults read ai.kyroco.wallboard dataFolder 2>/dev/null || true)
+          [ -n "$folder" ] || folder="$HOME/Library/Application Support/VitalAIze"
+          export WALLBOARD_SETTINGS="$folder/settings.exs"
+          export RELEASE_TMP="${RELEASE_TMP:-$folder/tmp}"
+          ;;
+      esac
+    fi
+    export VITALAIZE_ARGS="$*"
+    export RELEASE_DISTRIBUTION=none
+    exec "$SELF/wallboard" eval 'Wallboard.Setup.main()'
+    ;;
+  *)
+    usage
+    ;;
+esac

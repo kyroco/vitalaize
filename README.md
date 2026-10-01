@@ -48,29 +48,35 @@ its setup again, to add the new hooks.
    - **Hub and collector**, for your main Mac: it runs the board and saves
      this Mac's sessions.
    - **Hub only**: it runs the board and keeps what other Macs send it.
-   - **Collector only**, for your other Macs: it sends this Mac's Claude and
-     Codex sessions to a hub, and tells the hub when a Claude session is
-     waiting on you. It finds hubs on your network by itself; you paste the
-     hub's key from the hub's Settings page (Connect another Mac). Codex
-     runs a new hook only once you trust it, so afterwards type `/hooks` in
-     Codex and trust the two `wallboard-upload.sh` hooks.
+   - **Collector only**, for your other Macs: a small collector watches
+     this Mac's Claude and Codex sessions and streams them to a hub as they
+     happen. It finds hubs on your network by itself. Nothing is typed or
+     pasted: this Mac shows a short code, and you approve the same code in
+     the mailbox on the hub's board (the envelope by the clock). The hub
+     must take collectors: turn on **Collectors on other machines** in the
+     hub's settings first.
 4. On a hub, it fills in what it can find (your Claude and Codex folders,
    the GitHub repositories your sessions work in, up to six, busiest first,
    the busiest one's workflows, your AWS profiles) and asks you to check it.
-   Add or remove repositories there. Click **Install**. The board starts now
-   and again every time you log in. On a collector, click **Connect this
-   Mac** instead; steps 5 and 6 are for the hub.
+   Add or remove repositories there. Click **Install and start the board**.
+   The board starts now and again every time you log in. On a collector,
+   click **Start the collector and pair** instead; steps 5 and 6 are for
+   the hub.
 5. On your iPad, open the address VitalAIze shows in Safari, tap Share, then
    **Add to Home Screen**. Opened from the Home Screen, the board fills the
    screen. Turn the iPad sideways, and set Auto-Lock to Never in the iPad's
    Display & Brightness settings so the screen stays on.
 6. Choose how alerts reach you. Setup asks only for a phone number, for
-   Messages. For Slack, ntfy or Pushover, open the board on this Mac, tap
+   Messages. For Slack, ntfy or Pushover, open VitalAIze, click
    **Settings** and fill in the Alerts section. You can change the
    repositories there too.
 
-Open VitalAIze again any time to see the board, restart it, change the setup
-or remove it.
+Open VitalAIze again any time to see the board, restart it, change its
+settings or remove it. **Settings** in the app shows every setting and saves
+it there, with no browser. Most changes take effect within a few seconds; a
+few (the ports, the board password, what this Mac does) restart the board,
+and only then. The board's own Settings page shows the settings and can no
+longer change them.
 
 ## Install on Linux
 
@@ -81,23 +87,35 @@ or remove it.
    runs on Ubuntu 22.04 or newer, Debian 12 or newer, and other Linux systems
    of the same age or newer, and needs OpenSSL 3 (`libssl3`), which they
    already have.
-2. Unpack it and make your settings file:
+2. Unpack it and set it up:
 
    ```
    tar -xzf vitalaize-*-linux-*.tar.gz
    cd vitalaize
-   cp settings.example.exs settings.exs     # then edit it
+   bin/vitalaize setup
    ```
 
-3. Try it: `WALLBOARD_SETTINGS=$PWD/settings.exs bin/wallboard start`. It
+   `vitalaize setup` asks what this machine does (the board, a collector,
+   or both) and the settings that go with it. Enter keeps a value. It saves
+   your answers in `settings.json` in that folder, pairs a collector with
+   its hub by code, and offers to keep VitalAIze running as a systemd
+   service.
+3. If you did not take the service: `bin/wallboard start` runs it, and
    prints the address to open.
-4. To keep it running, and start it whenever you log in:
+4. To keep it running later, and start it whenever you log in:
    `./systemd.sh on` (`./systemd.sh off` turns it off). To keep it running
    after you log out too, run `loginctl enable-linger $USER` once.
 
-What differs from a Mac: there is no setup app, so you edit `settings.exs`
-(or the board's Settings page, which opens only in a browser on the same
-machine until you set `token`). List your repositories in `github.repos`.
+Run `bin/vitalaize setup` again any time to change a setting. It restarts
+VitalAIze only when a change needs it. The same command works on a Mac, in a
+terminal, and it and the Mac app save to the same file, so either can change
+what the other saved.
+
+What differs from a Mac: there is no setup app, so `vitalaize setup` is how
+you change settings. The board's Settings page shows them and cannot change
+them. If you would sooner write a file, copy `settings.example.exs` to
+`settings.exs` and edit it: it still works, and what `vitalaize setup` saves
+goes on top of it. List your repositories under GitHub.
 Text alerts by Messages need a Mac, so use Slack, ntfy or Pushover instead.
 The database lives in `~/.local/share/vitalaize`. To have other machines
 find the hub on the network by themselves, install `avahi-utils` on the hub;

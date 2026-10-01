@@ -50,6 +50,30 @@ defmodule WallboardWeb.BoardLive do
     end
   end
 
+  # The VitalAIze app or `vitalaize setup` saved a setting: a board left
+  # open loads again, the way it does for new styles (see mount/3), so
+  # the page, its clock and its page turning all start from the new
+  # settings together.
+  defp take_up_settings(socket) do
+    now = Settings.get()
+
+    cond do
+      now == socket.assigns.settings -> socket
+      reload_for?(socket.assigns.settings, now) -> redirect(socket, to: "/")
+      true -> assign(socket, settings: now)
+    end
+  end
+
+  @doc """
+  Whether a board drawn from the settings `shown` must load again for the
+  settings as they are `now`. A change to the list of repositories alone
+  needs none: the Git tab reads that list on every check (see
+  `derive_github/1`). So a Track in the mailbox does not reload the board
+  under the owner's hand, with more asks still waiting there.
+  """
+  def reload_for?(shown, now),
+    do: now != shown and put_in(now, [:github, :repos], shown.github.repos) != shown
+
   defp mount_board(socket, session) do
     settings = Settings.get()
 
@@ -160,8 +184,10 @@ defmodule WallboardWeb.BoardLive do
     {:noreply, if(key, do: assign(socket, key, meta), else: socket)}
   end
 
-  def handle_info(:tick, socket),
-    do: {:noreply, socket |> assign(now: now()) |> derive_sessions() |> derive_github()}
+  def handle_info(:tick, socket) do
+    {:noreply,
+     socket |> take_up_settings() |> assign(now: now()) |> derive_sessions() |> derive_github()}
+  end
 
   # A collector saved a round: an open Archive or Trends tab shows it.
   def handle_info({:archive, _}, socket) do
