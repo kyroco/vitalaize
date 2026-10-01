@@ -5,6 +5,12 @@ hub, install a collector on a second machine, pair them by code, watch a session
 appear, and disconnect. Each step says what you should see, and where to look
 when you do not.
 
+These steps were run once on October 1, 2026, on one Mac, with a throwaway hub
+and a throwaway collector built from main: the terminal path of steps 1 to 8,
+31 checks, all passed. Two real machines on a real network, the Mac app's
+screens on a second Mac, and a real Claude or Codex session were not part of
+that run. That is what this guide is for.
+
 It takes about 30 minutes. You need:
 
 - **The hub Mac**, with Claude Code and `gh`, both signed in.
