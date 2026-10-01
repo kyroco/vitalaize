@@ -190,10 +190,10 @@ defmodule Wallboard.Link.Server do
     rows = events |> Enum.reverse() |> Enum.flat_map(&row/1)
 
     if rows != [] do
-      case Store.put_collector_events(s.machine, rows, System.os_time(:second)) do
-        :ok -> Hub.stored(s.machine, rows)
-        _ -> refuse(:unavailable, "the hub could not save; try again")
-      end
+      # The database tells the rest of the board what it saved (see
+      # `Wallboard.Store.put_collector_events/3`).
+      if Store.put_collector_events(s.machine, rows, System.os_time(:second)) != :ok,
+        do: refuse(:unavailable, "the hub could not save; try again")
     end
 
     # A collector that only says it is alive still gets an answer, so it can
@@ -230,7 +230,8 @@ defmodule Wallboard.Link.Server do
   # received, so the collector does not send it for ever.
   defp row(%Proto.Event{} = e) do
     if e.session_id =~ ~r/\A[A-Za-z0-9_-]{1,100}\z/ and byte_size(e.file) <= 1024 and
-         String.valid?(e.file) and length(e.items) <= @max_items do
+         String.valid?(e.file) and length(e.items) <= @max_items and
+         Enum.all?(e.items, &sound?/1) do
       [
         %{
           session_id: e.session_id,
@@ -245,6 +246,15 @@ defmodule Wallboard.Link.Server do
       []
     end
   end
+
+  # A cost is the one number in an event that is not a whole number. One
+  # that is no number at all (the wire format allows "not a number" and
+  # infinity) or is below zero could not have come from the filter, and
+  # would break every sum it took part in.
+  defp sound?(%Proto.Item{body: {:request, %Proto.Request{cost: cost}}}),
+    do: is_float(cost) and cost >= 0
+
+  defp sound?(_item), do: true
 
   defp kind(%Proto.Event{file: file}) when file != "", do: "file"
 

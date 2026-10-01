@@ -168,6 +168,23 @@ defmodule Wallboard.Link.Buffer do
     if MapSet.size(b.holes) == 0, do: b, else: rewrite(%{b | holes: MapSet.new()})
   end
 
+  @doc """
+  Forgets every waiting event that came from one of these files (named as
+  in an event's `file`) and lets those files take events again. For the
+  reader of the files, when it is about to send them again from the hub's
+  position: what waited here from before could have a line missing ahead
+  of it, and must not reach the hub first.
+  """
+  def forget_files(%__MODULE__{} = b, files) do
+    files = MapSet.new(files)
+    dropped = drop(b, fn e -> e.kind == :file and MapSet.member?(files, e.file) end)
+    holes = MapSet.reject(b.holes, fn {_, file} -> MapSet.member?(files, file) end)
+
+    if dropped == b and holes == b.holes,
+      do: b,
+      else: rewrite(%{dropped | holes: holes})
+  end
+
   @doc "How many waiting events have this seq or an earlier one."
   def count_through(%__MODULE__{entries: entries}, seq) do
     count(:gb_trees.iterator(entries), seq, 0)

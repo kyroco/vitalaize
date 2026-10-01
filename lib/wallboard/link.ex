@@ -20,6 +20,12 @@ defmodule Wallboard.Link do
       code the owner approves in the mailbox.
     * `Wallboard.Link.Machines`: the connected machines, for the settings
       page, where one can be disconnected.
+    * `Wallboard.Collector.Sender`: on the collector, hands the watcher's
+      outbox to the client, and goes back to the hub's place in each file
+      on every connect.
+    * `Wallboard.Link.Sessions`: on the hub, turns the saved events into
+      live cards on the board and rows in the archive
+      (`Wallboard.Link.Session` is one session's picture).
 
   ## Who may connect
 
