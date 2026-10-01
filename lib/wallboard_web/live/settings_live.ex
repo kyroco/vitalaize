@@ -58,6 +58,7 @@ defmodule WallboardWeb.SettingsLive do
       machines: machines(settings),
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+      ignored_repos: Wallboard.RepoPrompts.ignored(),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
   end
@@ -150,7 +151,8 @@ defmodule WallboardWeb.SettingsLive do
     do:
       assign(socket,
         linked: linked(settings),
-        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings)
+        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+        ignored_repos: Wallboard.RepoPrompts.ignored()
       )
 
   defp relist(socket), do: socket
@@ -255,6 +257,17 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
+  # Undoes an Ignore from the mailbox: work in that repo asks again.
+  defp event("ask_again", %{"repo" => repo}, socket) do
+    notice =
+      case Wallboard.RepoPrompts.ask_again(repo) do
+        :ok -> "The mailbox will ask about #{repo} the next time someone works in it."
+        _ -> "That did not work just now. Try again in a moment."
+      end
+
+    {:noreply, assign(socket, ignored_repos: Wallboard.RepoPrompts.ignored(), notice: notice)}
+  end
+
   defp event("refresh_archive", _params, socket) do
     Collector.refresh()
     {:noreply, assign(socket, notice: "Saving every session again in the background.")}
@@ -353,6 +366,18 @@ defmodule WallboardWeb.SettingsLive do
               {@errors[Enum.join(path, ".")]}
             </span>
           </label>
+          <div :if={section == "GitHub" and @ignored_repos != []} class="settings-field">
+            <span class="settings-label">Ignored repositories</span>
+            <div :for={repo <- @ignored_repos} class="row ignored-repo">
+              <span>{repo}</span>
+              <button type="button" class="link-button" phx-click="ask_again" phx-value-repo={repo}>
+                Ask again
+              </button>
+            </div>
+            <span class="stat-note">
+              You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
+            </span>
+          </div>
         </section>
         <div class="row">
           <button type="submit" class="settings-save">Save</button>
