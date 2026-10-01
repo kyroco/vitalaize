@@ -140,7 +140,8 @@ defmodule Wallboard.Sources.Codex do
   end
 
   # Codex's own names for its threads. Read again only when the file changed.
-  defp titles(settings, {stamp, titles}) do
+  @doc false
+  def titles(settings, {stamp, titles}) do
     paths = Enum.map(settings.codex.dirs, &Path.join(&1, "session_index.jsonl"))
 
     now_stamp =

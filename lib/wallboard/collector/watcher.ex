@@ -34,8 +34,9 @@ defmodule Wallboard.Collector.Watcher do
   what may leave, and each event carries its session, its file and the byte
   after its line. A status goes out when it changes: working, waiting (with
   the kind of wait) or idle. A session's end goes out when a Claude session
-  leaves `claude agents`, and when a Codex session quits or has been quiet
-  for `codex.idle_minutes`, as it leaves the board's Live tab.
+  leaves `claude agents`, when a Codex session quits or has been quiet for
+  `codex.idle_minutes` (as it leaves the board's Live tab), and when a
+  session's folder is no longer watched.
 
   A session's status can reach the outbox before its first line does: a
   Claude session shows in `claude agents` before it has a session file.
@@ -52,14 +53,18 @@ defmodule Wallboard.Collector.Watcher do
   `collector.backfill_days` are reported from their first line. An older
   one is reported, whole, when it next changes.
 
+  Session files only ever grow. One that got shorter, or whose first bytes
+  changed, was replaced by another, so it is read as new.
+
   ## Staying small
 
   Only files that changed lately are kept in memory: a Claude file for 30
-  minutes after its last line, a Codex file for `codex.idle_minutes` (its
-  live status is worked out from it). When the outbox is full the collector
-  stops reading and waits; the session files keep everything until then.
-
-  A session file that got shorter was replaced, so it is read as new.
+  minutes after its last line, a Codex file for `codex.idle_minutes` or
+  while it has an approval request out (its live status is worked out from
+  it). Events go to the outbox a couple of hundred at a time. When the
+  outbox is full, or cannot be written, the collector stops reading and
+  waits; the session files keep everything until then. A file with a
+  single line longer than #{div(64_000_000, 1_000_000)} MB is left out.
   """
 
   use GenServer
@@ -67,11 +72,18 @@ defmodule Wallboard.Collector.Watcher do
 
   alias Wallboard.Archive.CodexTranscript
   alias Wallboard.Archive.Collector, as: Archive
-  alias Wallboard.Collector.{Filter, Outbox}
+  alias Wallboard.Collector.{Filter, Outbox, Proto}
   alias Wallboard.Sources.{Claude, Codex}
 
-  # How much of a file is read at a time.
+  # How much of a file is read at a time, and how many of its lines go
+  # through the filter at a time. One line gives one event at most, so the
+  # second number is also the most events held before they are saved.
   @chunk 1_000_000
+  @lines 200
+  # A line still without its end after this many bytes is not a session's.
+  @line_max 64_000_000
+  # How much of a Codex file is read to find its first line.
+  @head_max 1_000_000
   # How often the folders are searched for files not seen before. Known
   # files that changed lately are checked every `collector.poll_seconds`.
   @search_ms 10_000
@@ -93,7 +105,7 @@ defmodule Wallboard.Collector.Watcher do
   def tick(server \\ __MODULE__), do: GenServer.call(server, :tick, :infinity)
 
   @doc "The first message for the hub: this machine, and the folders watched."
-  def hello(server \\ __MODULE__), do: GenServer.call(server, :hello, 60_000)
+  def hello(server \\ __MODULE__), do: GenServer.call(server, :hello, :infinity)
 
   @doc """
   The Claude and Codex folders a collector with these settings watches, as
@@ -104,8 +116,12 @@ defmodule Wallboard.Collector.Watcher do
     c = settings.collector
 
     %{
-      claude: c.claude_dirs || claude_folders(home),
-      codex: if(settings.codex.enabled, do: c.codex_dirs || codex_folders(home), else: [])
+      claude: Enum.filter(c.claude_dirs || claude_folders(home), &String.valid?/1),
+      codex:
+        if(settings.codex.enabled,
+          do: Enum.filter(c.codex_dirs || codex_folders(home), &String.valid?/1),
+          else: []
+        )
     }
   end
 
@@ -145,21 +161,34 @@ defmodule Wallboard.Collector.Watcher do
       folders: %{claude: [], codex: []},
       # path => %{tool, dir, size, mtime}, for every session file in view
       seen: %{},
-      # path => the byte after the last line whose events are in the outbox
+      # path => the byte after the last line whose events are saved or
+      # waiting in `pending`
       offsets: %{},
+      # path => [length, hash] of the file's first bytes, to tell a file
+      # that was replaced by another
+      heads: %{},
       # {tool, session id} => %{dir, state, why, tool}, the last status sent
       statuses: %{},
+      # Events not in the outbox yet, newest first, and whether the place
+      # above has changed since it was last saved.
+      pending: [],
+      unsaved?: false,
       # path => %{filter, fed}, the files kept in memory
       open: %{},
-      # path => its size when it was last put away
+      # path => its size when it was last put away, or found not ready
       rested: %{},
+      unready: %{},
       skip: MapSet.new(),
       titles: {nil, %{}},
-      marks: %{},
+      # The Codex hook's notes, and the sessions with an approval request out.
+      notes: %{},
+      notes_read: %{},
       asking: MapSet.new(),
       searched_at: nil,
       status_at: nil,
+      # Whether the last look stopped early, and whether it read every file.
       full?: false,
+      read?: false,
       task: nil,
       callers: []
     }
@@ -211,7 +240,7 @@ defmodule Wallboard.Collector.Watcher do
         do: start_status(%{state | status_at: mono}),
         else: state
 
-    Process.send_after(self(), :tick, max(settings.collector.poll_seconds, 1) * 1000)
+    Process.send_after(self(), :tick, settings.collector.poll_seconds * 1000)
     # Gives back the memory a round used, so an idle collector stays small.
     {:noreply, state, :hibernate}
   end
@@ -226,9 +255,15 @@ defmodule Wallboard.Collector.Watcher do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # Never print session data in a crash report.
+  # Never print session data in a crash report: not the state, and not the
+  # message being handled, which can hold sessions too.
   @impl true
-  def format_status(status), do: Map.update(status, :state, nil, &Map.take(&1, [:folders]))
+  def format_status(status) do
+    status
+    |> Map.update(:state, nil, &Map.take(&1, [:folders]))
+    |> Map.replace(:message, :not_shown)
+    |> Map.replace(:log, [])
+  end
 
   defp done(state) do
     for from <- state.callers, do: GenServer.reply(from, :ok)
@@ -248,71 +283,123 @@ defmodule Wallboard.Collector.Watcher do
   end
 
   # ---------------------------------------------------------------------------
-  # Session files
-
-  defp read_files(state) do
-    settings = state.settings.()
-    now = DateTime.to_unix(state.now.())
-    places = map_size(state.offsets)
-    state = %{look(state, settings, now) | full?: false}
-    forgot? = map_size(state.offsets) != places
-
-    state =
-      if Outbox.room?(state.outbox) do
-        state.seen
-        |> Map.keys()
-        |> Enum.sort()
-        |> Enum.reduce_while(state, fn path, s ->
-          s = if due?(s, path, settings, now), do: follow(s, path, settings), else: s
-          s = put_away(s, path, settings, now)
-          if s.full?, do: {:halt, s}, else: {:cont, s}
-        end)
-      else
-        state
-      end
-
-    # Saves what changed without an event: the place of a file that is gone.
-    if forgot?, do: Outbox.append(state.outbox, [], checkpoint(state))
-    state
-  end
+  # The saved place
 
   # The collector's place, as the text the outbox saves with the events:
-  # each file's byte offset and the last status sent for each session.
+  # each file's byte offset and first bytes, and the last status sent for
+  # each session.
   defp checkpoint(state) do
     statuses =
       for {{tool, id}, s} <- Enum.sort(state.statuses),
           do: [Atom.to_string(tool), id, s.dir, Atom.to_string(s.state), s.why, s.tool]
 
-    Jason.encode!(%{"offsets" => state.offsets, "statuses" => statuses})
+    Jason.encode!(%{
+      "offsets" => state.offsets,
+      "heads" => state.heads,
+      "statuses" => statuses
+    })
   end
 
   @tools %{"claude" => :claude, "codex" => :codex}
   @states %{"needs" => :needs, "working" => :working, "idle" => :idle}
+  @whys ~w(WHY_UNKNOWN PERMISSION QUESTION DIALOG NETWORK HELPER GOAL OTHER)
 
   # Reads a saved place back. Anything not shaped as `checkpoint/1` writes
   # it is left out, so a damaged file costs a repeat, never a crash.
-  defp restore(text) when is_binary(text) do
-    case Jason.decode(text) do
-      {:ok, %{"offsets" => %{} = offsets, "statuses" => statuses}} when is_list(statuses) ->
-        %{
-          offsets: for({path, n} <- offsets, is_integer(n) and n >= 0, into: %{}, do: {path, n}),
-          statuses:
-            for [tool, id, dir, state, why, name] <- statuses,
-                is_map_key(@tools, tool) and is_map_key(@states, state) and is_binary(id),
-                is_nil(dir) or is_binary(dir),
-                is_nil(why) or is_binary(why),
-                is_nil(name) or is_binary(name),
-                into: %{} do
-              {{@tools[tool], id}, %{dir: dir, state: @states[state], why: why, tool: name}}
-            end
-        }
+  defp restore(text) do
+    empty = %{offsets: %{}, heads: %{}, statuses: %{}}
 
-      _ ->
-        %{}
+    with true <- is_binary(text),
+         {:ok, %{"offsets" => %{} = offsets, "statuses" => statuses} = saved}
+         when is_list(statuses) <- Jason.decode(text) do
+      heads = if is_map(saved["heads"]), do: saved["heads"], else: %{}
+
+      heads =
+        for {path, [n, hash]} <- heads,
+            is_integer(n) and n > 0 and is_binary(hash),
+            into: %{},
+            do: {path, [n, hash]}
+
+      statuses =
+        for [tool, id, dir, state, why, name] <- statuses,
+            is_map_key(@tools, tool) and is_map_key(@states, state) and is_binary(id),
+            is_nil(dir) or is_binary(dir),
+            why in @whys and is_binary(name) and byte_size(name) <= 200,
+            into: %{} do
+          {{@tools[tool], id}, %{dir: dir, state: @states[state], why: why, tool: name}}
+        end
+
+      %{
+        offsets: for({path, n} <- offsets, is_integer(n) and n >= 0, into: %{}, do: {path, n}),
+        heads: heads,
+        statuses: statuses
+      }
+    else
+      _ -> empty
     end
   end
 
-  defp restore(_), do: %{}
+  # Puts the waiting events in the outbox and saves the place with them.
+  defp flush(%{pending: [], unsaved?: false} = state), do: state
+
+  defp flush(state) do
+    case Outbox.append(state.outbox, Enum.reverse(state.pending), checkpoint(state)) do
+      {:error, reason} ->
+        Logger.warning(
+          "Collector: could not write to its outbox (#{inspect(reason)}). It will try again."
+        )
+
+        # Back to the last place that was saved: what was read since is
+        # read again once the outbox can be written.
+        state
+        |> Map.merge(restore(Outbox.checkpoint(state.outbox)))
+        |> Map.merge(%{
+          pending: [],
+          unsaved?: false,
+          open: %{},
+          rested: %{},
+          full?: true,
+          read?: false
+        })
+
+      _seq ->
+        state = %{state | pending: [], unsaved?: false}
+        if Outbox.room?(state.outbox), do: state, else: %{state | full?: true}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Session files
+
+  defp read_files(state) do
+    settings = state.settings.()
+    now = state.now.()
+    now_s = DateTime.to_unix(now)
+
+    state =
+      %{look(state, settings, now_s) | full?: false, read?: false}
+      |> notes(settings, now)
+
+    state =
+      if Outbox.room?(state.outbox) do
+        state =
+          state.seen
+          |> Map.keys()
+          |> Enum.sort()
+          |> Enum.reduce_while(state, fn path, s ->
+            s = if due?(s, path, settings, now_s), do: follow(s, path, settings), else: s
+            # A file cut off halfway stays in memory, to carry on from there.
+            if s.full?, do: {:halt, s}, else: {:cont, put_away(s, path, settings, now_s)}
+          end)
+
+        state = flush(state)
+        %{state | read?: not state.full?}
+      else
+        state
+      end
+
+    state
+  end
 
   # Finds the session files. A full search every few seconds; in between,
   # only the files that changed lately are looked at again.
@@ -371,30 +458,35 @@ defmodule Wallboard.Collector.Watcher do
           not File.exists?(path),
           do: path
 
+    paths = Map.keys(seen)
+
     %{
       state
       | folders: found,
         seen: seen,
         offsets: Map.drop(state.offsets, gone),
-        open: Map.take(state.open, Map.keys(seen)),
-        rested: Map.take(state.rested, Map.keys(seen)),
-        titles: titles(found.codex, state.titles)
+        heads: Map.drop(state.heads, gone),
+        unsaved?: state.unsaved? or gone != [],
+        open: Map.take(state.open, paths),
+        rested: Map.take(state.rested, paths),
+        unready: Map.take(state.unready, paths),
+        skip: MapSet.intersection(state.skip, MapSet.new(paths)),
+        titles: Codex.titles(%{codex: %{dirs: found.codex}}, state.titles)
     }
   end
 
-  # Codex's own names for its threads. Read again only when a file changed.
-  defp titles(dirs, {stamp, titles}) do
-    now_stamp =
-      Enum.map(dirs, fn dir ->
-        case File.stat(Path.join(dir, "session_index.jsonl"), time: :posix) do
-          {:ok, s} -> {dir, s.size, s.mtime}
-          _ -> dir
-        end
-      end)
+  # The Codex hook's notes, read before the files: a session with an
+  # approval request out keeps its file in memory however quiet it is.
+  defp notes(%{folders: %{codex: []}} = state, _settings, _now),
+    do: %{state | notes: %{}, asking: MapSet.new()}
 
-    if now_stamp == stamp,
-      do: {stamp, titles},
-      else: {now_stamp, Archive.codex_titles(%{codex: %{dirs: dirs}})}
+  defp notes(state, settings, now) do
+    codex = %{codex: %{settings.codex | dirs: state.folders.codex}}
+    Codex.install_hook(codex)
+    {notes, read} = Codex.marks(codex, now, state.notes_read)
+    %{state | notes: notes, notes_read: read, asking: Codex.asking(notes)}
+  rescue
+    _ -> state
   end
 
   defp due?(state, path, settings, now) do
@@ -402,15 +494,18 @@ defmodule Wallboard.Collector.Watcher do
 
     cond do
       MapSet.member?(state.skip, path) -> false
+      state.unready[path] == info.size -> false
       entry = state.open[path] -> info.size != entry.fed
+      # A Codex session's status comes from its file, so one that can show
+      # on the hub is read into memory even with nothing new in it.
+      info.tool == :codex and keep?(state, path, info, settings, now) -> true
       Map.has_key?(state.rested, path) -> info.size != state.rested[path]
-      info.size != Map.get(state.offsets, path, 0) -> true
-      true -> keep?(state, path, info, settings, now)
+      true -> info.size != Map.get(state.offsets, path, 0)
     end
   end
 
   # Whether a file stays in memory once read. A Codex file does for as long
-  # as its session can show on the hub, since its status comes from it.
+  # as its session can show on the hub.
   defp keep?(state, path, %{tool: :codex, mtime: mtime}, settings, now) do
     now - mtime < settings.codex.idle_minutes * 60 or
       MapSet.member?(state.asking, CodexTranscript.id_from_path(path))
@@ -427,27 +522,76 @@ defmodule Wallboard.Collector.Watcher do
     end
   end
 
-  # Reads what is new in one file and puts its events in the outbox.
+  # Reads what is new in one file and queues its events for the outbox.
   defp follow(state, path, settings) do
     info = state.seen[path]
     entry = state.open[path]
+    head = head(path, state.heads[path])
 
-    shorter? =
-      info.size < Map.get(state.offsets, path, 0) or (entry != nil and info.size < entry.fed)
+    replaced? =
+      head == :changed or info.size < Map.get(state.offsets, path, 0) or
+        (entry != nil and info.size < entry.fed)
 
-    {state, entry} =
-      if shorter? do
-        Logger.info("Collector: a session file got shorter, so it is read as new.")
-        {%{state | offsets: Map.delete(state.offsets, path)}, nil}
+    {state, entry, head} =
+      if replaced? do
+        Logger.info("Collector: a session file was replaced by another, so it is read as new.")
+
+        state = %{
+          state
+          | offsets: Map.delete(state.offsets, path),
+            heads: Map.delete(state.heads, path),
+            open: Map.delete(state.open, path),
+            unsaved?: true
+        }
+
+        {state, nil, head(path, nil)}
       else
-        {state, entry}
+        {state, entry, head}
+      end
+
+    state =
+      case head do
+        {:new, mark} -> %{state | heads: Map.put(state.heads, path, mark), unsaved?: true}
+        _ -> state
       end
 
     case entry || open(state, path, info, settings) do
-      # Not a session file yet (a Codex file with no first line).
-      nil -> state
-      :skip -> %{state | skip: MapSet.put(state.skip, path)}
-      entry -> pump(state, path, entry, info.size)
+      # Not a session file yet (a Codex file with no first line). Looked at
+      # again once it has grown.
+      nil ->
+        %{state | unready: Map.put(state.unready, path, info.size)}
+
+      :skip ->
+        %{state | skip: MapSet.put(state.skip, path)}
+
+      entry ->
+        state = %{state | open: Map.put(state.open, path, entry)}
+        pump(state, path, info.size)
+    end
+  end
+
+  # Compares a file's first bytes with the ones noted when it was first
+  # read: :same, :changed, {:new, note} when there was no note, or :none.
+  defp head(path, saved) do
+    want =
+      case saved do
+        [n, _] -> n
+        _ -> 256
+      end
+
+    with {:ok, io} <- :file.open(path, [:read, :binary, :raw]),
+         read = :file.read(io, want),
+         :ok <- :file.close(io),
+         {:ok, data} <- read do
+      hash = :sha256 |> :crypto.hash(data) |> Base.encode16() |> binary_part(0, 16)
+
+      case saved do
+        [n, ^hash] when n == byte_size(data) -> :same
+        [_, _] -> :changed
+        _ -> {:new, [byte_size(data), hash]}
+      end
+    else
+      _ -> if saved, do: :changed, else: :none
     end
   end
 
@@ -485,8 +629,8 @@ defmodule Wallboard.Collector.Watcher do
   end
 
   defp context(state, path, %{tool: :codex, dir: dir}) do
-    case CodexTranscript.head(path) do
-      {id, parent, _nickname} when is_binary(id) ->
+    case codex_head(path) do
+      {id, parent, _nickname} when is_binary(id) and (is_nil(parent) or is_binary(parent)) ->
         %{
           tool: :codex,
           session_id: parent || id,
@@ -501,11 +645,24 @@ defmodule Wallboard.Collector.Watcher do
     end
   end
 
-  defp pump(state, path, entry, size) do
+  # A Codex file's first line, when it is whole and of a sane length.
+  defp codex_head(path) do
+    with {:ok, io} <- :file.open(path, [:read, :binary, :raw]),
+         read = :file.read(io, @head_max),
+         :ok <- :file.close(io),
+         {:ok, data} <- read,
+         true <- String.contains?(data, "\n") do
+      CodexTranscript.head_of(data)
+    else
+      _ -> nil
+    end
+  end
+
+  defp pump(state, path, size) do
     case :file.open(path, [:read, :binary, :raw]) do
       {:ok, io} ->
         try do
-          chunks(state, path, entry, size, io)
+          chunks(state, path, size, io)
         after
           :file.close(io)
         end
@@ -515,49 +672,82 @@ defmodule Wallboard.Collector.Watcher do
     end
   end
 
-  defp chunks(state, path, %{fed: fed} = entry, size, _io) when fed >= size,
-    do: %{state | open: Map.put(state.open, path, entry)}
+  defp chunks(state, path, size, io) do
+    with %{fed: fed} when fed < size <- state.open[path],
+         want = min(@chunk, size - fed),
+         {:ok, data} <- :file.pread(io, fed, want) do
+      state = data |> pieces() |> Enum.reduce_while(state, &piece(&1, &2, path))
 
-  defp chunks(state, path, entry, size, io) do
-    want = min(@chunk, size - entry.fed)
+      if state.full? or not Map.has_key?(state.open, path) or byte_size(data) < want,
+        do: state,
+        else: chunks(state, path, size, io)
+    else
+      _ -> state
+    end
+  end
 
-    case :file.pread(io, entry.fed, want) do
-      {:ok, data} ->
-        {events, filter} = Filter.read(entry.filter, data)
-        entry = %{filter: filter, fed: entry.fed + byte_size(data)}
-        saved = Map.get(state.offsets, path, 0)
-        # Reading a known file again from its start gives its old events
-        # too. Those are in the outbox, or already at the hub.
-        new = Enum.filter(events, &(&1.position > saved))
-        state = %{state | open: Map.put(state.open, path, entry)}
+  # A read cut into runs of whole lines, a couple of hundred at a time, and
+  # what is left of a last line with no end yet.
+  defp pieces(data) do
+    {lines, [rest]} = data |> :binary.split("\n", [:global]) |> Enum.split(-1)
 
-        state =
-          if Filter.position(filter) > saved do
-            state = %{state | offsets: Map.put(state.offsets, path, Filter.position(filter))}
-            Outbox.append(state.outbox, new, checkpoint(state))
-            state
-          else
-            state
-          end
+    lines
+    |> Enum.chunk_every(@lines)
+    |> Enum.map(&(Enum.join(&1, "\n") <> "\n"))
+    |> Kernel.++(if rest == "", do: [], else: [rest])
+  end
 
-        cond do
-          byte_size(data) < want -> state
-          new != [] and not Outbox.room?(state.outbox) -> %{state | full?: true}
-          true -> chunks(state, path, entry, size, io)
-        end
+  defp piece(data, state, path) do
+    entry = state.open[path]
+    {events, filter} = Filter.read(entry.filter, data)
+    entry = %{filter: filter, fed: entry.fed + byte_size(data)}
+    saved = Map.get(state.offsets, path, 0)
+    position = Filter.position(filter)
+    # Reading a known file again from its start gives its old events too.
+    # Those are in the outbox, or already at the hub.
+    new = Enum.filter(events, &(&1.position > saved))
+    state = %{state | open: Map.put(state.open, path, entry)}
 
-      _ ->
+    state =
+      if position > saved do
+        %{
+          state
+          | offsets: Map.put(state.offsets, path, position),
+            pending: Enum.reverse(new) ++ state.pending,
+            unsaved?: true
+        }
+      else
         state
+      end
+
+    cond do
+      entry.fed - position > @line_max ->
+        Logger.warning("Collector: a session file has a line too long to read. It is left out.")
+
+        {:halt, %{state | open: Map.delete(state.open, path), skip: MapSet.put(state.skip, path)}}
+
+      length(state.pending) >= @lines ->
+        state = flush(state)
+        if state.full?, do: {:halt, state}, else: {:cont, state}
+
+      true ->
+        {:cont, state}
     end
   end
 
   # ---------------------------------------------------------------------------
   # Live status
 
+  # Only what the status needs: a session's task and the words of what it
+  # waits on stay out of the collector's memory.
   defp claude_sessions(dir) do
     case Claude.fetch(%{claude: %{config_dirs: [dir]}}) do
-      {:ok, sessions, _problems} -> {:ok, sessions}
-      {:error, reason} -> {:error, reason}
+      {:ok, sessions, _problems} ->
+        keys = [:session_id, :status, :waiting_for, :waiting_since, :updated_at]
+        {:ok, Enum.map(sessions, &Map.take(&1, keys))}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -582,15 +772,24 @@ defmodule Wallboard.Collector.Watcher do
     if Outbox.room?(state.outbox) do
       settings = state.settings.()
       now = state.now.()
-      {codex, state} = codex_statuses(state, settings, now)
 
+      {live, gone} =
+        (claude_statuses(claude, state) ++ codex_statuses(state, settings, now))
+        |> Enum.split_with(&match?({:live, _, _, _}, &1))
+
+      # One session listed twice counts once, as it was listed first.
       {events, statuses} =
-        Enum.reduce(claude_statuses(claude, now) ++ codex, {[], state.statuses}, fn
-          {:live, key, new, since}, {events, statuses} ->
+        live
+        |> Enum.uniq_by(fn {:live, key, _, _} -> key end)
+        |> Kernel.++(gone)
+        |> Enum.reduce({[], state.statuses}, fn
+          {:live, key, raw, since}, {events, statuses} ->
             old = statuses[key]
 
-            with false <- old != nil and same?(old, new),
-                 %{} = event <- status_event(key, new, since(old, new, since, now), now) do
+            with %Proto.Event{} = event <-
+                   status_event(key, raw, since(old, raw, since, now), now),
+                 new = sent(raw, event),
+                 false <- old != nil and Map.delete(old, :dir) == Map.delete(new, :dir) do
               {[event | events], Map.put(statuses, key, new)}
             else
               _ -> {events, statuses}
@@ -602,96 +801,112 @@ defmodule Wallboard.Collector.Watcher do
             {Enum.reverse(ended) ++ events, Map.drop(statuses, keys)}
         end)
 
-      state = %{state | statuses: statuses}
-      Outbox.append(state.outbox, Enum.reverse(events), checkpoint(state))
-      state
+      flush(%{
+        state
+        | statuses: statuses,
+          pending: events ++ state.pending,
+          unsaved?: state.unsaved? or statuses != state.statuses
+      })
     else
       state
     end
   end
 
-  defp same?(old, new),
-    do: Map.take(old, [:state, :why, :tool]) == Map.take(new, [:state, :why, :tool])
+  # What is remembered of a status: only what went into its event, so the
+  # kind of wait is one of the filter's words and the tool's name has the
+  # filter's shape.
+  defp sent(raw, %Proto.Event{items: [%Proto.Item{body: {:status, status}}]}) do
+    %{dir: raw.dir, state: raw.state, why: Atom.to_string(status.why), tool: status.tool}
+  end
 
   # When the status began: the files' own time when they have one,
   # otherwise now. A session first seen at work began before it was seen.
   defp since(_old, %{state: :needs}, since, now), do: since || now
   defp since(nil, %{state: :working}, since, now), do: since || now
-  defp since(_old, _new, _since, now), do: now
+  defp since(_old, _raw, _since, now), do: now
 
-  defp status_event({_tool, id}, new, since, now) do
-    Filter.status(%{session_id: id}, new.state,
-      why: new.why,
-      tool: new.tool,
+  defp status_event({_tool, id}, raw, since, now) do
+    Filter.status(%{session_id: id}, raw.state,
+      why: raw.why,
+      tool: raw.tool,
       since: since,
       at: now
     )
   rescue
-    ArgumentError -> nil
+    _ -> nil
   end
 
   defp ended_event({_tool, id}, now) do
     Filter.ended(%{session_id: id}, now)
   rescue
-    ArgumentError -> nil
+    _ -> nil
   end
 
   # For each folder `claude agents` answered for: its live sessions, then
   # the end of every session of that folder it no longer lists. A folder it
-  # could not answer for is left as it was.
-  defp claude_statuses(results, _now) do
-    Enum.flat_map(results, fn
-      {dir, {:ok, sessions}} ->
-        live =
-          for s <- sessions, is_binary(s.session_id) do
-            new = %{
-              dir: dir,
-              state: s.status,
-              # A background session can be blocked with no kind given.
-              why: if(s.status == :needs, do: s[:waiting_for] || "other"),
-              tool: nil
-            }
+  # could not answer for is left as it was. Sessions of a folder that is no
+  # longer watched have ended.
+  defp claude_statuses(results, state) do
+    watched = state.folders.claude
 
-            since = if s.status == :needs, do: s.waiting_since, else: s.updated_at
-            {:live, {:claude, s.session_id}, new, since}
-          end
+    unwatched =
+      {:gone, fn key, old -> match?({:claude, _}, key) and old.dir not in watched end}
 
-        ids = MapSet.new(live, fn {:live, key, _, _} -> key end)
+    [unwatched] ++
+      Enum.flat_map(results, fn
+        {dir, {:ok, sessions}} ->
+          live =
+            for s <- sessions, is_binary(s.session_id), s.status in [:needs, :working, :idle] do
+              raw = %{
+                dir: dir,
+                state: s.status,
+                # A background session can be blocked with no kind given.
+                why: if(s.status == :needs, do: s[:waiting_for] || "other"),
+                tool: nil
+              }
 
-        live ++
-          [
-            {:gone,
-             fn key, old ->
-               match?({:claude, _}, key) and old.dir == dir and not MapSet.member?(ids, key)
-             end}
-          ]
+              since = if s.status == :needs, do: s[:waiting_since], else: s[:updated_at]
+              {:live, {:claude, s.session_id}, raw, since}
+            end
 
-      _ ->
-        []
-    end)
+          ids = MapSet.new(live, fn {:live, key, _, _} -> key end)
+
+          live ++
+            [
+              {:gone,
+               fn key, old ->
+                 match?({:claude, _}, key) and old.dir == dir and not MapSet.member?(ids, key)
+               end}
+            ]
+
+        _ ->
+          []
+      end)
   end
 
   # Codex has no list of what runs, so its sessions' statuses come from
   # their files and the hook's notes, as on the board.
-  defp codex_statuses(%{folders: %{codex: []}} = state, _settings, _now), do: {[], state}
+  defp codex_statuses(%{folders: %{codex: []}}, _settings, _now),
+    do: [{:gone, fn key, _old -> match?({:codex, _}, key) end}]
+
+  # The last look did not get through the files (the outbox was full), so
+  # which sessions are live is not known. Nothing is said until it is.
+  defp codex_statuses(%{read?: false}, _settings, _now), do: []
 
   defp codex_statuses(state, settings, now) do
-    codex = %{codex: %{settings.codex | dirs: state.folders.codex}}
-    Codex.install_hook(codex)
-    {marks, read} = Codex.marks(codex, now, state.marks)
-
     files =
       for {path, %{filter: filter}} <- state.open,
           %{tool: :codex, mtime: mtime} <- [state.seen[path]],
-          into: %{},
           do: {path, %{tally: Filter.tally(filter), mtime: mtime}}
 
+    {helpers, sessions} = Enum.split_with(files, fn {_, f} -> f.tally[:parent_id] != nil end)
     cutoff = DateTime.add(now, -settings.codex.idle_minutes * 60)
 
     live =
-      for card <- Codex.sessions(files, %{}, now, marks),
+      for session <- sessions,
+          card <- cards([session | own(helpers, session)], now, state.notes),
           card.status == :needs or DateTime.compare(card.updated_at, cutoff) != :lt,
-          not quit?(marks[card.session_id]) do
+          not quit?(state.notes[card.session_id]) do
         # The kind of wait, in the words `claude agents` uses for it.
         why =
           case card.waiting_kind do
@@ -700,24 +915,32 @@ defmodule Wallboard.Collector.Watcher do
             nil -> nil
           end
 
-        new = %{dir: nil, state: card.status, why: why, tool: card.waiting_tool}
-        {:live, {:codex, card.session_id}, new, card.since}
+        raw = %{dir: nil, state: card.status, why: why, tool: card.waiting_tool}
+        {:live, {:codex, card.session_id}, raw, card.since}
       end
 
     ids = MapSet.new(live, fn {:live, key, _, _} -> key end)
-    gone = {:gone, fn key, _old -> match?({:codex, _}, key) and not MapSet.member?(ids, key) end}
-    {live ++ [gone], %{state | marks: read, asking: Codex.asking(marks)}}
+
+    live ++
+      [{:gone, fn key, _old -> match?({:codex, _}, key) and not MapSet.member?(ids, key) end}]
+  end
+
+  defp own(helpers, {_path, %{tally: tally}}),
+    do: Enum.filter(helpers, fn {_, f} -> f.tally[:parent_id] == tally[:thread_id] end)
+
+  # One session's card. A file with a line the board's code cannot take
+  # costs that session its status, not every session theirs.
+  defp cards(files, now, notes) do
+    Codex.sessions(Map.new(files), %{}, now, notes)
   rescue
-    e ->
-      Logger.warning("Collector: could not read Codex's status: " <> Exception.message(e))
-      {[], state}
+    _ -> []
   end
 
   # The hook keeps a session's latest call, so a quit that still stands
   # means nothing has happened in the session since.
-  defp quit?(marks) do
-    Enum.any?(List.wrap(marks), fn mark ->
-      mark["hook_event_name"] == "SessionEnd" and mark["agent_id"] in [nil, ""]
+  defp quit?(notes) do
+    Enum.any?(List.wrap(notes), fn note ->
+      note["hook_event_name"] == "SessionEnd" and note["agent_id"] in [nil, ""]
     end)
   end
 end

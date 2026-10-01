@@ -692,11 +692,14 @@ defmodule Wallboard.Settings do
     settings
     |> Map.put(:role, role)
     # A hub keeps only what other machines send.
-    |> update_in([:archive, :collect_local], &(&1 and role != :hub))
+    |> update_in([:archive, :collect_local], &(&1 && role != :hub))
     |> update_in([:collector], fn c ->
       %{
         c
-        | claude_dirs: c.claude_dirs && Enum.map(List.wrap(c.claude_dirs), &Path.expand/1),
+        | poll_seconds: whole(c[:poll_seconds], @defaults.collector.poll_seconds),
+          backfill_days: whole(c[:backfill_days], @defaults.collector.backfill_days),
+          outbox_mb: whole(c[:outbox_mb], @defaults.collector.outbox_mb),
+          claude_dirs: c.claude_dirs && Enum.map(List.wrap(c.claude_dirs), &Path.expand/1),
           codex_dirs: c.codex_dirs && Enum.map(List.wrap(c.codex_dirs), &Path.expand/1),
           dir: collector_dir(c.dir)
       }
@@ -751,6 +754,11 @@ defmodule Wallboard.Settings do
   """
   def collector_dir(dir) when is_binary(dir) and dir != "", do: Path.expand(dir)
   def collector_dir(_), do: nil |> db_path() |> Path.dirname() |> Path.join("collector")
+
+  # A whole number of 1 or more, or the default: the collector does sums
+  # with these, and a fraction or a nil there would stop it.
+  defp whole(n, _default) when is_integer(n) and n >= 1, do: n
+  defp whole(_, default), do: default
 
   # The file may say `updates: false` or leave `check` out; the rest of the
   # board only ever sees %{check: true} or %{check: false}.

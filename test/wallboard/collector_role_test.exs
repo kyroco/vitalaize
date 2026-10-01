@@ -98,7 +98,7 @@ defmodule Wallboard.CollectorRoleTest do
     for name <- @hub_only, do: assert(Process.whereis(name) == nil)
 
     # It keeps its place in its own folder, and makes no database.
-    assert File.regular?(Path.join(settings.collector.dir, "outbox/state"))
+    assert File.dir?(Path.join(settings.collector.dir, "outbox"))
     refute File.exists?(settings.archive.path)
   end
 
@@ -146,6 +146,20 @@ defmodule Wallboard.CollectorRoleTest do
       System.put_env("WALLBOARD_ROLE", "collector")
       on_exit(fn -> System.delete_env("WALLBOARD_ROLE") end)
       assert Settings.base().role == :collector
+    end
+
+    test "a setting of the wrong kind falls back instead of stopping the start" do
+      settings =
+        Settings.defaults()
+        |> Settings.merge(%{
+          archive: %{collect_local: nil},
+          collector: %{poll_seconds: 2.5, backfill_days: nil, outbox_mb: 0}
+        })
+        |> Settings.normalize()
+
+      refute settings.archive.collect_local
+      keys = [:poll_seconds, :backfill_days, :outbox_mb]
+      assert Map.take(settings.collector, keys) == Map.take(Settings.defaults().collector, keys)
     end
 
     test "the collector's folder sits beside the database's usual place" do

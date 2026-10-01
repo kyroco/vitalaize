@@ -130,15 +130,35 @@ defmodule Wallboard.CollectorOutboxTest do
   end
 
   @tag :capture_log
-  test "a saved point that cannot be read starts the outbox over", %{dir: dir} do
+  test "a saved point that cannot be read is rebuilt from the events, which are kept", %{
+    dir: dir
+  } do
     box = start(dir)
-    Outbox.append(box, [event(1)], "a")
+    Outbox.append(box, [event(1), event(2)], "a")
     GenServer.stop(box)
     File.write!(Path.join(dir, "state"), "not json")
 
     box = start(dir)
+    # The caller's place is gone, so it starts over; the events stay and
+    # the numbers carry on.
     assert Outbox.checkpoint(box) == nil
-    assert Outbox.read(box, 0) == []
-    assert files(dir) == []
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
+    assert Outbox.append(box, [event(3)], "b") == 3
+  end
+
+  test "an append the disk refuses is an answer, not a crash, and leaves nothing behind", %{
+    dir: dir
+  } do
+    box = start(dir)
+    Outbox.append(box, [event(1)], "a")
+
+    File.chmod!(dir, 0o500)
+    assert {:error, _} = Outbox.append(box, [event(2)], "b")
+    File.chmod!(dir, 0o700)
+
+    assert Outbox.checkpoint(box) == "a"
+    assert Outbox.read(box, 0) == [{1, event(1)}]
+    assert Outbox.append(box, [event(2)], "b") == 2
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
   end
 end

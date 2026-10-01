@@ -414,18 +414,47 @@ defmodule Wallboard.CollectorWatcherTest do
       agents(c, [{@claude_id, %{"status" => "busy"}}])
       w = start(c, max_bytes: 100)
 
-      # The first file fills it; the second file and the statuses wait.
-      assert look(w) == filtered(claude_ctx(), claude, c)
+      # The files' events fill it; the statuses wait.
+      assert look(w) == filtered(claude_ctx(), claude, c) ++ filtered(codex_ctx(), codex, c)
       assert look(w) == []
 
-      Outbox.ack(w.outbox, Outbox.stats(w.outbox).seq)
-      assert look(w) == filtered(codex_ctx(), codex, c)
       Outbox.ack(w.outbox, Outbox.stats(w.outbox).seq)
 
       assert statuses(look(w)) == [
                {@claude_id, :WORKING, :WHY_UNKNOWN, ""},
                {@codex_id, :IDLE, :WHY_UNKNOWN, ""}
              ]
+    end
+
+    test "a long file goes out a couple of hundred events at a time, picking up where it stopped",
+         c do
+      # Every line is a new prompt, so every line gives an event.
+      many =
+        for n <- 1..1_000 do
+          Jason.encode!(%{
+            type: "user",
+            timestamp: "2026-09-29T13:00:00.000Z",
+            cwd: "/Users/r/projects/shop",
+            sessionId: @claude_id,
+            message: %{role: "user", content: "prompt number #{n}"}
+          })
+        end
+
+      add(claude_path(c, @claude_id <> ".jsonl"), many)
+      w = start(c, max_bytes: 100)
+      want = filtered(claude_ctx(), many, c)
+      assert length(want) == 1_000
+
+      rounds =
+        Enum.map(1..5, fn _ ->
+          new = look(w)
+          Outbox.ack(w.outbox, Outbox.stats(w.outbox).seq)
+          new
+        end)
+
+      assert Enum.map(rounds, &length/1) == [200, 200, 200, 200, 200]
+      assert Enum.concat(rounds) == want
+      assert look(w) == []
     end
 
     test "a session file that got shorter is read as new", c do
@@ -463,6 +492,139 @@ defmodule Wallboard.CollectorWatcherTest do
       for path <- Path.wildcard(Path.join(c.settings.collector.dir, "**")), File.regular?(path) do
         refute File.read!(path) =~ "PLANTED"
       end
+    end
+  end
+
+  describe "cases the reviews found" do
+    test "a restart does not end a Codex session that still waits on an approval", c do
+      add(codex_path(c), Enum.take(lines("collector/codex_rollout.jsonl"), 12))
+      mark(c, %{"hook_event_name" => "PermissionRequest", "tool_name" => "shell"})
+      w = start(c)
+      assert statuses(look(w)) == [{@codex_id, :WAITING, :PERMISSION, "shell"}]
+
+      # Hours later it still waits; its file has been quiet all that time.
+      minutes = c.settings.codex.idle_minutes + 30
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, minutes * 60)})
+      assert look(w) == []
+      stop()
+
+      w = start(c)
+      assert look(w) == []
+      assert look(w) == []
+    end
+
+    test "an approval request on a Codex file already put away is still reported", c do
+      add(codex_path(c), Enum.take(lines("collector/codex_rollout.jsonl"), 12))
+      w = start(c)
+      assert statuses(look(w)) == [{@codex_id, :WORKING, :WHY_UNKNOWN, ""}]
+
+      minutes = c.settings.codex.idle_minutes + 1
+      Agent.update(c.world, &%{&1 | now: DateTime.add(&1.now, minutes * 60)})
+      assert ended(look(w)) == [@codex_id]
+
+      mark(c, %{"hook_event_name" => "PermissionRequest", "tool_name" => "shell"})
+      assert statuses(look(w)) == [{@codex_id, :WAITING, :PERMISSION, "shell"}]
+      assert look(w) == []
+    end
+
+    test "a session listed twice gets one status, not two on every look", c do
+      w = start(c)
+      agents(c, [{@claude_id, %{"status" => "busy"}}, {@claude_id, %{"status" => "idle"}}])
+      assert statuses(look(w)) == [{@claude_id, :WORKING, :WHY_UNKNOWN, ""}]
+      assert look(w) == []
+      assert look(w) == []
+    end
+
+    test "a session file replaced by a longer one is read as new", c do
+      all = lines("collector/claude_session.jsonl")
+      path = claude_path(c, @claude_id <> ".jsonl")
+      add(path, all)
+      w = start(c)
+      assert look(w) == filtered(claude_ctx(), all, c)
+
+      [first | rest] = all
+      other = [String.replace(first, "Fix the login loop", "Fix the logout loop too") | rest]
+      File.write!(path, text(other))
+      assert look(w) == filtered(claude_ctx(), other, c)
+      stop()
+
+      # The same holds when the collector was down as it happened.
+      File.write!(path, text(all ++ Enum.take(all, -1)))
+      w = start(c)
+      assert look(w) == filtered(claude_ctx(), all ++ Enum.take(all, -1), c)
+    end
+
+    @tag :capture_log
+    test "an outbox that cannot be written makes it wait, then nothing is lost or repeated", c do
+      all = lines("collector/claude_session.jsonl")
+      w = start(c)
+      assert look(w) == []
+      dir = Path.join(c.settings.collector.dir, "outbox")
+
+      File.chmod!(dir, 0o500)
+      add(claude_path(c, @claude_id <> ".jsonl"), all)
+      agents(c, [{@claude_id, %{"status" => "busy"}}])
+      assert look(w) == []
+      assert look(w) == []
+      assert Process.alive?(w.watcher) and Process.alive?(w.outbox)
+
+      File.chmod!(dir, 0o700)
+      new = look(w)
+      assert from_files(new) == filtered(claude_ctx(), all, c)
+      assert statuses(new) == [{@claude_id, :WORKING, :WHY_UNKNOWN, ""}]
+      assert look(w) == []
+    end
+
+    test "a Codex file with a bad line costs only its own session its status", c do
+      add(codex_path(c), lines("collector/codex_rollout.jsonl"))
+      other = "01a0c9db-3044-75f0-99fe-000000000bad"
+
+      bad = [
+        Jason.encode!(%{
+          timestamp: "2026-09-29T15:00:00.000Z",
+          type: "session_meta",
+          payload: %{id: other, cwd: "/tmp", originator: "Codex Desktop"}
+        }),
+        Jason.encode!(%{type: "session_meta", payload: %{id: %{a: "b"}, cwd: %{x: 1}}})
+      ]
+
+      name = "rollout-2026-09-29T15-00-00-" <> other <> ".jsonl"
+      add(Path.join([c.home, ".codex/sessions/2026/09/29", name]), bad)
+      w = start(c)
+
+      assert {@codex_id, :IDLE, :WHY_UNKNOWN, ""} in statuses(look(w))
+      assert look(w) == []
+    end
+
+    test "a tool name that is not one never reaches the collector's saved place", c do
+      add(codex_path(c), Enum.take(lines("collector/codex_rollout.jsonl"), 12))
+
+      mark(c, %{
+        "hook_event_name" => "PermissionRequest",
+        "tool_name" => "curl -H 'Authorization: Bearer PLANTED_TOOL_SECRET'"
+      })
+
+      w = start(c)
+      assert statuses(look(w)) == [{@codex_id, :WAITING, :PERMISSION, ""}]
+      assert look(w) == []
+      refute File.read!(Path.join(c.settings.collector.dir, "outbox/state")) =~ "PLANTED"
+    end
+
+    test "a session whose folder is no longer watched has ended", c do
+      agents(c, [{@claude_id, %{"status" => "busy"}}])
+      add(codex_path(c), lines("collector/codex_rollout.jsonl"))
+      w = start(c)
+      assert length(statuses(look(w))) == 2
+      stop()
+
+      settings =
+        c.settings
+        |> put_in([:collector, :claude_dirs], [])
+        |> put_in([:codex, :enabled], false)
+
+      w = start(%{c | settings: settings})
+      assert ended(look(w)) == [@claude_id, @codex_id]
+      assert look(w) == []
     end
   end
 

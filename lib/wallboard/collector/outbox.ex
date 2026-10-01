@@ -21,8 +21,14 @@ defmodule Wallboard.Collector.Outbox do
   The outbox holds about `max_bytes`. Past that, `room?/1` says no and the
   watcher stops reading until the link has sent some and called `ack/2`.
   Nothing is lost by waiting: the session files are still there to read.
-  One append can go over the limit by what one read of a session file
-  gives, so the limit is close, not exact.
+  The watcher adds a couple of hundred events at a time and asks again
+  after each, so the outbox goes over the limit by one such batch at most
+  (a few megabytes when every event is as large as an event can be).
+
+  An append the disk refuses (full, or not writable) answers
+  `{:error, reason}` and leaves nothing behind. The watcher then waits and
+  tries again. A saved point that cannot be read is rebuilt from the event
+  files, which are kept.
 
   ## On disk
 
@@ -54,10 +60,11 @@ defmodule Wallboard.Collector.Outbox do
   @doc """
   Adds events, then saves `checkpoint` (a text of the caller's own making)
   as the point they belong to. Returns the number of the last event in the
-  outbox.
+  outbox, or `{:error, reason}` when the disk would not take them, in which
+  case nothing of the append is kept.
   """
   def append(server \\ __MODULE__, events, checkpoint) when is_binary(checkpoint),
-    do: GenServer.call(server, {:append, events, checkpoint}, 60_000)
+    do: GenServer.call(server, {:append, events, checkpoint}, :infinity)
 
   @doc "The checkpoint given to the last `append/3`, or nil when there is none."
   def checkpoint(server \\ __MODULE__), do: GenServer.call(server, :checkpoint, 60_000)
@@ -83,19 +90,21 @@ defmodule Wallboard.Collector.Outbox do
     dir = Keyword.fetch!(opts, :dir)
     File.mkdir_p!(dir)
     File.chmod!(dir, 0o700)
-    saved = load(dir)
 
     state = %{
       dir: dir,
       max_bytes: Keyword.get(opts, :max_bytes, 64_000_000),
-      seq: saved.seq,
-      acked: saved.acked,
-      checkpoint: saved.checkpoint,
+      seq: 0,
+      acked: 0,
+      checkpoint: nil,
       # {number of the first event, how many events, bytes}, oldest first.
       segments: []
     }
 
-    {:ok, state |> recover() |> drop_sent()}
+    case load(dir) do
+      :damaged -> {:ok, rebuild(state)}
+      saved -> {:ok, state |> Map.merge(saved) |> recover() |> drop_sent()}
+    end
   end
 
   @impl true
@@ -103,10 +112,15 @@ defmodule Wallboard.Collector.Outbox do
     do: {:reply, state.seq, state}
 
   def handle_call({:append, events, checkpoint}, _from, state) do
-    state = events |> Enum.map(&record/1) |> write(state)
-    state = %{state | checkpoint: checkpoint}
-    save(state)
-    {:reply, state.seq, state}
+    with {:ok, written} <- events |> Enum.map(&record/1) |> write(state),
+         written = %{written | checkpoint: checkpoint},
+         :ok <- save(written) do
+      {:reply, written.seq, written}
+    else
+      # Nothing of a failed append stays: the files go back to the last
+      # saved point, and the caller tries again later.
+      {:error, reason} -> {:reply, {:error, reason}, recover(%{state | segments: []})}
+    end
   end
 
   def handle_call(:checkpoint, _from, state), do: {:reply, state.checkpoint, state}
@@ -129,6 +143,7 @@ defmodule Wallboard.Collector.Outbox do
 
   def handle_call({:ack, seq}, _from, state) when is_integer(seq) do
     state = drop_sent(%{state | acked: seq |> max(state.acked) |> min(state.seq)})
+    # Unsaved, a restart only offers the hub some events again.
     save(state)
     {:reply, :ok, state}
   end
@@ -140,7 +155,11 @@ defmodule Wallboard.Collector.Outbox do
   # Never print events or the checkpoint in a crash report.
   @impl true
   def format_status(status),
-    do: Map.update(status, :state, nil, &Map.take(&1, [:dir, :seq, :acked]))
+    do:
+      status
+      |> Map.update(:state, nil, &Map.take(&1, [:dir, :seq, :acked]))
+      |> Map.replace(:message, :not_shown)
+      |> Map.replace(:log, [])
 
   # ---------------------------------------------------------------------------
   # Files
@@ -154,7 +173,7 @@ defmodule Wallboard.Collector.Outbox do
   end
 
   # Adds to the newest file until it is full, then starts another.
-  defp write([], state), do: state
+  defp write([], state), do: {:ok, state}
 
   defp write(records, state) do
     {first, count, size} =
@@ -165,19 +184,22 @@ defmodule Wallboard.Collector.Outbox do
 
     file = path(state.dir, first)
     new? = count == 0
-    {:ok, io} = :file.open(file, [:append, :binary, :raw])
 
-    try do
-      if new?, do: File.chmod!(file, 0o600)
-      :ok = :file.write(io, records)
-      :ok = :file.datasync(io)
-    after
-      :file.close(io)
+    with {:ok, io} <- :file.open(file, [:append, :binary, :raw]),
+         result = write_synced(io, file, new?, records),
+         :ok <- :file.close(io),
+         :ok <- result do
+      segment = {first, count + length(records), size + IO.iodata_length(records)}
+      kept = if new?, do: state.segments, else: Enum.drop(state.segments, -1)
+      {:ok, %{state | segments: kept ++ [segment], seq: state.seq + length(records)}}
     end
+  end
 
-    segment = {first, count + length(records), size + IO.iodata_length(records)}
-    kept = if new?, do: state.segments, else: Enum.drop(state.segments, -1)
-    %{state | segments: kept ++ [segment], seq: state.seq + length(records)}
+  defp write_synced(io, file, new?, records) do
+    with :ok <- if(new?, do: File.chmod(file, 0o600), else: :ok),
+         :ok <- :file.write(io, records) do
+      :file.datasync(io)
+    end
   end
 
   # Written beside itself and moved into place, so a stop halfway leaves
@@ -186,10 +208,12 @@ defmodule Wallboard.Collector.Outbox do
     file = Path.join(state.dir, "state")
     tmp = file <> ".tmp"
     saved = %{"seq" => state.seq, "acked" => state.acked, "checkpoint" => state.checkpoint}
-    File.write!(tmp, "")
-    File.chmod!(tmp, 0o600)
-    File.write!(tmp, Jason.encode!(saved), [:sync])
-    File.rename!(tmp, file)
+
+    with :ok <- File.write(tmp, ""),
+         :ok <- File.chmod(tmp, 0o600),
+         :ok <- File.write(tmp, Jason.encode!(saved), [:sync]) do
+      File.rename(tmp, file)
+    end
   end
 
   defp load(dir) do
@@ -200,13 +224,28 @@ defmodule Wallboard.Collector.Outbox do
          true <- is_nil(checkpoint) or is_binary(checkpoint) do
       %{seq: seq, acked: acked, checkpoint: checkpoint}
     else
-      {:error, :enoent} ->
-        %{seq: 0, acked: 0, checkpoint: nil}
-
-      _ ->
-        Logger.warning("Collector: the outbox's saved point could not be read. Starting over.")
-        %{seq: 0, acked: 0, checkpoint: nil}
+      {:error, :enoent} -> %{seq: 0, acked: 0, checkpoint: nil}
+      _ -> :damaged
     end
+  end
+
+  # With no saved point to go by, the event files say what there is: every
+  # whole event in them is kept and the numbers carry on from the last. The
+  # caller's place is gone, so it starts over and some events come twice,
+  # which the hub takes in its stride.
+  defp rebuild(state) do
+    Logger.warning("Collector: the outbox's saved point could not be read. Rebuilding it.")
+    state = recover(%{state | seq: :all})
+
+    {seq, acked} =
+      case {List.first(state.segments), List.last(state.segments)} do
+        {{first, _, _}, {last, count, _}} -> {last + count - 1, first - 1}
+        _ -> {0, 0}
+      end
+
+    state = %{state | seq: seq, acked: acked, checkpoint: nil}
+    save(state)
+    state
   end
 
   # Lines the files up with the saved point: whatever was written after it
@@ -226,7 +265,7 @@ defmodule Wallboard.Collector.Outbox do
 
   defp keep(file, first, seq) do
     {all, _} = records(File.read!(file))
-    kept = Enum.take(all, max(seq - first + 1, 0))
+    kept = if seq == :all, do: all, else: Enum.take(all, max(seq - first + 1, 0))
     size = kept |> Enum.map(&(byte_size(&1) + 4)) |> Enum.sum()
 
     cond do
