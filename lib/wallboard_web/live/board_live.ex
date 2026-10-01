@@ -1345,12 +1345,12 @@ defmodule WallboardWeb.BoardLive do
     >
       <div class="row">
         <.tool_icon tool={@a[:tool]} />
-        <span class="sc-name">{@a.title || short_id(@a.session_id)}</span>
+        <span class="sc-name">{@a.title || short_id(@a)}</span>
         <span class="grow"></span>
         <span class={["badge", archive_badge_class(@a, @live?)]}>{archive_badge(@a, @live?)}</span>
       </div>
       <div class="sc-meta">
-        <span class="sc-id">{short_id(@a.session_id)}</span>
+        <span class="sc-id">{short_id(@a)}</span>
         <span :if={@local && @a.machine != @local} class="acct">{@a.machine}</span>
         <span :if={@a.account} class="acct">{@a.account}</span>
         <span :if={@a.cwd} class="sc-folder">{Path.basename(@a.cwd)}</span>
@@ -1390,8 +1390,14 @@ defmodule WallboardWeb.BoardLive do
   defp korium_used?(a),
     do: a.korium_searches + a.korium_saves + a.code_searches + a.korium_index + a.korium_other > 0
 
-  defp short_id(nil), do: ""
-  defp short_id(id), do: String.slice(id, 0, 8)
+  # A saved session's id as shown. A Codex id starts with the time, so its
+  # end tells sessions apart.
+  defp short_id(%{session_id: nil}), do: ""
+
+  defp short_id(%{tool: "codex", session_id: id}),
+    do: Wallboard.Archive.CodexTranscript.short_id(id)
+
+  defp short_id(%{session_id: id}), do: String.slice(id, 0, 8)
 
   defp model_label(nil), do: nil
 
@@ -1617,7 +1623,7 @@ defmodule WallboardWeb.BoardLive do
       <div class="detail" phx-click="noop">
         <div class="row">
           <.tool_icon tool={@s[:tool]} />
-          <h2 class="detail-title">{@s.title || short_id(@s.session_id)}</h2>
+          <h2 class="detail-title">{@s.title || short_id(@s)}</h2>
           <span class={["badge", if(@s.deleted_at, do: "badge-deleted", else: "badge-idle")]}>
             {if @s.deleted_at, do: "Deleted from disk", else: "Saved"}
           </span>
@@ -1629,7 +1635,7 @@ defmodule WallboardWeb.BoardLive do
           <span :if={@s.cwd}>{@s.cwd}</span>
           <span :if={@s.git_branch}>branch {@s.git_branch}</span>
           <span>{@s.machine}</span>
-          <span>{short_id(@s.session_id)}</span>
+          <span>{short_id(@s)}</span>
           <span :if={@s.version}>Claude Code {@s.version}</span>
         </div>
         <div class="detail-meta">

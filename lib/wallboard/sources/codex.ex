@@ -12,6 +12,10 @@ defmodule Wallboard.Sources.Codex do
     * idle: its last turn finished; it stays on the board for
       `codex.idle_minutes` after its file last changed
 
+  A chat the Codex app copied in from another tool is a session file too,
+  written whole in one moment. It is nobody's session, so it gets no card
+  until someone carries it on in Codex (see `CodexTranscript.copy?/1`).
+
   Codex writes nothing to that file while it waits on a person, so needing
   you comes from VitalAIze's Codex hook instead (priv/codex-hook.sh). The
   board keeps a copy at <codex dir>/vitalaize/hook.sh; once the person adds
@@ -447,6 +451,9 @@ defmodule Wallboard.Sources.Codex do
 
     mains
     |> Enum.filter(& &1.thread_id)
+    # A chat the Codex app copied in is nobody's session until someone
+    # carries it on.
+    |> Enum.reject(&CodexTranscript.copy?/1)
     |> Enum.map(fn t ->
       kids = Map.get(subs_by_parent, t.thread_id, [])
       card(t, kids, titles[t.thread_id], now_s, marks)
@@ -511,8 +518,9 @@ defmodule Wallboard.Sources.Codex do
       key: "codex:" <> t.thread_id,
       session_id: t.thread_id,
       name:
-        title || short_prompt(t.first_prompt) || folder(t.cwd) || String.slice(t.thread_id, 0, 8),
-      short_id: String.slice(t.thread_id, 0, 8),
+        title || short_prompt(t.first_prompt) || folder(t.cwd) ||
+          CodexTranscript.short_id(t.thread_id),
+      short_id: CodexTranscript.short_id(t.thread_id),
       account: nil,
       kind: "codex",
       folder: folder(t.cwd),
@@ -533,7 +541,7 @@ defmodule Wallboard.Sources.Codex do
           :idle -> updated
         end,
       detail: %{
-        tokens: Enum.sum(Enum.map(reqs, &(&1.input + &1.cache_read + &1.output))),
+        tokens: tokens(reqs, [t | kids]),
         plan_used: t.plan_used,
         model_label: t.model,
         effort: t.effort,
@@ -551,6 +559,53 @@ defmodule Wallboard.Sources.Codex do
           end)
       }
     }
+  end
+
+  # The tokens of every reply. A file in the older shape has no reply
+  # records, only one total for the whole chat, so that total stands in.
+  defp tokens([], tallies), do: Enum.sum(Enum.map(tallies, &(&1[:total_tokens] || 0)))
+  defp tokens(reqs, _), do: Enum.sum(Enum.map(reqs, &(&1.input + &1.cache_read + &1.output)))
+
+  @imports "external_agent_session_imports.json"
+  # A copy's file is written within a second of the time Codex notes for
+  # the import (measured: 0 or 1 second on 44 files).
+  @import_slack 5
+
+  @doc """
+  The chats the Codex app copied in from Claude sessions this machine
+  already reads, as `%{thread id => when Codex imported it}`.
+
+  Codex keeps its own list of what it imported, in each Codex folder's
+  `#{@imports}`: for every chat, the thread it made (`imported_thread_id`),
+  the file it copied (`source_path`) and when (`imported_at`). A source
+  under one of `claude_dirs`' `projects` folders is a Claude session that
+  is saved from its own transcript, with its real tokens and cost.
+  """
+  def claude_copies(codex_dirs, claude_dirs) do
+    roots = Enum.map(claude_dirs, &(Path.join(Path.expand(&1), "projects") <> "/"))
+
+    for dir <- codex_dirs,
+        {:ok, text} <- [File.read(Path.join(dir, @imports))],
+        {:ok, %{"records" => records}} when is_list(records) <- [Jason.decode(text)],
+        %{"imported_thread_id" => id, "source_path" => source, "imported_at" => at} <- records,
+        is_binary(id) and is_binary(source) and is_integer(at),
+        Enum.any?(roots, &String.starts_with?(Path.expand(source), &1)),
+        into: %{},
+        do: {id, at}
+  end
+
+  @doc """
+  True for a session file that is still only the copy of a Claude session:
+  Codex lists it in `copies` (see `claude_copies/2`) and it has not changed
+  since. Such a file is not saved or sent: the Claude session it was copied
+  from already is. One that someone carried on in Codex has changed, and is
+  a Codex session from then on.
+  """
+  def claude_copy?(copies, thread_id, mtime) do
+    case copies do
+      %{^thread_id => imported_at} -> mtime <= imported_at + @import_slack
+      _ -> false
+    end
   end
 
   # Who started it, when it was not a person in Codex itself.

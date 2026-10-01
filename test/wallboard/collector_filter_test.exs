@@ -621,8 +621,14 @@ defmodule Wallboard.CollectorFilterTest do
               assert event.position == Filter.position(state)
               assert event.session_id == ctx.session_id and event.file == ctx.file
 
-              with {:ok, time, _} <- DateTime.from_iso8601(Jason.decode!(line)["timestamp"] || "") do
-                assert event.at == DateTime.to_unix(time)
+              line = Jason.decode!(line)
+
+              # A Codex file's first line carries no time: nothing has said
+              # yet whether the file is a chat the Codex app copied in.
+              with {:ok, time, _} <- DateTime.from_iso8601(line["timestamp"] || "") do
+                if line["type"] == "session_meta",
+                  do: assert(event.at == 0),
+                  else: assert(event.at == DateTime.to_unix(time))
               end
             end
 

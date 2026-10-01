@@ -41,7 +41,11 @@ defmodule Wallboard.Collector.Filter do
   ## Positions, and why a repeat is harmless
 
   Every event names its session, its file and the byte just past the line
-  it came from. All of a line's items travel in that one event, so a line
+  it came from, and carries that line's time. Two exceptions, both in Codex
+  files: the first line carries no time (`at` is 0), and the lines of a
+  chat the Codex app copied in carry the time the conversation happened,
+  not the moment of the copy (see `Wallboard.Archive.CodexTranscript`).
+  All of a line's items travel in that one event, so a line
   reaches the hub whole or not at all. The hub keeps the highest position
   per session and file and sends it back in `Resume`, and the collector
   sends only the events past it.

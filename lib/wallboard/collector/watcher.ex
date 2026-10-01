@@ -18,6 +18,11 @@ defmodule Wallboard.Collector.Watcher do
       since Codex writes nothing to a session file while it waits
 
   Every session is reported, whatever folder or repository it works in.
+  One kind of Codex file is not a session: a chat the Codex app copied in
+  from another tool. It never gets a live status. When it is the copy of a
+  Claude session in a folder watched here, it is not sent at all, since
+  that session goes out from its own file; it is sent, whole, once someone
+  carries it on in Codex (see `Wallboard.Sources.Codex.claude_copy?/3`).
 
   ## The folders
 
@@ -206,6 +211,8 @@ defmodule Wallboard.Collector.Watcher do
       unready: %{},
       skip: MapSet.new(),
       titles: {nil, %{}},
+      # The chats the Codex app copied in from Claude sessions watched here.
+      copies: %{},
       # The Codex hook's notes, and the sessions with an approval request out.
       notes: %{},
       notes_read: %{},
@@ -622,7 +629,8 @@ defmodule Wallboard.Collector.Watcher do
         rested: Map.take(state.rested, paths),
         unready: Map.take(state.unready, paths),
         skip: MapSet.intersection(state.skip, MapSet.new(paths)),
-        titles: Codex.titles(%{codex: %{dirs: found.codex}}, state.titles)
+        titles: Codex.titles(%{codex: %{dirs: found.codex}}, state.titles),
+        copies: Codex.claude_copies(found.codex, found.claude)
     }
   end
 
@@ -779,17 +787,24 @@ defmodule Wallboard.Collector.Watcher do
     end
   end
 
-  defp context(state, path, %{tool: :codex, dir: dir}) do
+  defp context(state, path, %{tool: :codex, dir: dir, mtime: mtime}) do
     case codex_head(path) do
       {id, parent, _nickname} when is_binary(id) and (is_nil(parent) or is_binary(parent)) ->
-        %{
-          tool: :codex,
-          session_id: parent || id,
-          file: Path.relative_to(path, Path.join(dir, "sessions")),
-          subagent: parent != nil,
-          account: Archive.codex_account(dir),
-          title: if(parent, do: nil, else: elem(state.titles, 1)[id])
-        }
+        # A chat the Codex app copied in from a Claude session this
+        # collector sends anyway is not sent a second time. It is looked at
+        # again once it has grown, which is someone carrying it on in Codex.
+        if Codex.claude_copy?(state.copies, id, mtime) do
+          nil
+        else
+          %{
+            tool: :codex,
+            session_id: parent || id,
+            file: Path.relative_to(path, Path.join(dir, "sessions")),
+            subagent: parent != nil,
+            account: Archive.codex_account(dir),
+            title: if(parent, do: nil, else: elem(state.titles, 1)[id])
+          }
+        end
 
       _ ->
         nil
