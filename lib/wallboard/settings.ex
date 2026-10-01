@@ -35,6 +35,10 @@ defmodule Wallboard.Settings do
   @repo_words [gate_workflow: "gate", dev_deploy: "dev", prod_deploy: "prod"]
   @repo_keys Keyword.keys(@repo_words)
 
+  # The fields a form has for the first repository's workflows, as it
+  # names them.
+  @first_repo_fields Enum.map(@repo_keys, &"github.#{&1}")
+
   # A workflow file as a form takes it: a name like ci.yml, never a path
   # and never "." or "..".
   @workflow_file ~r/\A\w[\w.-]*\z/
@@ -489,7 +493,9 @@ defmodule Wallboard.Settings do
 
   "Under" is worked out in the role that will be in effect after this
   save (`under_saved/1`), since the role shapes other settings; the role
-  itself is compared with the file's.
+  itself is compared with the file's. The gate and deploy workflow fields
+  are the first repository's, so they are compared with what is under the
+  saved settings for the repository this save leaves first.
   """
   def change(values) do
     saved = read_saved!()
@@ -505,7 +511,12 @@ defmodule Wallboard.Settings do
     under_file = under_saved(nil)
     under = if role, do: under_saved(role), else: under_file
 
-    Enum.reduce(values, {saved, %{}}, fn {key, raw}, {saved, errors} ->
+    # The gate and deploy fields are the first repository's, and which one
+    # is first follows from the list this save leaves. So they are looked
+    # at last, against the settings with that list in place.
+    values
+    |> Enum.sort_by(fn {key, _} -> key in @first_repo_fields end)
+    |> Enum.reduce({saved, %{}}, fn {key, raw}, {saved, errors} ->
       case fields[key] do
         nil ->
           {saved, Map.put(errors, key, "#{key} is not a setting")}
@@ -516,7 +527,14 @@ defmodule Wallboard.Settings do
               {saved, errors}
 
             {:ok, value} ->
-              if value == current(if(path == [:role], do: under_file, else: under), path, type),
+              base =
+                cond do
+                  path == [:role] -> under_file
+                  key in @first_repo_fields -> with_saved_repos(under, saved)
+                  true -> under
+                end
+
+              if value == current(base, path, type),
                 do: {drop_path(saved, path), errors},
                 else: {put_path(saved, path, plain_repos(path, value, under)), errors}
 
@@ -530,6 +548,14 @@ defmodule Wallboard.Settings do
       {_, errors} -> {:error, errors}
     end
   end
+
+  # What is under the saved settings, with the saved list of repositories
+  # laid over it: the first repository there is the one the gate and deploy
+  # fields are for.
+  defp with_saved_repos(under, %{github: %{repos: repos}}) when is_list(repos),
+    do: apply_overrides(under, %{github: %{repos: repos}})
+
+  defp with_saved_repos(under, _saved), do: under
 
   # A repository whose workflows are the same as the settings file gives it
   # is saved by name alone, so it goes on following the file when the file
@@ -981,22 +1007,29 @@ defmodule Wallboard.Settings do
 
       true ->
         # As the form shows them, so a repository keeps the workflows it names.
-        settings
-        |> repo_fields()
-        |> Enum.reject(&(repo_line(&1) == @defaults.github.repo))
-        |> case do
-          # With the example gone, the one now first is a name alone.
-          [%{repo: first} | rest] -> [first | rest]
-          fields -> fields
+        fields =
+          settings |> repo_fields() |> Enum.reject(&(repo_line(&1) == @defaults.github.repo))
+
+        # With the example gone, the one now first is a name alone, and the
+        # workflows it named go where the first repository's are kept: the
+        # gate and deploy fields.
+        {fields, own} =
+          case fields do
+            [%{repo: first} = entry | rest] -> {[first | rest], Map.delete(entry, :repo)}
+            fields -> {fields, %{}}
+          end
+
+        lines = Enum.map(fields, &repo_line/1) ++ [name]
+
+        for {key, file} <- own, into: %{"github.repos" => Enum.join(lines, "\n")} do
+          {"github.#{key}", file || ""}
         end
-        |> Enum.map(&repo_line/1)
-        |> Kernel.++([name])
         |> save_repos()
     end
   end
 
-  defp save_repos(lines) do
-    with {:ok, saved} <- change(%{"github.repos" => Enum.join(lines, "\n")}) do
+  defp save_repos(values) do
+    with {:ok, saved} <- change(values) do
       write_saved!(saved)
       # The board is running: what is only read at the start stays.
       reload!()

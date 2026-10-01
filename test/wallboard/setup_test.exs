@@ -138,7 +138,108 @@ defmodule Wallboard.SetupTest do
 
       Settings.load!()
       assert :ok = Settings.track_repo("acme/docs")
-      assert Jason.decode!(File.read!(c.saved))["github"]["repos"] == ["acme/mobile", "acme/docs"]
+
+      # Nothing else is saved for it: its gate is still the file's to give.
+      assert Jason.decode!(File.read!(c.saved)) == %{
+               "github" => %{"repos" => ["acme/mobile", "acme/docs"]}
+             }
+
+      assert [%{repo: "acme/mobile", gate_workflow: "build.yml"}, _] =
+               Settings.github_repos(Settings.get())
+    end
+
+    test "a Track that moves a repo to the top keeps the workflows saved for it", c do
+      settings_file(c.dir)
+
+      # Someone added a repo under the example name without taking that out.
+      typed = "your-org/your-repo\nacme/mobile gate=build.yml prod=ship.yml"
+      assert {:ok, over} = Settings.change(%{"github.repos" => typed})
+      Settings.save!(over)
+
+      assert :ok = Settings.track_repo("acme/docs")
+
+      # Mobile is first now, so its workflows are the gate and deploy fields.
+      assert Jason.decode!(File.read!(c.saved))["github"] == %{
+               "repos" => ["acme/mobile", "acme/docs"],
+               "gate_workflow" => "build.yml",
+               "prod_deploy" => "ship.yml"
+             }
+
+      assert [mobile, docs] = Settings.github_repos(Settings.load!())
+      assert mobile.gate_workflow == "build.yml" and mobile.prod_deploy == "ship.yml"
+      assert docs.gate_workflow == nil
+    end
+
+    # The file both cases start from: a shared gate, and a second repo with
+    # a gate of its own.
+    defp two_gates(c, repos) do
+      File.write!(Path.join(c.dir, "settings.exs"), """
+      %{
+        archive: %{path: #{inspect(Path.join(c.dir, "wallboard.db"))}, advertise: false},
+        github: %{gate_workflow: "gate.yml", repos: #{repos}}
+      }
+      """)
+
+      Settings.load!()
+    end
+
+    defp save(values) do
+      assert {:ok, over} = Settings.change(values)
+      Settings.save!(over)
+    end
+
+    defp gates(settings),
+      do: Enum.map(Settings.github_repos(settings), &{&1.repo, &1.gate_workflow})
+
+    test "a gate typed in the field is the first repo's, whichever repo a saved list puts first",
+         c do
+      two_gates(c, ~s(["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]))
+
+      # Mobile moves to the top and keeps its own gate, which the field shows.
+      now = save(%{"github.repos" => "acme/mobile\nacme/api"})
+      assert gates(now) == [{"acme/mobile", "build.yml"}, {"acme/api", nil}]
+      assert Settings.shown(now)["github.gate_workflow"] == "build.yml"
+
+      # The file's shared gate typed in the field is saved, not dropped for
+      # being what the file's own first repo has.
+      now = save(%{"github.gate_workflow" => "gate.yml"})
+      assert gates(now) == [{"acme/mobile", "gate.yml"}, {"acme/api", nil}]
+      assert Settings.shown(now)["github.gate_workflow"] == "gate.yml"
+      assert Jason.decode!(File.read!(c.saved))["github"]["gate_workflow"] == "gate.yml"
+
+      # Its own gate typed back is what the file gives it: nothing is kept.
+      now = save(%{"github.gate_workflow" => "build.yml"})
+      assert gates(now) == [{"acme/mobile", "build.yml"}, {"acme/api", nil}]
+      refute Map.has_key?(Jason.decode!(File.read!(c.saved))["github"], "gate_workflow")
+    end
+
+    test "the same when the file's first repo is the one with a gate of its own", c do
+      two_gates(c, ~s([%{repo: "acme/api", gate_workflow: "own.yml"}, "acme/mobile"]))
+
+      now = save(%{"github.repos" => "acme/mobile\nacme/api"})
+      assert gates(now) == [{"acme/mobile", "gate.yml"}, {"acme/api", "own.yml"}]
+      assert Settings.shown(now)["github.gate_workflow"] == "gate.yml"
+
+      now = save(%{"github.gate_workflow" => "own.yml"})
+      assert gates(now) == [{"acme/mobile", "own.yml"}, {"acme/api", "own.yml"}]
+      assert Settings.shown(now)["github.gate_workflow"] == "own.yml"
+    end
+
+    test "the Mac app's one save of the list and the fields together gives the first repo the gate its picker showed",
+         c do
+      two_gates(c, ~s(["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]))
+
+      # The order swapped, the picker left at the gate it showed for api.
+      now =
+        save(%{
+          "github.repos" => "acme/mobile\nacme/api",
+          "github.gate_workflow" => "gate.yml",
+          "github.dev_deploy" => "",
+          "github.prod_deploy" => ""
+        })
+
+      assert gates(now) == [{"acme/mobile", "gate.yml"}, {"acme/api", nil}]
+      assert [%{dev_deploy: nil, prod_deploy: nil}, _] = Settings.github_repos(now)
     end
   end
 
