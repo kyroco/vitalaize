@@ -910,13 +910,24 @@ defmodule Wallboard.StreamTest do
     hub = Process.whereis(Hub)
     :sys.suspend(hub)
     w = start_collector(c)
-    wait_until(fn -> Process.info(hub, :message_queue_len) != {:message_queue_len, 0} end)
+
+    wait_until(fn ->
+      {:messages, waiting} = Process.info(hub, :messages)
+      Enum.any?(waiting, &match?({:"$gen_call", _, {:attach, _, _, _}}, &1))
+    end)
+
     {:ok, _} = Authority.revoke(c.link, "papa")
     :sys.resume(hub)
 
     dir = c.collector.collector.dir
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
     assert Process.alive?(w.sender)
+
+    # Longer than its longest wait between tries: it has stopped for good.
+    client = :sys.get_state(w.sender).client
+    Process.sleep(500)
+    assert %{phase: :removed} = Wallboard.Link.Client.status(client)
+    assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
   end
 
   test "a collector that is not paired sends nothing, and starts once it is", c do
