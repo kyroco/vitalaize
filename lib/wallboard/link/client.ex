@@ -19,10 +19,12 @@ defmodule Wallboard.Link.Client do
     * `:up`: the stream is open
     * `{:resume, points}`: the hub's position in each session file, as
       `%{{session_id, file} => position}`. Whoever reads the session files
-      must, on every one of these, go back to these positions and push each
-      file's lines from there, in order, before any later line of that
-      file. The buffer has already dropped what the hub has, and while it
-      was full it may have refused a file's newer lines.
+      must, on every one of these: go back to these positions, call
+      `rewound/1`, then push each file's lines from there, in order. The
+      buffer has already dropped what the hub has. While it was full it
+      refused some files' newer lines, and it keeps refusing those files
+      until `rewound/1`, so a line read before the reader went back can
+      never slip in ahead of the ones that are missing.
     * `{:stored, seq}`: the hub saved everything up to this seq
     * `:back_soon`: the hub is restarting on purpose
     * `{:down, wait_ms}`: the stream is gone; the next try is in `wait_ms`
@@ -52,6 +54,9 @@ defmodule Wallboard.Link.Client do
     keepalive_ms: 20_000,
     silence_ms: 60_000,
     settle_ms: 10_000,
+    # How long a file the buffer stopped taking may wait for the buffer to
+    # empty before the stream is restarted to get it going again.
+    shed_restart_ms: 30_000,
     connect_ms: 10_000
   }
 
@@ -70,6 +75,14 @@ defmodule Wallboard.Link.Client do
 
   def push(client, events) when is_list(events),
     do: GenServer.call(client, {:push, events}, 30_000)
+
+  @doc """
+  Says the reader of the session files has gone back to the positions of
+  the last `{:resume, points}`. Files the buffer had stopped taking are
+  taken again from here on. Call it before pushing the lines from those
+  positions, and only then.
+  """
+  def rewound(client \\ __MODULE__), do: GenServer.call(client, :rewound, 30_000)
 
   @doc "The pace the client keeps unless told otherwise."
   def pace, do: @defaults
@@ -120,10 +133,19 @@ defmodule Wallboard.Link.Client do
     buffer = Buffer.push(s.buffer, events)
     {shed?, buffer} = Buffer.take_shed(buffer)
 
-    if shed? and not s.shed,
-      do: Logger.warning("Link: the buffer is full; newer lines wait in their files for now.")
+    if shed? and not s.shed do
+      Logger.warning("Link: the buffer is full; newer lines wait in their files for now.")
+      Process.send_after(self(), :shed_restart, s.pace.shed_restart_ms)
+    end
 
-    {:reply, :ok, pump(%{s | buffer: buffer, shed: s.shed or shed?})}
+    # A shed can take events that were sent and not yet confirmed, so what
+    # is on its way is counted again from what is left.
+    in_flight = if shed?, do: Buffer.count_through(buffer, s.sent), else: s.in_flight
+    {:reply, :ok, pump(%{s | buffer: buffer, shed: s.shed or shed?, in_flight: in_flight})}
+  end
+
+  def handle_call(:rewound, _from, s) do
+    {:reply, :ok, %{s | buffer: Buffer.reopen(s.buffer)}}
   end
 
   def handle_call(:status, _from, s) do
@@ -178,6 +200,12 @@ defmodule Wallboard.Link.Client do
     do: {:noreply, %{s | backoff: Backoff.reset(s.backoff)}}
 
   def handle_info(:pump, s), do: {:noreply, pump(%{s | pump: nil})}
+
+  # The buffer shed a while ago and has not emptied since. Waiting longer
+  # only keeps the files it refused waiting, so get a Resume now.
+  def handle_info(:shed_restart, %{shed: true, phase: phase} = s)
+      when phase in [:resuming, :live],
+      do: {:noreply, down(s, :shed)}
 
   # Late messages from a stream that is already gone.
   def handle_info(_, s), do: {:noreply, s}

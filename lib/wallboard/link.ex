@@ -48,10 +48,12 @@ defmodule Wallboard.Link do
   collector must never send a line of a file while an earlier one is
   missing. That shapes what a full buffer does: it drops the newest events
   of a file, never an older one, never a status or an end, and takes no
-  more of that file until the next `Resume`. The dropped lines are not
-  lost: they are still in the session file. Once the buffer has emptied,
-  the client restarts the stream, a `Resume` arrives, and whoever reads the
-  files sends each file again from the hub's position.
+  more of that file for now. The dropped lines are not lost: they are
+  still in the session file. Once the buffer has emptied, or after half a
+  minute, the client restarts the stream and a `Resume` arrives. Whoever
+  reads the files goes back to the hub's position in each, says so
+  (`Wallboard.Link.Client.rewound/1`), and sends from there. Only then
+  does the buffer take those files again.
 
   An open stream looks its certificate up again every few seconds, so a
   certificate revoked or replaced by another program (the `mix` task)
@@ -102,7 +104,10 @@ defmodule Wallboard.Link do
     idle_ms: 90_000,
     # How often an open stream looks its certificate up again.
     recheck_ms: 5_000,
-    max_connections: 1_024,
+    # Few machines pair with one hub, and a hub started from the Mac's
+    # launcher may open only 256 files at once. The port must never use
+    # them all up.
+    max_connections: 128,
     resume_points: 20_000,
     resume_days: 30
   }

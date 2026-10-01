@@ -95,16 +95,28 @@ defmodule Wallboard.Link.Server do
   defp still_approved(s) do
     now = System.monotonic_time(:millisecond)
 
-    cond do
-      now - s.checked < s.limits.recheck_ms ->
-        s
+    if now - s.checked < s.limits.recheck_ms do
+      s
+    else
+      case Authority.machine(s.dir, s.cert) do
+        {:ok, machine} when machine == s.machine ->
+          %{s | checked: now}
 
-      Authority.machine(s.dir, s.cert) == {:ok, s.machine} ->
-        %{s | checked: now}
+        # The list could not be read just now (a busy disk, too many open
+        # files). That is no verdict: keep the stream and look again.
+        {:error, :unreadable} ->
+          %{s | checked: now}
 
-      true ->
-        send_to(s.stream, s.counter, {:disconnected, %Proto.Disconnected{}})
-        refuse(:unauthenticated, "this machine is no longer approved")
+        # Revoked: told so, and it stops for good.
+        {:error, :revoked} ->
+          send_to(s.stream, s.counter, {:disconnected, %Proto.Disconnected{}})
+          refuse(:unauthenticated, "this machine is no longer approved")
+
+        # Not on the list at all. The stream ends, and the handshake decides
+        # when it tries again.
+        _ ->
+          refuse(:unauthenticated, "this machine is not approved")
+      end
     end
   end
 

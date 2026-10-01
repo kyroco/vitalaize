@@ -110,7 +110,7 @@ defmodule Wallboard.LinkPartsTest do
       # never written over: that would forget everyone on it.
       {:ok, mama} = Authority.issue(here, "mama")
       File.write!(Path.join(here, "machines.json"), "{broken")
-      assert {:error, :unknown} = Authority.machine(here, der(mama.cert_pem))
+      assert {:error, :unreadable} = Authority.machine(here, der(mama.cert_pem))
       assert_raise RuntimeError, ~r/cannot be read/, fn -> Authority.issue(here, "nana") end
       assert_raise RuntimeError, ~r/cannot be read/, fn -> Authority.revoke(here, "mama") end
       assert File.read!(Path.join(here, "machines.json")) == "{broken"
@@ -298,7 +298,9 @@ defmodule Wallboard.LinkPartsTest do
       assert other in events(Buffer.push(roomy, other))
       assert status("s1", 70) in events(Buffer.push(roomy, status("s1", 70)))
 
-      # A Resume opens the file again, from wherever the hub got to.
+      # The hub's Resume alone does not open the file again. A line the
+      # reader had already read past (61) may still be on its way in, and
+      # it must not land ahead of the lines that are missing.
       resumed =
         copy.("b")
         |> Buffer.open(max_bytes: 4_000)
@@ -306,10 +308,27 @@ defmodule Wallboard.LinkPartsTest do
         |> Buffer.drop_stored(%{{"s1", "s1.jsonl"} => 50})
 
       assert event(5) not in events(resumed)
-      resumed = Buffer.push(resumed, event(61))
-      assert event(61) in events(resumed)
-      Buffer.close(resumed)
-      assert Buffer.open(Path.join(dir, "b"), max_bytes: 4_000).holes == MapSet.new()
+      late = Buffer.push(resumed, event(61))
+      assert events(late) == events(resumed)
+
+      # Only the reader saying it has gone back does, and then it sends the
+      # file from the hub's position, in order.
+      reopened = late |> Buffer.reopen() |> Buffer.push(Enum.map(6..61, &event/1))
+      positions = for %{file: "s1.jsonl", position: p} <- events(reopened), do: p
+      # (What was kept comes first, then the same lines again and more: a
+      # repeat is harmless, a gap is not.)
+      seen = Enum.uniq(positions)
+      assert hd(positions) == 60
+      assert seen == Enum.map(6..(5 + length(seen)), &(&1 * 10))
+      Buffer.close(reopened)
+    end
+
+    test "counts the waiting events up to a seq", %{dir: dir} do
+      buffer = dir |> Path.join("c") |> Buffer.open() |> Buffer.push(Enum.map(1..10, &event/1))
+      assert Buffer.count_through(buffer, 0) == 0
+      assert Buffer.count_through(buffer, 4) == 4
+      assert buffer |> Buffer.ack(3) |> Buffer.count_through(7) == 4
+      assert Buffer.count_through(buffer, 99) == 10
     end
   end
 

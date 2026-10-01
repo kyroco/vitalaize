@@ -412,6 +412,10 @@ defmodule Wallboard.LinkTest do
         receive do
           {:wallboard_link, {:resume, points}} ->
             from = div(Map.get(points, {"s1", "s1.jsonl"}, 0), 100)
+            # A line read before going back, still on its way in: it must
+            # not get ahead of the ones the buffer refused.
+            :ok = Client.push(client, List.last(lines))
+            :ok = Client.rewound(client)
             :ok = Client.push(client, Enum.drop(lines, from))
             reader.(reader, resumes + 1)
 
@@ -431,6 +435,51 @@ defmodule Wallboard.LinkTest do
       assert reader.(reader, 0) > 1
       wait_until(fn -> Client.status(client).waiting == 0 end)
       assert Enum.map(saved("papa"), & &1.position) == Enum.map(1..300, &(&1 * 100))
+    end
+  end
+
+  describe "what must not stop a healthy collector" do
+    test "a list of machines the hub cannot read for a moment costs no open stream",
+         %{dir: dir, link: link} do
+      port = start_hub(dir, limits: %{recheck_ms: 30})
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa, pace: %{keepalive_ms: 60})
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      file = Path.join(link, "machines.json")
+      good = File.read!(file)
+      File.write!(file, "{half a fi")
+      # Long enough for several looks at the list.
+      Process.sleep(400)
+      File.write!(file, good)
+
+      refute_received {:wallboard_link, :removed}
+      :ok = Client.push(client, event(1))
+      assert_receive {:wallboard_link, {:stored, 1}}, 5_000
+      assert %{phase: :live} = Client.status(client)
+    end
+
+    test "a shed that takes events already on their way does not stall the stream",
+         %{dir: dir, link: link} do
+      port = start_hub(dir)
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa, max_bytes: 1_500, pace: %{window: 20})
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+      :ok = Client.rewound(client)
+
+      # The hub's database stops answering, so nothing is confirmed.
+      :sys.suspend(Store)
+      :ok = Client.push(client, Enum.map(1..20, &event/1))
+      Process.sleep(300)
+
+      # 45 sessions' statuses push the 20 sent file events out of the buffer.
+      statuses = for n <- 1..45, do: status("x#{n}", :working, at: ~U[2026-09-30 12:00:00Z])
+      :ok = Client.push(client, statuses)
+      :sys.resume(Store)
+
+      wait_until(fn ->
+        Enum.count(Store.collector_events("papa"), &(&1.kind == "status")) == 45
+      end)
     end
   end
 

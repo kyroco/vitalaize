@@ -174,7 +174,13 @@ defmodule Wallboard.Link.Authority do
 
   @doc "Every machine certificate issued: `%{machine, serial, issued_at, revoked_at}`."
   def machines(dir) do
-    for {serial, m} <- read_index(dir) do
+    index =
+      case read_index(dir) do
+        {:ok, index} -> index
+        :unreadable -> %{}
+      end
+
+    for {serial, m} <- index do
       %{
         machine: m["machine"],
         serial: serial,
@@ -192,10 +198,14 @@ defmodule Wallboard.Link.Authority do
   """
   def machine(dir, cert_der) when is_binary(cert_der) do
     with {:ok, serial, name} <- read_cert(cert_der),
-         %{"machine" => ^name, "revoked_at" => nil} <- read_index(dir)[serial] do
+         {:ok, index} <- read_index(dir),
+         %{"machine" => ^name, "revoked_at" => nil} <- index[serial] do
       {:ok, name}
     else
       %{"revoked_at" => at} when is_integer(at) -> {:error, :revoked}
+      # The list itself could not be read just now. That says nothing
+      # about this certificate either way.
+      :unreadable -> {:error, :unreadable}
       _ -> {:error, :unknown}
     end
   end
@@ -449,13 +459,14 @@ defmodule Wallboard.Link.Authority do
 
   defp path(dir, name), do: Path.join(dir, name)
 
+  # A list that cannot be read vouches for nobody: a new connection is
+  # refused. It does not condemn anybody either: see `machine/2`.
   defp read_index(dir) do
     with {:ok, text} <- File.read(path(dir, "machines.json")),
          {:ok, %{} = index} <- Jason.decode(text) do
-      index
+      {:ok, index}
     else
-      # A list that cannot be read vouches for nobody.
-      _ -> %{}
+      _ -> :unreadable
     end
   end
 

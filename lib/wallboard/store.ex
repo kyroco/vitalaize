@@ -477,6 +477,8 @@ defmodule Wallboard.Store do
     # The collector forgets these once it is told they are saved, so this
     # one write waits for the disk. Everything else the board saves can be
     # read again from its source and keeps the faster setting.
+    # (On a Mac only fullfsync makes the drive itself write it down.)
+    :ok = Sqlite3.execute(c, "PRAGMA fullfsync = ON")
     :ok = Sqlite3.execute(c, "PRAGMA synchronous = FULL")
 
     result =
@@ -510,6 +512,7 @@ defmodule Wallboard.Store do
       end)
 
     :ok = Sqlite3.execute(c, "PRAGMA synchronous = NORMAL")
+    :ok = Sqlite3.execute(c, "PRAGMA fullfsync = OFF")
     {:reply, result, state}
   end
 

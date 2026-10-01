@@ -16,9 +16,9 @@ defmodule Wallboard.Link.Buffer do
   remembers the furthest position it has seen in each file. What is kept of
   a file is then always an unbroken run from where the hub left off, and
   the hub's position can never jump over a line it does not have. A file
-  that lost events takes no more until `drop_stored/2` is called with the
-  hub's next `Resume`: its later lines are still in the session file, and
-  whoever reads the files sends them again from the hub's position. Which
+  that lost events takes no more until `reopen/1`: its later lines are
+  still in the session file, and whoever reads the files calls that once it
+  has gone back to the hub's position, and sends them again from there. Which
   files those are is written in the buffer's file too, so a restart of the
   collector does not forget it. `take_shed/1` tells the caller it happened.
 
@@ -96,7 +96,7 @@ defmodule Wallboard.Link.Buffer do
   disk when this returns: one write and one flush for the whole list.
 
   An event of a file that lost events to a shed is not taken (see the
-  module doc); it is read from its file again after the next `Resume`.
+  module doc); it is read from its file again after `reopen/1`.
   """
   def push(%__MODULE__{} = b, %Proto.Event{} = event), do: push(b, [event])
 
@@ -147,18 +147,37 @@ defmodule Wallboard.Link.Buffer do
   @doc """
   Forgets the file events the hub already has. `points` maps
   `{session_id, file}` to the hub's position in that file. Call it with
-  each `Resume`: it also lets files that lost events to a shed take events
-  again, since their reader now starts over from the hub's position.
+  each `Resume`.
   """
   def drop_stored(%__MODULE__{} = b, points) when is_map(points) do
-    opened = %{b | holes: MapSet.new()}
-
     dropped =
-      drop(opened, fn e ->
+      drop(b, fn e ->
         e.kind == :file and e.position <= Map.get(points, {e.session_id, e.file}, -1)
       end)
 
     if dropped == b, do: b, else: rewrite(dropped)
+  end
+
+  @doc """
+  Lets the files that lost events to a shed take events again. Only for
+  the reader of those files to call, once it has gone back to the hub's
+  position in each: from then on what it pushes is in order again. Until
+  then a line it had already read past must not get in.
+  """
+  def reopen(%__MODULE__{} = b) do
+    if MapSet.size(b.holes) == 0, do: b, else: rewrite(%{b | holes: MapSet.new()})
+  end
+
+  @doc "How many waiting events have this seq or an earlier one."
+  def count_through(%__MODULE__{entries: entries}, seq) do
+    count(:gb_trees.iterator(entries), seq, 0)
+  end
+
+  defp count(iter, seq, n) do
+    case :gb_trees.next(iter) do
+      {s, _, iter} when s <= seq -> count(iter, seq, n + 1)
+      _ -> n
+    end
   end
 
   @doc "Up to `limit` events with a seq after `seq`, oldest first, as `{seq, encoded event}`."
