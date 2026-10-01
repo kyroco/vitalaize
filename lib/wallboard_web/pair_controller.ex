@@ -95,6 +95,7 @@ defmodule WallboardWeb.PairController do
         :busy -> {429, "busy"}
         :gone -> {404, "gone"}
         :bad_name -> {422, "bad_name"}
+        :name_taken -> {422, "name_taken"}
         :bad_key -> {422, "bad_key"}
         :too_large -> {413, "too_large"}
         # No door on this board: the link is off.

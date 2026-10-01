@@ -1,0 +1,154 @@
+# A fresh Mac, set up as hub and collector: every page of the wizard.
+
+# Step 1: what this Mac does
+wait 90 "What this Mac does"
+expect "Step 1 of 5"
+expect "Found on this Mac"
+snap 01-role
+click "Hub only"
+expect "Step 1 of 5"
+click "Collector only"
+wait 5 "Step 1 of 4"
+snap 01-role-collector
+click "Hub and collector"
+wait 5 "Step 1 of 5"
+click "Continue"
+
+# Step 2: Claude folders, and where the board keeps its files
+wait "Claude folders to include"
+expect "Step 2 of 5"
+snap 02-folders
+toggle "~/.claude"
+disabled "Continue"
+toggle "~/.claude"
+enabled "Continue"
+folder ""
+click "Add another Claude folder…"
+absent "~/OtherClaude"
+folder "{HOME}/OtherClaude"
+click "Add another Claude folder…"
+wait 5 "~/OtherClaude"
+toggle "~/OtherClaude"
+folder ""
+click "Change…"
+expect "~/Library/Application Support/VitalAIze"
+folder "{HOME}/BoardFiles"
+click "Change…"
+wait 5 "~/BoardFiles"
+folder "{DATA}"
+click "Change…"
+wait 5 "~/Library/Application Support/VitalAIze"
+snap 02-folders-changed
+click "Back"
+wait 5 "What this Mac does"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+
+# Step 3: GitHub
+wait "Main branch"
+expect "Step 3 of 5"
+snap 03-github-empty
+disabled "Continue"
+click "Look up"
+wait 5 "Type the repository as owner/name"
+type "Repository" "not a repo"
+click "Look up"
+wait 5 "is not a repository name"
+type "Repository" "kyroco/no-such-repository-vit47"
+click "Look up"
+wait 40 "GitHub has no repository named kyroco/no-such-repository-vit47"
+snap 03-github-not-found
+type "Repository" "kyroco/vitalaize"
+click "Look up"
+wait 40 "Found kyroco/vitalaize with"
+value "Gate workflow (checks each change)" "ci.yml"
+value "Main branch" "main"
+click "Look up"
+wait 40 "Found kyroco/vitalaize with"
+pick "Dev deploy workflow" "codeql"
+value "Dev deploy workflow" "codeql"
+pick "Dev deploy workflow" ""
+pick "Prod deploy workflow" "codeql"
+pick "Prod deploy workflow" ""
+pick "Gate workflow (checks each change)" "ci.yml"
+type "Main branch" "main"
+click "Add"
+wait 5 "Type a repository as owner/name in the box"
+type "Add another" "not a repo"
+click "Add"
+wait 5 "is not a repository name"
+value "Add another" "not a repo"
+snap 03-github-add-refused
+type "Add another" "kyroco/vitalaize"
+click "Add"
+wait 5 "is already the first repository"
+type "Add another" "acme/rockets"
+click "Add"
+wait 5 "Added acme/rockets."
+type "Add another" "acme/rockets"
+click "Add"
+wait 5 "is already in the list"
+type "Add another" "acme/boosters"
+click "Add"
+wait 5 "Added acme/boosters."
+click "Remove" 2
+wait 5 "Removed acme/boosters."
+snap 03-github-filled
+click "Back"
+wait "Claude folders to include"
+click "Continue"
+wait "Main branch"
+value "Repository" "kyroco/vitalaize"
+expect "acme/rockets"
+click "Continue"
+
+# Step 4: what the board shows
+wait "Name at the top"
+expect "Step 4 of 5"
+snap 04-features
+type "Name at the top" "Acme"
+type "Port" "{PORT}"
+toggle "Show Korium numbers (searches, saves, indexing)"
+toggle "Show and save Codex sessions"
+pick "Dev: awake or asleep" "acme-dev-read"
+pick "Prod: same build as dev?" "acme-prod-read"
+toggle "Show the New Relic page"
+wait 5 "Account ID"
+type "Account ID" "1234567"
+type "1Password reference for the API key" "op://Private/NewRelic/key"
+type "Phone number" "+15550100"
+pick "Send as" "SMS"
+scroll bottom
+snap 04-features-filled
+click "Continue"
+
+# Step 5: review
+wait "This Mac"
+expect "Step 5 of 5"
+expect "Acme at http://localhost:{PORT}"
+expect "kyroco/vitalaize (main)"
+expect "ci.yml"
+expect "dev acme-dev-read, prod acme-prod-read"
+expect "to +15550100 by SMS"
+snap 05-review
+# The board would read 1Password and could send texts: both go off again
+# before the install, so the run touches neither.
+click "Back"
+wait "Name at the top"
+toggle "Show the New Relic page"
+type "Phone number" ""
+pick "Send as" "iMessage"
+pick "Prod: same build as dev?" ""
+click "Continue"
+wait "This Mac"
+expect "Texts"
+enabled "Install and start the board"
+click "Install and start the board"
+
+# Working, then the first screen
+wait 10 "Setting up…"
+snap 06-working
+wait 150 "The board is running"
+absent "That did not work"
+snap 07-status

@@ -1,0 +1,24 @@
+# A collector pointed at a board that does not take collectors: the setup
+# finishes, the collector runs, and the first screen says why it is not
+# paired and what to do on the hub.
+
+wait 90 "What this Mac does"
+click "Collector only"
+click "Continue"
+wait "Claude folders to include"
+click "Continue"
+wait "Hubs on your network"
+type "Hub address" "{HUB}"
+click "Continue"
+wait "This Mac"
+click "Start the collector and pair"
+wait 120 "The collector is set up, but it did not pair."
+expect "That board does not take collectors. On the hub, open its settings, turn on Take collectors, and ask again."
+wait 30 "The collector is running"
+wait 30 "Not paired with a hub yet, so nothing is sent."
+snap c01-closed-hub
+click "Pair with a hub…"
+wait 5 "Pick the hub, or type its address."
+disabled "Pair"
+click "Close"
+gone 5 "Pick the hub, or type its address."

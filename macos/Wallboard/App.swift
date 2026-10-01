@@ -9,6 +9,7 @@ import SwiftUI
 ///   VitalAIze --settings              print this Mac's settings (JSON)
 ///   VitalAIze --save FILE.json        save settings: {"values": {"port": "4800"}}
 ///   VitalAIze --pair [ADDRESS]        pair this Mac with a hub by code
+///   VitalAIze --mend                  check how VitalAIze starts here, and mend it
 ///
 /// The command line is for setting up Macs by script, and for testing.
 @main
@@ -16,6 +17,9 @@ enum Entry {
     static func main() {
         let args = CommandLine.arguments
         if args.count > 1, let code = CLI.run(Array(args.dropFirst())) { exit(code) }
+        #if UITEST
+        UITest.arm()
+        #endif
         WallboardApp.main()
     }
 }
@@ -44,8 +48,13 @@ enum CLI {
                 return 1
             }
         case "--uninstall":
-            Setup.uninstall(deleteData: args.contains("--delete-data")) { print($0) }
-            return 0
+            do {
+                try Setup.uninstall(deleteData: args.contains("--delete-data")) { print($0) }
+                return 0
+            } catch {
+                print("Failed: \(error.localizedDescription)")
+                return 1
+            }
         case "--settings":
             guard let doc = Setup.settingsDoc() else {
                 print("Could not read the settings.")
@@ -70,6 +79,23 @@ enum CLI {
             }
             print(answer.message)
             return answer.ok ? 0 : 1
+        case "--mend":
+            guard let record = Setup.installed() else {
+                print("VitalAIze is not set up on this Mac.")
+                return 1
+            }
+            guard let fault = Setup.startFault(record) else {
+                print("Nothing to mend.")
+                return 0
+            }
+            print(fault)
+            do {
+                try Setup.mend(record) { print($0) }
+                return 0
+            } catch {
+                print("Failed: \(error.localizedDescription)")
+                return 1
+            }
         default:
             return nil
         }
@@ -103,10 +129,22 @@ final class AppState: ObservableObject {
     @Published var step = 0
     @Published var log: [String] = []
     @Published var failure: String?
+    /// What runs on this Mac after a setup that failed.
+    @Published var failureAfter: String?
+    /// While Remove is working, and what it left behind once it is done.
+    @Published var removing = false
+    @Published var removed: String?
     @Published var running = false
     @Published var workflows: [String] = []
+    /// Look up on the wizard's GitHub step: whether it is asking now, and
+    /// what it found or why it found nothing.
+    @Published var lookingUp = false
+    @Published var lookupNote: Note?
     @Published var awsProfiles: [String] = []
     @Published var tools: [(String, Bool)] = []
+    /// Whether the recent sessions were found to use Korium, when this run
+    /// looked (a first setup does; Reconfigure does not).
+    @Published var koriumFound: Bool?
 
     /// The settings as the board's own code gives them, and what has been
     /// typed over them on the Settings screen (by setting key).
@@ -114,6 +152,8 @@ final class AppState: ObservableObject {
     @Published var edits: [String: String] = [:]
     @Published var saveLines: [String] = []
     @Published var saveErrors: [String: String] = [:]
+    /// Said in red under a save: the board did not come back after it.
+    @Published var saveFailure: String?
     @Published var busy = false
 
     /// Pairing with a hub: the code to show while the hub's owner decides,
@@ -122,16 +162,104 @@ final class AppState: ObservableObject {
     @Published var pairMessage: String?
     @Published var pairing = false
 
+    /// What the app found wrong with how VitalAIze starts on this Mac and
+    /// did about it, for the first screen; and what it could not mend.
+    @Published var mendLines: [String] = []
+    @Published var mendFailure: String?
+    @Published var mendDone: String?
+    @Published var mending = false
+    private var ticks = 0
+
+    /// Said on the wizard's second step when the earlier settings file the
+    /// setup carried over before is gone.
+    @Published var importNote: String?
+    /// Said under the board's folder when it already holds a board's settings.
+    @Published var folderNote: String?
+    /// Where "Back" goes after a failure: the setup, or the first screen
+    /// when it was Remove that stopped.
+    @Published var failureBack: Screen = .wizard
+    /// The earlier settings file the wizard offered to carry over, kept
+    /// while its switch is off.
+    @Published var offeredImport: String?
+
     let finder = HubFinderHolder.shared
 
     init() {
-        if Setup.installed() != nil {
-            choices = Setup.installed()!.choices
+        #if UITEST
+        UITest.state = self
+        #endif
+        if let record = Setup.installed() {
+            let checked = Setup.checkedImport(record.choices)
+            choices = checked.choices
+            importNote = checked.note
             screen = .status
-            refreshStatus()
+            checkStart()
         } else {
             detect()
         }
+    }
+
+    /// Looks at how VitalAIze starts on this Mac and mends it when it
+    /// cannot: an app installed over an older one finds a login item that
+    /// names the older app. With nothing to mend, it restarts what runs
+    /// when `restart` asks for it, or when what runs is older than this
+    /// app. Each thing it does is a line on the first screen.
+    func checkStart(restart: Bool = false) {
+        mending = true
+        mendFailure = nil
+        mendDone = nil
+        mendLines = []
+        DispatchQueue.global(qos: .userInitiated).async {
+            var lines: [String] = []
+            var failure: String?
+            var done: String?
+            func say(_ line: String) {
+                lines.append(line)
+                let now = lines
+                DispatchQueue.main.async { self.mendLines = now }
+            }
+            if let record = Setup.installed() {
+                let board = record.choices.role.runsBoard
+                let what = board ? "The board" : "The collector"
+                if let fault = Setup.startFault(record) {
+                    say(fault)
+                    do {
+                        try Setup.mend(record, say: say)
+                        done = "Mended. Your settings and database are where they were."
+                    } catch {
+                        failure = error.localizedDescription
+                    }
+                } else {
+                    let older = !restart && Setup.runningIsOlder()
+                    if restart || older {
+                        say(older
+                            ? "\(what) that was running was started before this version of the app was installed. Restarting it…"
+                            : "Restarting \(what.lowercased())…")
+                        Setup.restartBoard()
+                        // Time to stop before asking whether it is back.
+                        sleep(4)
+                        let back = board ? Setup.waitForBoard(port: Setup.currentPort(record.choices), seconds: 60) : Setup.waitForService(seconds: 30)
+                        if back {
+                            done = board ? "The board restarted and is answering." : "The collector restarted and is running."
+                        } else {
+                            failure = "\(what) did not come back within a minute. Its log is at \(Setup.logFile.path)."
+                        }
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                self.mending = false
+                self.mendFailure = failure
+                self.mendDone = done
+                self.refreshStatus()
+            }
+        }
+    }
+
+    /// True when the wizard is set to leave a paired collector's pairing as
+    /// it is: no hub address was given, and it is paired already.
+    var keepsPairing: Bool {
+        !choices.role.runsBoard && choices.hubURL.trimmingCharacters(in: .whitespaces).isEmpty && doc?.paired != nil
     }
 
     var isAppleSilicon: Bool {
@@ -145,7 +273,14 @@ final class AppState: ObservableObject {
     func detect() {
         screen = .detecting
         DispatchQueue.global(qos: .userInitiated).async {
-            let found = Setup.detect()
+            var found = Setup.detect()
+            // A folder kept by Remove still holds its settings: the setup
+            // starts from them, as Reconfigure does, so they are not lost.
+            if FileManager.default.fileExists(atPath: found.dataFolder + "/settings.exs"),
+               let doc = Setup.settingsDoc(dataFolder: found.dataFolder) {
+                found = Setup.prefill(found, from: doc)
+                found.settingsReadFrom = found.dataFolder
+            }
             let flows = found.repo.isEmpty ? [] : Detect.workflows(repo: found.repo)
             let profiles = Detect.awsProfiles()
             let tools = [("claude", Shell.which("claude") != nil),
@@ -154,6 +289,11 @@ final class AppState: ObservableObject {
                          ("op (1Password)", Shell.which("op") != nil)]
             DispatchQueue.main.async {
                 self.choices = found
+                self.importNote = nil
+                self.folderNote = found.settingsReadFrom == nil ? nil : AppState.keptNote
+                self.offeredImport = nil
+                self.lookupNote = nil
+                self.koriumFound = found.korium
                 self.workflows = flows
                 self.awsProfiles = profiles
                 self.tools = tools
@@ -164,13 +304,61 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Opens the wizard on what is installed, with the lists it offers.
+    static let keptNote = "This folder holds a board's settings. The setup is filled in from them, so they are kept unless you change an answer."
+
+    /// Takes the folder picked for the board's files. One that already
+    /// holds a board's settings fills the setup in from the settings in
+    /// use there, as the usual folder does when the app opens: the answers
+    /// then start from what that board has, and nothing it saved is lost.
+    func useFolder(_ folder: String) {
+        choices.dataFolder = folder
+        choices.settingsReadFrom = nil
+        folderNote = nil
+        guard FileManager.default.fileExists(atPath: folder + "/settings.exs") else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let doc = Setup.settingsDoc(dataFolder: folder) else { return }
+            DispatchQueue.main.async {
+                // Another folder may have been picked meanwhile.
+                guard self.screen == .wizard, self.choices.dataFolder == folder else { return }
+                // What this Mac does was picked on the first step.
+                let role = self.choices.role
+                var filled = Setup.prefill(self.choices, from: doc)
+                filled.role = role
+                filled.settingsReadFrom = folder
+                self.choices = filled
+                self.folderNote = AppState.keptNote
+            }
+        }
+    }
+
+    /// Opens the wizard on what is installed, with the lists it offers. It
+    /// starts from the settings in use now, so what was changed in
+    /// Settings since the first setup shows, and is not put back.
     func reconfigure() {
+        let checked = Setup.checkedImport(choices)
+        choices = checked.choices
+        if let note = checked.note { importNote = note }
         step = 0
-        screen = .wizard
+        screen = .detecting
+        lookupNote = nil
+        folderNote = nil
+        koriumFound = nil
         finder.start()
-        let repo = choices.repo
+        let before = choices
         DispatchQueue.global().async {
+            let doc = Setup.settingsDoc()
+            var now = before
+            // Without the settings the wizard starts from the setup's own
+            // record, and an answer left empty changes nothing saved.
+            now.settingsRead = nil
+            now.settingsReadFrom = nil
+            if let doc {
+                now = Setup.prefill(now, from: doc)
+                now.settingsReadFrom = now.dataFolder
+            }
+            // A paired collector stays paired unless a hub is picked again.
+            if now.role == .collector, doc?.paired != nil { now.hubURL = "" }
+            let repo = now.repo
             let flows = repo.isEmpty ? [] : Detect.workflows(repo: repo)
             let profiles = Detect.awsProfiles()
             let tools = [("claude", Shell.which("claude") != nil),
@@ -178,20 +366,38 @@ final class AppState: ObservableObject {
                          ("aws", Shell.which("aws") != nil),
                          ("op (1Password)", Shell.which("op") != nil)]
             DispatchQueue.main.async {
+                self.choices = now
+                if let doc { self.doc = doc }
                 self.workflows = flows
                 self.awsProfiles = profiles
                 self.tools = tools
+                self.screen = .wizard
             }
         }
     }
 
     /// Looks up the workflows again after the repository changes.
     func reloadWorkflows() {
-        let repo = choices.repo
+        let repo = choices.repo.trimmingCharacters(in: .whitespaces)
+        guard repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil else {
+            lookupNote = Note(ok: false, text: repo.isEmpty
+                ? "Type the repository as owner/name in the box, then press Look up."
+                : "\"\(repo)\" is not a repository name. Write it as owner/name, like kyroco/vitalaize.")
+            return
+        }
+        choices.repo = repo
+        lookingUp = true
+        lookupNote = nil
         DispatchQueue.global().async {
-            let flows = Detect.workflows(repo: repo)
-            let branch = Detect.defaultBranch(repo: repo)
+            let found = Detect.lookUp(repo: repo)
+            let flows = found.workflows
+            let branch = found.branch
             DispatchQueue.main.async {
+                self.lookingUp = false
+                self.lookupNote = found.note
+                // A look up that failed found nothing out: what was
+                // picked stays.
+                guard found.note.ok else { return }
                 self.workflows = flows
                 let g = Detect.guessWorkflows(flows)
                 if self.choices.gateWorkflow.isEmpty || !flows.contains(self.choices.gateWorkflow) { self.choices.gateWorkflow = g.gate }
@@ -205,29 +411,77 @@ final class AppState: ObservableObject {
     func install() {
         log = []
         failure = nil
+        failureBack = .wizard
+        failureAfter = nil
+        removing = false
+        removed = nil
         screen = .working
         let c = choices
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try Setup.install(c, onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
-                                  say: { line in DispatchQueue.main.async { self.log.append(line) } })
+                let pairing = try Setup.install(c, onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
+                                                say: { line in DispatchQueue.main.async { self.log.append(line) } })
                 DispatchQueue.main.async {
+                    // Why the hub did not pair stays on the first screen:
+                    // the setup's own lines are gone once it shows.
+                    if let pairing, !pairing.ok {
+                        self.pairMessage = "The collector is set up, but it did not pair. \(pairing.message) Use Pair with a hub… to try again."
+                    } else {
+                        self.pairMessage = nil
+                    }
                     self.finder.stop()
+                    // The setup ended with it running, so the first screen
+                    // does not say otherwise while it looks again.
+                    self.running = true
                     self.screen = .status
                     self.refreshStatus()
                 }
             } catch {
-                DispatchQueue.main.async { self.failure = error.localizedDescription }
+                // Said with the failure: whether VitalAIze runs on this Mac
+                // now, so nobody has to go and find out.
+                let after = Setup.runningNow(c)
+                DispatchQueue.main.async {
+                    self.failure = error.localizedDescription
+                    self.failureAfter = after
+                }
             }
         }
     }
 
+    /// Removes VitalAIze from this Mac, and then says so: the screen stays
+    /// on what was done until the person goes on.
     func uninstall(deleteData: Bool) {
         log = []
+        failure = nil
+        removing = true
+        removed = nil
         screen = .working
+        let folder = Setup.dataFolder
+        let c = choices
         DispatchQueue.global().async {
-            Setup.uninstall(deleteData: deleteData) { line in DispatchQueue.main.async { self.log.append(line) } }
-            DispatchQueue.main.async { self.detect() }
+            do {
+                try Setup.uninstall(deleteData: deleteData) { line in DispatchQueue.main.async { self.log.append(line) } }
+            } catch {
+                // Nothing was removed: say so, and what runs.
+                let after = Setup.runningNow(c)
+                DispatchQueue.main.async {
+                    self.removing = false
+                    self.failure = error.localizedDescription
+                    self.failureAfter = after
+                    self.failureBack = .status
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.removing = false
+                self.running = false
+                self.doc = nil
+                self.mendLines = []
+                self.mendDone = nil
+                self.mendFailure = nil
+                let kept = folder.map { "Its database and settings are still in \($0). Setting up again with the same folder picks them up." }
+                self.removed = deleteData ? "Its database and settings were deleted too." : (kept ?? "")
+            }
         }
     }
 
@@ -243,7 +497,8 @@ final class AppState: ObservableObject {
             let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
             let up = runsBoard ? Setup.boardRunning(port: port ?? knownPort) : Setup.serviceRunning()
             DispatchQueue.main.async {
-                if let port { self.choices.port = port }
+                // Not while the setup is open: there the port is the person's to type.
+                if let port, self.screen == .status || self.screen == .settings { self.choices.port = port }
                 if let doc { self.take(doc) }
                 self.running = up
             }
@@ -265,6 +520,10 @@ final class AppState: ObservableObject {
     func openSettings() {
         saveLines = []
         saveErrors = [:]
+        saveFailure = nil
+        mendLines = []
+        mendDone = nil
+        mendFailure = nil
         screen = .settings
         loadSettings()
     }
@@ -296,20 +555,59 @@ final class AppState: ObservableObject {
         busy = true
         saveLines = []
         saveErrors = [:]
+        saveFailure = nil
+        let runsBoard = choices.role.runsBoard
+        let knownPort = choices.port
         DispatchQueue.global(qos: .userInitiated).async {
             let answer = Setup.save(changed)
             let doc = answer.ok ? Setup.settingsDoc() : nil
             DispatchQueue.main.async {
-                self.busy = false
                 self.saveLines = answer.lines ?? []
                 self.saveErrors = answer.errors ?? [:]
                 if answer.ok {
                     if let doc { self.take(doc) }
                     self.edits = [:]
-                    // A restarted board takes a few seconds to answer again.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.refreshStatus() }
+                } else {
+                    self.busy = false
                 }
             }
+            // Only a save that restarted the board or the collector has
+            // anything to wait for.
+            guard answer.ok, (answer.lines ?? []).contains(where: { $0.hasPrefix("Restarted ") }) else {
+                DispatchQueue.main.async { self.busy = false; self.refreshStatus() }
+                return
+            }
+            // Say whether it came back, so nobody leaves this screen with
+            // it down and unsaid. A restart takes a few seconds to begin.
+            sleep(3)
+            let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
+            let board = doc.map { $0.role != "collector" } ?? runsBoard
+            let back = board ? Setup.waitForBoard(port: port ?? knownPort, seconds: 60) : Setup.waitForService(seconds: 30)
+            DispatchQueue.main.async {
+                self.busy = false
+                if back {
+                    self.saveLines.append(board ? "The board is answering at http://localhost:\(String(port ?? knownPort))." : "The collector is running.")
+                } else {
+                    self.saveFailure = "\(board ? "The board has not answered for a minute" : "The collector has not started for half a minute") since the save. Go back and use Show the log to see why; your settings are saved."
+                }
+                self.refreshStatus()
+            }
+        }
+    }
+
+    /// A light look at whether the board answers or the collector runs,
+    /// for the first screen to keep itself true while it shows.
+    func quickCheck() {
+        guard screen == .status, !mending else { return }
+        let board = choices.role.runsBoard
+        let port = choices.port
+        // A collector's link to its hub comes and goes without the
+        // collector stopping, so its line is read again every half minute.
+        ticks += 1
+        if !board, ticks % 6 == 0 { return refreshStatus() }
+        DispatchQueue.global(qos: .utility).async {
+            let up = board ? Setup.boardRunning(port: port) : Setup.serviceRunning()
+            DispatchQueue.main.async { if self.screen == .status, self.running != up { self.refreshStatus() } }
         }
     }
 
@@ -332,7 +630,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// True when the board asks for a password. The password itself is
+    /// never handed to the app, only that there is one.
+    var hasPassword: Bool {
+        doc?.sections.flatMap { $0.fields }.first { $0.key == "token" }?.value.isEmpty == false
+    }
+
     func open(_ path: String) {
-        if let url = URL(string: "http://localhost:\(choices.port)\(path)") { NSWorkspace.shared.open(url) }
+        // By number: the board listens there, and "localhost" could be
+        // answered by another program at ::1.
+        if let url = URL(string: "http://127.0.0.1:\(choices.port)\(path)") { Shell.open(url) }
     }
 }

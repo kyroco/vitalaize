@@ -1,0 +1,18 @@
+# Pair again on a collector that is paired and running, and the hub's
+# owner approves: the collector takes up the new certificate by itself and
+# is connected again, with no restart.
+
+wait 40 "The collector is running"
+wait 60 "Connected to the hub at"
+click "Pair again…"
+wait 5 "Pick the hub, or type its address."
+type "Hub address" "{HUB}"
+click "Pair"
+wait 60 "Waiting for the hub to approve…"
+snap c11-again-code
+wait 120 "This Mac is connected as"
+snap c11-again-approved
+click "Close"
+gone 5 "Pick the hub, or type its address."
+wait 90 "Connected to the hub at"
+absent "removed"

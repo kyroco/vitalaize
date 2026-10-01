@@ -1,0 +1,10 @@
+# The same, with the app's own copy of the earlier settings still there:
+# only the login item needs mending, and nothing is lost.
+
+wait 10 "Kyroco VitalAIze"
+wait 150 "Mended. Your settings and database are where they were."
+expect "which is gone."
+absent "were not carried over"
+absent "Writing the settings file again"
+wait 40 "The board is running"
+snap a04-mended-copy-kept

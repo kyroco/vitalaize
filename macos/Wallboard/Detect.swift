@@ -83,6 +83,36 @@ enum Detect {
         return r.output.split(separator: "\n").map { ($0 as NSString).lastPathComponent }.sorted()
     }
 
+    /// Everything Look up asks GitHub about a repository, and one line to
+    /// tell the person what came back: so a press of the button always
+    /// shows that it ran, and a failure says what to do.
+    static func lookUp(repo: String) -> (workflows: [String], branch: String?, note: Note) {
+        guard which("gh") else {
+            return ([], nil, Note(ok: false, text: "The GitHub tool gh is not installed, so \(repo) could not be looked up. Install it (brew install gh), run gh auth login, then press Look up again. You can also go on and set the workflows later in Settings."))
+        }
+        let r = Shell.tool("gh", ["api", "repos/\(repo)/actions/workflows?per_page=100", "--jq", ".workflows[].path"], timeout: 30)
+        guard r.ok else {
+            let why: String
+            if r.output.contains("404") {
+                why = "GitHub has no repository named \(repo) that your gh login can see. Check the spelling, and that gh is signed in to the right account (gh auth status)."
+            } else if r.output.contains("auth login") || r.output.contains("401") {
+                why = "gh is not signed in, so \(repo) could not be looked up. Run gh auth login in a terminal, then press Look up again."
+            } else {
+                why = "GitHub could not be asked about \(repo): \(r.output.split(separator: "\n").first.map(String.init) ?? "no answer"). Check the network and press Look up again."
+            }
+            return ([], nil, Note(ok: false, text: why))
+        }
+        let flows = r.output.split(separator: "\n").map { ($0 as NSString).lastPathComponent }.sorted()
+        let branch = defaultBranch(repo: repo)
+        let branchWords = branch.map { " Its main branch is \($0)." } ?? ""
+        let text = flows.isEmpty
+            ? "Found \(repo). It has no workflows, so the board shows its commits and pull requests only.\(branchWords)"
+            : "Found \(repo) with \(flows.count) workflow\(flows.count == 1 ? "" : "s"): \(flows.joined(separator: ", ")).\(branchWords)"
+        return (flows, branch, Note(ok: true, text: text))
+    }
+
+    private static func which(_ tool: String) -> Bool { Shell.which(tool) != nil }
+
     static func defaultBranch(repo: String) -> String? {
         let r = Shell.tool("gh", ["repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"], timeout: 30)
         return r.ok && !r.output.isEmpty ? r.output : nil
