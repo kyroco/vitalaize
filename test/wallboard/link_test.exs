@@ -483,6 +483,46 @@ defmodule Wallboard.LinkTest do
     end
   end
 
+  describe "what must not stall" do
+    test "a full buffer that drops only replaced statuses, sent or not, keeps the stream going",
+         %{dir: dir, link: link} do
+      port = start_hub(dir)
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa, max_bytes: 1_500, pace: %{window: 20})
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      at = fn n -> DateTime.add(~U[2026-09-30 12:00:00Z], n, :second) end
+      working = fn range -> for n <- range, do: status("x1", :working, at: at.(n)) end
+
+      # The hub's database stops answering: 20 statuses go out and none is
+      # confirmed, which fills the client's window.
+      :sys.suspend(Store)
+      :ok = Client.push(client, working.(1..20))
+      Process.sleep(300)
+
+      # 40 newer ones of the same session replace them in the buffer.
+      :ok = Client.push(client, working.(21..60))
+      :sys.resume(Store)
+
+      # The stream still carries what comes next.
+      :ok = Client.push(client, event(1))
+      wait_until(fn -> Enum.any?(Store.collector_events("papa"), &(&1.kind == "file")) end)
+      wait_until(fn -> Client.status(client).waiting == 0 end)
+      assert %{phase: :live} = Client.status(client)
+    end
+
+    test "the hub's database syncs fully when it moves saved events into its file", %{dir: dir} do
+      start_hub(dir)
+      assert [%{checkpoint_fullfsync: 1}] = Store.query("PRAGMA checkpoint_fullfsync", [])
+      # And a collector batch leaves the everyday settings as they were.
+      row = %{session_id: "s", file: "", position: 0, at: 1, kind: "status", event: <<>>}
+      :ok = Store.put_collector_events("papa", [row], 1)
+      assert [%{synchronous: 1}] = Store.query("PRAGMA synchronous", [])
+      assert [%{fullfsync: 0}] = Store.query("PRAGMA fullfsync", [])
+      assert [%{checkpoint_fullfsync: 1}] = Store.query("PRAGMA checkpoint_fullfsync", [])
+    end
+  end
+
   describe "losing the hub" do
     test "a hub killed mid-stream comes back, and nothing is lost or doubled",
          %{dir: dir, link: link} do

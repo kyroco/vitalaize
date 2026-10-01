@@ -396,6 +396,10 @@ defmodule Wallboard.Store do
     {:ok, conn} = Sqlite3.open(path)
     :ok = Sqlite3.execute(conn, "PRAGMA journal_mode = WAL")
     :ok = Sqlite3.execute(conn, "PRAGMA synchronous = NORMAL")
+    # What collectors send is confirmed to them once it is saved (see
+    # put_collector_events). Moving it from the log into the database file
+    # must reach the drive too, which on a Mac only this setting ensures.
+    :ok = Sqlite3.execute(conn, "PRAGMA checkpoint_fullfsync = ON")
     migrate(conn)
     Logger.info("Database: #{path}")
     {:ok, %{conn: conn}}

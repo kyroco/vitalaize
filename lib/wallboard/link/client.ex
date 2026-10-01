@@ -138,9 +138,11 @@ defmodule Wallboard.Link.Client do
       Process.send_after(self(), :shed_restart, s.pace.shed_restart_ms)
     end
 
-    # A shed can take events that were sent and not yet confirmed, so what
-    # is on its way is counted again from what is left.
-    in_flight = if shed?, do: Buffer.count_through(buffer, s.sent), else: s.in_flight
+    # A full buffer can drop events that were sent and not yet confirmed
+    # (file events, or statuses a later one replaced, which it does not
+    # report as a shed). So what is on its way is counted again from what
+    # is left, on every push.
+    in_flight = Buffer.count_through(buffer, s.sent)
     {:reply, :ok, pump(%{s | buffer: buffer, shed: s.shed or shed?, in_flight: in_flight})}
   end
 
