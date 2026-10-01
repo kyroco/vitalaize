@@ -98,18 +98,43 @@ defmodule Wallboard.Collector.Outbox do
       acked: 0,
       checkpoint: nil,
       # {number of the first event, how many events, bytes}, oldest first.
-      segments: []
+      segments: [],
+      # True while the event files cannot be read or put right.
+      broken?: false
     }
 
-    case load(dir) do
-      :damaged -> {:ok, rebuild(state)}
-      saved -> {:ok, state |> Map.merge(saved) |> recover() |> drop_sent()}
+    {:ok, reopen(state)}
+  end
+
+  # Reads the saved point and lines the event files up with it. A file that
+  # cannot be read or changed leaves the outbox marked broken rather than
+  # stopping it: a stop would print the append in hand, events and all, in
+  # the crash report of whoever was waiting for it.
+  defp reopen(state) do
+    state = %{state | segments: [], broken?: false}
+
+    case load(state.dir) do
+      :damaged -> rebuild(state)
+      saved -> state |> Map.merge(saved) |> recover() |> drop_sent()
     end
+  rescue
+    _ ->
+      Logger.warning("Collector: the outbox's files cannot be read. It will try again.")
+      %{state | broken?: true}
   end
 
   @impl true
   def handle_call({:append, [], checkpoint}, _from, %{checkpoint: checkpoint} = state),
     do: {:reply, state.seq, state}
+
+  # The files could not be lined up with the saved point (see `reopen/1`).
+  # Nothing is added until they can be.
+  def handle_call({:append, _events, _checkpoint} = call, from, %{broken?: true} = state) do
+    case reopen(state) do
+      %{broken?: true} = state -> {:reply, {:error, :outbox_unreadable}, state}
+      state -> handle_call(call, from, state)
+    end
+  end
 
   def handle_call({:append, events, checkpoint}, _from, state) do
     with {:ok, written} <- events |> Enum.map(&record/1) |> write(state),
@@ -119,7 +144,7 @@ defmodule Wallboard.Collector.Outbox do
     else
       # Nothing of a failed append stays: the files go back to the last
       # saved point, and the caller tries again later.
-      {:error, reason} -> {:reply, {:error, reason}, recover(%{state | segments: []})}
+      {:error, reason} -> {:reply, {:error, reason}, reopen(state)}
     end
   end
 
@@ -131,8 +156,14 @@ defmodule Wallboard.Collector.Outbox do
       state.segments
       |> Enum.filter(fn {first, count, _} -> first + count - 1 > seq end)
       |> Stream.flat_map(fn {first, _, _} ->
-        {records, _} = records(File.read!(path(state.dir, first)))
-        records |> Enum.with_index(first) |> Enum.map(fn {body, n} -> {n, body} end)
+        case File.read(path(state.dir, first)) do
+          {:ok, bin} ->
+            {records, _} = records(bin)
+            records |> Enum.with_index(first) |> Enum.map(fn {body, n} -> {n, body} end)
+
+          _ ->
+            []
+        end
       end)
       |> Stream.filter(fn {n, _} -> n > seq end)
       |> Enum.take(limit)
@@ -176,10 +207,10 @@ defmodule Wallboard.Collector.Outbox do
   defp write([], state), do: {:ok, state}
 
   defp write(records, state) do
-    {first, count, size} =
+    {{first, count, size}, kept} =
       case List.last(state.segments) do
-        {_, _, size} = last when size < @segment_bytes -> last
-        _ -> {state.seq + 1, 0, 0}
+        {_, _, size} = last when size < @segment_bytes -> {last, Enum.drop(state.segments, -1)}
+        _ -> {{state.seq + 1, 0, 0}, state.segments}
       end
 
     file = path(state.dir, first)
@@ -190,7 +221,6 @@ defmodule Wallboard.Collector.Outbox do
          :ok <- :file.close(io),
          :ok <- result do
       segment = {first, count + length(records), size + IO.iodata_length(records)}
-      kept = if new?, do: state.segments, else: Enum.drop(state.segments, -1)
       {:ok, %{state | segments: kept ++ [segment], seq: state.seq + length(records)}}
     end
   end
@@ -269,7 +299,8 @@ defmodule Wallboard.Collector.Outbox do
     size = kept |> Enum.map(&(byte_size(&1) + 4)) |> Enum.sum()
 
     cond do
-      kept == [] ->
+      # An empty file named for the next number stays: see `drop_sent/1`.
+      kept == [] and seq != :all and first != seq + 1 ->
         File.rm!(file)
         []
 
@@ -298,11 +329,26 @@ defmodule Wallboard.Collector.Outbox do
 
   defp records(rest, acc), do: {Enum.reverse(acc), rest}
 
+  # When every event has been sent, an empty file named for the next number
+  # is left, so the numbers can carry on even if the saved point is lost.
   defp drop_sent(state) do
     {sent, kept} =
-      Enum.split_with(state.segments, fn {first, count, _} -> first + count - 1 <= state.acked end)
+      Enum.split_with(state.segments, fn {first, count, _} ->
+        count > 0 and first + count - 1 <= state.acked
+      end)
 
     for {first, _, _} <- sent, do: File.rm(path(state.dir, first))
+
+    kept =
+      if kept == [] and state.seq > 0 do
+        file = path(state.dir, state.seq + 1)
+        File.write(file, "")
+        File.chmod(file, 0o600)
+        [{state.seq + 1, 0, 0}]
+      else
+        kept
+      end
+
     %{state | segments: kept}
   end
 

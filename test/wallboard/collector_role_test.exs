@@ -153,11 +153,15 @@ defmodule Wallboard.CollectorRoleTest do
         Settings.defaults()
         |> Settings.merge(%{
           archive: %{collect_local: nil},
+          claude: %{poll_seconds: nil},
+          codex: %{idle_minutes: 7.5},
           collector: %{poll_seconds: 2.5, backfill_days: nil, outbox_mb: 0}
         })
         |> Settings.normalize()
 
       refute settings.archive.collect_local
+      assert settings.claude.poll_seconds == Settings.defaults().claude.poll_seconds
+      assert settings.codex.idle_minutes == Settings.defaults().codex.idle_minutes
       keys = [:poll_seconds, :backfill_days, :outbox_mb]
       assert Map.take(settings.collector, keys) == Map.take(Settings.defaults().collector, keys)
     end

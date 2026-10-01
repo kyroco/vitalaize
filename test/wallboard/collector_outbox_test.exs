@@ -72,7 +72,7 @@ defmodule Wallboard.CollectorOutboxTest do
     assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
   end
 
-  test "a file of nothing but unsaved events is removed", %{dir: dir} do
+  test "a file of nothing but unsaved events is emptied", %{dir: dir} do
     box = start(dir)
     Outbox.append(box, [], "a")
     GenServer.stop(box)
@@ -83,7 +83,17 @@ defmodule Wallboard.CollectorOutboxTest do
 
     box = start(dir)
     assert Outbox.read(box, 0) == []
-    refute File.exists?(stray)
+    assert File.stat!(stray).size == 0
+    assert Outbox.append(box, [event(1)], "b") == 1
+    assert Outbox.read(box, 0) == [{1, event(1)}]
+
+    # One named for a later number than the next goes altogether.
+    GenServer.stop(box)
+    later = Path.join(dir, "events-00000000000000000009.log")
+    File.write!(later, <<byte_size(body)::32, body::binary>>)
+    box = start(dir)
+    assert Outbox.read(box, 0) == [{1, event(1)}]
+    refute File.exists?(later)
   end
 
   test "sent events go, a file at a time, and the numbers carry on", %{dir: dir} do
@@ -100,7 +110,8 @@ defmodule Wallboard.CollectorOutboxTest do
 
     # More than there is acks only what there is.
     Outbox.ack(box, 99)
-    assert files(dir) == []
+    # Only an empty file named for the next number is left.
+    assert files(dir) == ["events-00000000000000000007.log"]
     assert %{seq: 6, acked: 6, bytes: 0} = Outbox.stats(box)
     assert Outbox.append(box, [event(7)], "d") == 7
     GenServer.stop(box)
@@ -160,5 +171,48 @@ defmodule Wallboard.CollectorOutboxTest do
     assert Outbox.read(box, 0) == [{1, event(1)}]
     assert Outbox.append(box, [event(2)], "b") == 2
     assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
+  end
+
+  @tag :capture_log
+  test "with every event sent and the saved point lost, the numbers still carry on", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1), event(2), event(3)], "a")
+    Outbox.ack(box, 3)
+    GenServer.stop(box)
+    File.write!(Path.join(dir, "state"), "not json")
+
+    box = start(dir)
+    assert %{seq: 3, acked: 3, bytes: 0} = Outbox.stats(box)
+    assert Outbox.append(box, [event(4)], "b") == 4
+    assert Outbox.read(box, 0) == [{4, event(4)}]
+  end
+
+  @tag :capture_log
+  test "an event file that cannot be read stops appends, not the outbox", %{dir: dir} do
+    box = start(dir)
+    Outbox.append(box, [event(1)], "a")
+    [name] = files(dir)
+    file = Path.join(dir, name)
+
+    # The folder refuses the append, and the file cannot be read to put
+    # things back as they were.
+    File.chmod!(file, 0o000)
+    File.chmod!(dir, 0o500)
+    assert {:error, _} = Outbox.append(box, [event(2)], "b")
+    assert {:error, _} = Outbox.append(box, [event(2)], "b")
+    assert Process.alive?(box)
+
+    File.chmod!(dir, 0o700)
+    File.chmod!(file, 0o600)
+    assert Outbox.append(box, [event(2)], "b") == 2
+    assert Outbox.read(box, 0) == [{1, event(1)}, {2, event(2)}]
+    GenServer.stop(box)
+
+    # The same at a start.
+    File.chmod!(file, 0o000)
+    box = start(dir)
+    assert {:error, :outbox_unreadable} = Outbox.append(box, [event(3)], "c")
+    File.chmod!(file, 0o600)
+    assert Outbox.append(box, [event(3)], "c") == 3
   end
 end

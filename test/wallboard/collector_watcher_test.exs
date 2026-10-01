@@ -610,6 +610,23 @@ defmodule Wallboard.CollectorWatcherTest do
       refute File.read!(Path.join(c.settings.collector.dir, "outbox/state")) =~ "PLANTED"
     end
 
+    test "a session listed under two folders does not end when one of them drops it", c do
+      work = Path.join(c.home, ".claude-work")
+      File.mkdir_p!(Path.join(work, "projects"))
+      agents(c, [{@claude_id, %{"status" => "busy"}}])
+      listed = Agent.get(c.world, & &1.agents[claude_dir(c)])
+      Agent.update(c.world, &put_in(&1.agents[work], listed))
+      w = start(c)
+      assert statuses(look(w)) == [{@claude_id, :WORKING, :WHY_UNKNOWN, ""}]
+
+      agents(c, [])
+      assert look(w) == []
+      assert look(w) == []
+
+      Agent.update(c.world, &put_in(&1.agents[work], {:ok, []}))
+      assert ended(look(w)) == [@claude_id]
+    end
+
     test "a session whose folder is no longer watched has ended", c do
       agents(c, [{@claude_id, %{"status" => "busy"}}])
       add(codex_path(c), lines("collector/codex_rollout.jsonl"))

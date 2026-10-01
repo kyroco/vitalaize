@@ -693,6 +693,11 @@ defmodule Wallboard.Settings do
     |> Map.put(:role, role)
     # A hub keeps only what other machines send.
     |> update_in([:archive, :collect_local], &(&1 && role != :hub))
+    |> update_in([:claude, :poll_seconds], &whole(&1, @defaults.claude.poll_seconds))
+    |> update_in([:codex, :idle_minutes], fn
+      n when is_integer(n) and n >= 0 -> n
+      _ -> @defaults.codex.idle_minutes
+    end)
     |> update_in([:collector], fn c ->
       %{
         c
@@ -755,8 +760,9 @@ defmodule Wallboard.Settings do
   def collector_dir(dir) when is_binary(dir) and dir != "", do: Path.expand(dir)
   def collector_dir(_), do: nil |> db_path() |> Path.dirname() |> Path.join("collector")
 
-  # A whole number of 1 or more, or the default: the collector does sums
-  # with these, and a fraction or a nil there would stop it.
+  # A whole number of 1 or more, or the default: timers and date sums use
+  # these, and a fraction or a nil there would stop the poller or the
+  # collector on every round.
   defp whole(n, _default) when is_integer(n) and n >= 1, do: n
   defp whole(_, default), do: default
 

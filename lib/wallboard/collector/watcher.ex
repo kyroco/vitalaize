@@ -343,7 +343,7 @@ defmodule Wallboard.Collector.Watcher do
   defp flush(%{pending: [], unsaved?: false} = state), do: state
 
   defp flush(state) do
-    case Outbox.append(state.outbox, Enum.reverse(state.pending), checkpoint(state)) do
+    case append(state) do
       {:error, reason} ->
         Logger.warning(
           "Collector: could not write to its outbox (#{inspect(reason)}). It will try again."
@@ -366,6 +366,15 @@ defmodule Wallboard.Collector.Watcher do
         state = %{state | pending: [], unsaved?: false}
         if Outbox.room?(state.outbox), do: state, else: %{state | full?: true}
     end
+  end
+
+  # An outbox that stopped mid-append is one that could not write. The exit
+  # is caught here because its reason holds the append, events and all, and
+  # would be printed if it took the watcher down too.
+  defp append(state) do
+    Outbox.append(state.outbox, Enum.reverse(state.pending), checkpoint(state))
+  catch
+    :exit, _ -> {:error, :outbox_stopped}
   end
 
   # ---------------------------------------------------------------------------
@@ -788,9 +797,12 @@ defmodule Wallboard.Collector.Watcher do
 
             with %Proto.Event{} = event <-
                    status_event(key, raw, since(old, raw, since, now), now),
-                 new = sent(raw, event),
-                 false <- old != nil and Map.delete(old, :dir) == Map.delete(new, :dir) do
-              {[event | events], Map.put(statuses, key, new)}
+                 new = sent(raw, event) do
+              # The same status under another folder is not news, but the
+              # folder is noted: the session ends when that one drops it.
+              if old != nil and Map.delete(old, :dir) == Map.delete(new, :dir),
+                do: {events, Map.put(statuses, key, new)},
+                else: {[event | events], Map.put(statuses, key, new)}
             else
               _ -> {events, statuses}
             end
