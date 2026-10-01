@@ -13,8 +13,8 @@ defmodule Wallboard.ClaudeFetchTest do
   @idle "c70f2a19-8d44-4b3a-a6e2-51f0c9d7b382"
   @terminal "1b6e9d04-f2a7-4e58-b3c1-7a0d5e8f2c93"
 
-  # A throwaway home whose Claude folder lists a job stopped with
-  # `claude stop` (state "working", no pid, no status) beside three
+  # A throwaway home whose Claude folder lists a job that ended or was
+  # stopped (state "working", no pid, no status) beside three
   # sessions that are running.
   setup do
     home = Fixtures.tmp_path("claude-fetch-home")
@@ -43,13 +43,18 @@ defmodule Wallboard.ClaudeFetchTest do
     %{home: home, dir: dir}
   end
 
-  test "the fixture's stopped job is the row the board used to show as working" do
+  test "only a row that nothing says is running is left out" do
     {:ok, agents} = Claude.parse_agents(Fixtures.read!("claude/agents_stopped_job.json"))
     stopped = Enum.find(agents, &(&1.session_id == @stopped))
 
     assert %{state: "working", status: nil, pid: nil} = stopped
-    assert Claude.classify(stopped) == :working
     assert Enum.map(Claude.live(agents), & &1.session_id) == [@busy, @idle, @terminal]
+
+    # A session that needs you, or still has a status, stays even with no pid.
+    assert Claude.live([%{stopped | state: "blocked"}]) != []
+    assert Claude.live([%{stopped | status: "waiting"}]) != []
+    assert Claude.live([%{stopped | status: "busy"}]) != []
+    assert Claude.live([%{stopped | state: "done"}]) == []
   end
 
   test "on the board's own machine a stopped job gives no card and is not counted", c do

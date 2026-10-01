@@ -13,11 +13,13 @@ defmodule Wallboard.Sources.Claude do
 
   A session needs you when its status is "waiting" or its state is "blocked".
 
-  A row with no `pid` has no process behind it, so it is not a live session
-  and is left out. A background job stopped with `claude stop` can stay in
-  the list for hours as such a row, still saying `state: "working"`. Every
-  session with a process has a `pid`, whether busy, idle or in a terminal
-  (checked against Claude Code 2.1.285).
+  A row that nothing says is running is not a live session and is left out:
+  it has no `pid`, no `status`, and its state is not "blocked". A background
+  job that ended or was stopped can stay in the list for hours as such a
+  row, still saying `state: "working"`. Every session with a process had a
+  `pid` and a `status`, whether busy, idle or in a terminal (seen on Claude
+  Code 2.1.285). No blocked session was there to look at, so a blocked row
+  is kept whatever else it lacks: a session that needs you is never hidden.
 
   The words for why it is waiting come from the background job's own file,
   <config dir>/jobs/<id>/state.json, whose `detail` holds the question it
@@ -142,11 +144,12 @@ defmodule Wallboard.Sources.Claude do
   end
 
   @doc """
-  The agents that have a process. A row with no pid is a job that ended or
-  was stopped, whatever its state says, so the board and a collector, which
-  both read the list through `fetch/1`, never show or count it.
+  The agents something says are running: a process, a status, or a wait on
+  their person. The rest are jobs that ended or were stopped, whatever
+  their state says, so the board and a collector, which both read the list
+  through `fetch/1`, never show or count them.
   """
-  def live(agents), do: Enum.filter(agents, & &1.pid)
+  def live(agents), do: Enum.filter(agents, &(&1.pid || &1.status || &1.state == "blocked"))
 
   defp agent(raw) do
     %{

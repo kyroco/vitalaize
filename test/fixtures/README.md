@@ -34,7 +34,7 @@ shape from New Relic's NerdGraph documentation and says so.
 
 `claude/agents_stopped_job.json` is not a capture. It is written by hand in
 the shape `claude agents --json` printed on Claude Code 2.1.285, with made-up
-sessions: a background job stopped with `claude stop` that is still listed as
+sessions: a background job that ended or was stopped but is still listed as
 `state: "working"` with no `pid` and no `status`, beside a busy and an idle
 background session and a session in a terminal, which all have a `pid`.
 
