@@ -263,7 +263,13 @@ final class AppState: ObservableObject {
     func detect() {
         screen = .detecting
         DispatchQueue.global(qos: .userInitiated).async {
-            let found = Setup.detect()
+            var found = Setup.detect()
+            // A folder kept by Remove still holds its settings: the setup
+            // starts from them, as Reconfigure does, so they are not lost.
+            if FileManager.default.fileExists(atPath: found.dataFolder + "/settings.exs"),
+               let doc = Setup.settingsDoc(dataFolder: found.dataFolder) {
+                found = Setup.prefill(found, from: doc)
+            }
             let flows = found.repo.isEmpty ? [] : Detect.workflows(repo: found.repo)
             let profiles = Detect.awsProfiles()
             let tools = [("claude", Shell.which("claude") != nil),
@@ -272,6 +278,9 @@ final class AppState: ObservableObject {
                          ("op (1Password)", Shell.which("op") != nil)]
             DispatchQueue.main.async {
                 self.choices = found
+                self.importNote = nil
+                self.offeredImport = nil
+                self.lookupNote = nil
                 self.koriumFound = found.korium
                 self.workflows = flows
                 self.awsProfiles = profiles
@@ -342,6 +351,9 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.lookingUp = false
                 self.lookupNote = found.note
+                // A look up that failed found nothing out: what was
+                // picked stays.
+                guard found.note.ok else { return }
                 self.workflows = flows
                 let g = Detect.guessWorkflows(flows)
                 if self.choices.gateWorkflow.isEmpty || !flows.contains(self.choices.gateWorkflow) { self.choices.gateWorkflow = g.gate }
@@ -427,7 +439,8 @@ final class AppState: ObservableObject {
             let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
             let up = runsBoard ? Setup.boardRunning(port: port ?? knownPort) : Setup.serviceRunning()
             DispatchQueue.main.async {
-                if let port { self.choices.port = port }
+                // Not while the setup is open: there the port is the person's to type.
+                if let port, self.screen == .status || self.screen == .settings { self.choices.port = port }
                 if let doc { self.take(doc) }
                 self.running = up
             }
@@ -486,6 +499,7 @@ final class AppState: ObservableObject {
         saveErrors = [:]
         saveFailure = nil
         let runsBoard = choices.role.runsBoard
+        let knownPort = choices.port
         DispatchQueue.global(qos: .userInitiated).async {
             let answer = Setup.save(changed)
             let doc = answer.ok ? Setup.settingsDoc() : nil
@@ -510,13 +524,13 @@ final class AppState: ObservableObject {
             sleep(3)
             let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
             let board = doc.map { $0.role != "collector" } ?? runsBoard
-            let back = board ? Setup.waitForBoard(port: port ?? self.choices.port, seconds: 60) : Setup.waitForService(seconds: 30)
+            let back = board ? Setup.waitForBoard(port: port ?? knownPort, seconds: 60) : Setup.waitForService(seconds: 30)
             DispatchQueue.main.async {
                 self.busy = false
                 if back {
-                    self.saveLines.append(board ? "The board is answering at http://localhost:\(String(port ?? self.choices.port))." : "The collector is running.")
+                    self.saveLines.append(board ? "The board is answering at http://localhost:\(String(port ?? knownPort))." : "The collector is running.")
                 } else {
-                    self.saveFailure = "\(board ? "The board has not answered" : "The collector has not started") for a minute since the save. Go back and use Show the log to see why; your settings are saved."
+                    self.saveFailure = "\(board ? "The board has not answered for a minute" : "The collector has not started for half a minute") since the save. Go back and use Show the log to see why; your settings are saved."
                 }
                 self.refreshStatus()
             }
@@ -565,6 +579,8 @@ final class AppState: ObservableObject {
     }
 
     func open(_ path: String) {
-        if let url = URL(string: "http://localhost:\(choices.port)\(path)") { Shell.open(url) }
+        // By number: the board listens there, and "localhost" could be
+        // answered by another program at ::1.
+        if let url = URL(string: "http://127.0.0.1:\(choices.port)\(path)") { Shell.open(url) }
     }
 }

@@ -8,7 +8,7 @@ snap 08-status
 click "Check again"
 wait 10 "The board is running"
 click "Open the board"
-opened "http://localhost:{PORT}/"
+opened "http://127.0.0.1:{PORT}/"
 click "Show the log"
 opened "board.log"
 click "Restart the board"

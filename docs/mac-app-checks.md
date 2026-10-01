@@ -4,8 +4,8 @@ This is the list of every screen the Mac app shows and every button, switch,
 picker, field and link on it, with what happened when each one was used in the
 real app. A script uses them, so the whole list can be run again:
 
-    macos/uitest/run.sh          every scenario but the slow one, about 25 minutes
-    macos/uitest/run.sh --all    the slow one too (a pairing code that runs out, 11 minutes)
+    macos/uitest/run.sh          every scenario but the slow one, about 10 minutes
+    macos/uitest/run.sh --all    the slow one too (a pairing code that runs out), about 21 minutes
     macos/uitest/run.sh pair     only the scenarios named
     macos/uitest/record.py       write the last run down (see below)
 
@@ -176,7 +176,7 @@ Pictures: [running](mac-app-checks/pictures/fresh-hub/08-status.jpg),
 | Control | Script | What happened |
 |---|---|---|
 | Check again | Clicked, with the board running and with it not answering | The screen says which it is |
-| Open the board | Clicked | The app asks macOS to open `http://localhost:PORT/` |
+| Open the board | Clicked | The app asks macOS to open `http://127.0.0.1:PORT/` |
 | Settings | Clicked | The Settings screen |
 | Restart the board | Clicked | "Restarting the board…", the button greys out, then "The board restarted and is answering." |
 | Show the log | Clicked | The app asks macOS to open `board.log` |
@@ -217,6 +217,7 @@ Pictures: [empty](mac-app-checks/pictures/pair/c10-pair-sheet.jpg),
 | Pair | Clicked | A code shows; the same code is in the hub's mailbox |
 | Hide (while waiting) | Clicked | The sheet goes; opened again, the same code is still there |
 | Close | Clicked | The sheet goes; why the pairing failed stays on the first screen |
+| Pair, on a collector that is already paired, and the hub approves | Clicked | "This Mac is connected as …" ([picture](mac-app-checks/pictures/pair/c11-again-approved.jpg)). The collector takes up the new certificate by itself, with no restart, and the first screen says "Connected to the hub at …" |
 
 On the hub's side the script approves or refuses the code in the board's
 mailbox page, the way a person does in a browser.
@@ -274,7 +275,7 @@ Pictures: [the sheet](mac-app-checks/pictures/fresh-hub/13-remove-sheet.jpg),
 | Also delete the database and settings | Turned on | The data folder is gone after Remove; left off, the database and settings stay |
 | Cancel | Clicked | The sheet goes, the board still runs |
 | Remove | Pressed, not clicked | The board stops, the login item is gone, and the screen says what was done and whether the data was kept |
-| Set up again | Clicked | The setup from step 1. Run through, the board comes back with the kept database and saved settings ([picture](mac-app-checks/pictures/fresh-hub/14-set-up-again.jpg)) |
+| Set up again | Clicked | The setup from step 1, filled in from the settings that were kept. Run through, the board comes back with the kept database and settings ([picture](mac-app-checks/pictures/fresh-hub/14-set-up-again.jpg)) |
 
 ## Steps that write a file
 
@@ -288,9 +289,13 @@ replacement is written, and a dated copy of it is kept first, in
 | Opening the app over an older install (the mend) | The login item, and `settings.exs` when it loads a file that is gone | Copied to the backup folder first; the screen says where | `over-renamed`: both copies are in the backup folder, the database and saved settings are untouched |
 | Stop that board and run this one instead | The by-hand login item `local.wallboard.plist` (removed) | Copied to the backup folder first; the earlier settings file is not touched | `by-hand` |
 | Save in Settings | `settings.json` | Copied to the backup folder first; the board's code writes the new one beside it and swaps it in. The screen says where the copy is | `fresh-hub`: the copy is there. `over-renamed`: with the folder read-only, "Could not write to file … Check that the folder can be written to. Nothing was saved." and the file is unchanged |
-| Remove, data kept | The login item and `install.json` (removed) | Both are copied to the backup folder first | `fresh-hub` |
+| Remove, data kept | The login item and `install.json` (removed) | Both are copied to the backup folder first. If a copy cannot be kept, they are left in place and the screen says so | `fresh-hub` (the copies; the case where a copy cannot be kept is not run) |
 | Remove, data deleted | The whole folder | Nothing is kept: the switch says so and is off unless turned on | `fresh-hub`, `hub-only` |
 | Pairing | The certificate in `collector/link/` | A new pairing replaces it only after the hub approves; a refused or unanswered one leaves the old pairing connected | `pair`: after a refusal the first screen still says "Connected to the hub at …" |
+
+A setup that stops after the settings were written says so: "The settings from
+this setup were already saved, and the copies from before are in the backups
+folder."
 
 When `settings.exs` is written again without the earlier file it used to carry
 over, the screen names the missing file and says "Settings beyond the ones this
@@ -312,7 +317,9 @@ Each says what went wrong and what to do, and whether the board is running.
 | The board cannot start after the mend (its settings file cannot be read) | "The board did not start. Its log is at … Use Show the log to see why, then Reconfigure to set it up again. Your settings and database are where they were." | "The board is not answering"; Reconfigure brings it back | `failures` |
 | The board still running is the one from before an upgrade | "The board that was running was started before this version of the app was installed. Restarting it…" | Restarted | `over-0-2-0` |
 | A setting is refused on Save | "Nothing was saved. Fix these and save again:" with the setting's name | Still running | `fresh-hub` |
-| Look up cannot find the repository | "GitHub has no repository named …" | Not set up yet | `fresh-hub` |
+| Look up cannot find the repository | "GitHub has no repository named …"; the workflows picked before stay as they were | Not set up yet | `fresh-hub` |
+| An older board's own settings page saved a value in the database | The setup's answer still wins: the screen says "Saving the answers that differ from what an earlier board saved" | Running | `over-0-2-0` |
+| The app is opened from a download or a disk image | "This copy of VitalAIze runs from a place that will not be there after a restart … Move VitalAIze into the Applications folder and open it from there." | As it was | Not run: see the last section |
 | Nothing answers at the hub's address | "Could not pair: nothing answers at …" | The collector runs | `pair` |
 | The board at that address does not take collectors | "That board does not take collectors. On the hub, open its settings, turn on Take collectors, and ask again." | The collector runs, not paired | `pair` |
 | The hub's owner refuses the code | "The hub's owner refused this machine." | The collector runs; an earlier pairing stays connected | `pair` |
@@ -346,15 +353,18 @@ can do. Do these on a Mac where VitalAIze is set up, in this order.
 6. **Press Return.** In the Pair sheet, type a hub's address and press Return:
    it should do what Pair does. On the first screen of a Mac that runs the
    board, Return should open the board.
-7. **Close the window.** The app quits and the board keeps running:
+7. **Open the app from a disk image.** With VitalAIze set up, open another
+   copy of the app from a mounted disk image or straight from Downloads. It
+   should leave the login item alone while the copy in Applications is there.
+8. **Close the window.** The app quits and the board keeps running:
    `http://localhost:4747` should still answer.
-8. **Install the package.** Double-click `VitalAIze-(version).pkg`, go through
+9. **Install the package.** Double-click `VitalAIze-(version).pkg`, go through
    the installer's pages, and open the app from Applications. Over an older
    install, the first screen should say what it mended or restarted, then "The
    board is running".
-9. **Restart the Mac** and log in. Without opening the app, the board should
+10. **Restart the Mac** and log in. Without opening the app, the board should
    answer.
-10. **Things that reach outside this Mac**, which the run leaves off on purpose:
+11. **Things that reach outside this Mac**, which the run leaves off on purpose:
    a phone number (a text is sent when a session needs you), the New Relic page
    (the key is read from 1Password when the board starts), the board password
    from another device (it should ask for `?token=` once), and a board started

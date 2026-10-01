@@ -17,8 +17,10 @@ defmodule Wallboard.Collector.Sender do
   hub's address, such as `{"host": "192.168.1.20", "link_port": 4748}`.
   Until all four are there nothing is sent, and the outbox keeps the
   events. The sender looks for them twice a second, so a collector paired
-  for the first time while it runs starts sending without a restart. Once
-  it has started, it keeps that hub and certificate until it is restarted.
+  for the first time while it runs starts sending without a restart. A
+  collector paired again while it runs (after the hub removed it, or with
+  another hub) is seen the same way: when `cert.pem` or `hub.json` change,
+  the sender stops its client and starts one with what is there now.
 
   ## Sending
 
@@ -62,6 +64,9 @@ defmodule Wallboard.Collector.Sender do
   @tick_ms 500
   @batch 200
   @high_water 4_000_000
+  # How long "the hub is restarting" stands before a lost stream is said
+  # as lost.
+  @back_soon_seconds 120
 
   def start_link(opts) do
     # `name: nil` starts one without a name, for tests.
@@ -131,7 +136,11 @@ defmodule Wallboard.Collector.Sender do
       # file => the outbox number up to which its events are not sent
       skip: %{},
       removed?: false,
-      warned?: false
+      warned?: false,
+      # cert.pem and hub.json as they were when the client was started
+      paired_as: nil,
+      # the last word written to state.json, and when
+      noted: nil
     }
 
     state = %{state | skip: saved_skip(state.dir)}
@@ -153,24 +162,25 @@ defmodule Wallboard.Collector.Sender do
 
   def handle_info({:wallboard_link, :removed}, state) do
     Logger.warning("Collector: the hub removed this machine. Nothing more is sent.")
-    note(state, "removed")
-    {:noreply, %{state | removed?: true}}
+    {:noreply, %{note(state, "removed") | removed?: true}}
   end
 
-  def handle_info({:wallboard_link, :up}, state) do
-    note(state, "up")
-    {:noreply, state}
+  def handle_info({:wallboard_link, :up}, state), do: {:noreply, note(state, "up")}
+
+  # A hub that said it is restarting closes the stream a moment later.
+  # That is the restart, not a hub that went quiet, for as long as a
+  # restart takes.
+  def handle_info({:wallboard_link, {:down, _wait}}, %{noted: {"back_soon", at}} = state) do
+    if System.os_time(:second) - at < @back_soon_seconds,
+      do: {:noreply, state},
+      else: {:noreply, note(state, "down")}
   end
 
-  def handle_info({:wallboard_link, {:down, _wait}}, state) do
-    note(state, "down")
-    {:noreply, state}
-  end
+  def handle_info({:wallboard_link, {:down, _wait}}, state),
+    do: {:noreply, note(state, "down")}
 
-  def handle_info({:wallboard_link, :back_soon}, state) do
-    note(state, "back_soon")
-    {:noreply, state}
-  end
+  def handle_info({:wallboard_link, :back_soon}, state),
+    do: {:noreply, note(state, "back_soon")}
 
   def handle_info(_other, state), do: {:noreply, state}
 
@@ -188,6 +198,10 @@ defmodule Wallboard.Collector.Sender do
   # Starts the link's client once the collector is paired. The two live and
   # stop together.
   defp connect(%{client: nil} = state) do
+    # Taken before the files are read, so a pairing that lands meanwhile
+    # is seen as a change on the next look.
+    paired_as = stamp(state.dir)
+
     with {:ok, hub} <- paired(state.dir),
          %Proto.Hello{} = hello <- hello(state) do
       if certificate?(hub.tls) do
@@ -210,8 +224,7 @@ defmodule Wallboard.Collector.Sender do
         {:ok, pid} = Client.start_link(opts)
         Logger.info("Collector: sending to the hub at #{inspect(hub.host)}, port #{hub.port}.")
         # Not connected until the client says so.
-        note(state, "down")
-        %{state | client: pid}
+        %{note(state, "down") | client: pid, paired_as: paired_as}
       else
         if not state.warned?,
           do: Logger.warning("Collector: the certificate files could not be read. Pair again.")
@@ -223,7 +236,41 @@ defmodule Wallboard.Collector.Sender do
     end
   end
 
-  defp connect(state), do: state
+  # Paired again while running: the certificate in use is no longer the
+  # one in the folder, and the hub may be another one.
+  defp connect(%{client: pid} = state) do
+    if stamp(state.dir) == state.paired_as do
+      state
+    else
+      Logger.info("Collector: paired again. Connecting with the new certificate.")
+
+      try do
+        GenServer.stop(pid, :normal, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+
+      connect(%{
+        state
+        | client: nil,
+          removed?: false,
+          ready?: false,
+          resume: nil,
+          forget: nil,
+          warned?: false
+      })
+    end
+  end
+
+  # When cert.pem and hub.json were last written, and how long they are.
+  defp stamp(dir) do
+    for name <- ["cert.pem", "hub.json"] do
+      case File.stat(Path.join(dir, name), time: :posix) do
+        {:ok, %{mtime: mtime, size: size}} -> {mtime, size}
+        _ -> nil
+      end
+    end
+  end
 
   # Writes how the link stands (see `link_state/1`). The file is written
   # whole beside itself and moved into place, so a reader never sees half
@@ -232,11 +279,13 @@ defmodule Wallboard.Collector.Sender do
     path = Path.join(state.dir, "state.json")
     tmp = path <> ".tmp"
 
-    with :ok <- File.write(tmp, Jason.encode!(%{state: word, at: System.os_time(:second)})) do
+    at = System.os_time(:second)
+
+    with :ok <- File.write(tmp, Jason.encode!(%{state: word, at: at})) do
       File.rename(tmp, path)
     end
 
-    :ok
+    %{state | noted: {word, at}}
   end
 
   # Read before the client is started: files that are there and are not a

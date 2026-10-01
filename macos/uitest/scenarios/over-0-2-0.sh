@@ -40,6 +40,8 @@ for key in ("otherRepos", "importedRepos", "settingsRead"):
 json.dump(record, open(sys.argv[1], "w"), indent=2)
 PY
   sqlite3 "$DATA/wallboard.db" "create table uitest_marker(x); insert into uitest_marker values('history');"
+  # What 0.2.0's own settings page saved, which it kept in the database.
+  sqlite3 "$DATA/wallboard.db" "insert or replace into meta(key, value) values('settings_overrides', '{\"brand\":{\"name\":\"Acme Page\"}}');"
 
   # The old board, running from that file since before the upgrade.
   launchctl kickstart -k "gui/$(id -u)/$LABEL" >/dev/null 2>&1
@@ -56,11 +58,12 @@ PY
   check "after the restart the board answers" answers "$PORT"
   check "the history is still in the database" test "$(sqlite3 "$DATA/wallboard.db" 'select x from uitest_marker')" = history
   check "what was saved in Settings is still in use" setting_is rotate_seconds "45"
-  check "the board's name from the 0.2.0 file is still in use" setting_is brand.name "Acme"
+  check "the name 0.2.0's settings page saved is still in use" setting_is brand.name "Acme Page"
 
   # Its steps check that opening the app again restarts nothing.
   drive v020-again
   check "Reconfigure over the 0.2.0 files ends with the board answering" answers "$PORT"
   check "Reconfigure wrote the settings file in the new form" grep -q 'role: "both"' "$DATA/settings.exs"
+  check "the name typed in Reconfigure wins over the one 0.2.0's page saved" setting_is brand.name "Acme Wizard"
   check "the 0.2.0 settings file is in the backup folder" ls "$DATA"/backups/*/settings.exs
 }

@@ -53,6 +53,7 @@ acme/rockets"
   check "set up again, the board answers" answers "$PORT2"
   check "the name typed in the new setup is in use" setting_is brand.name "Acme Again"
   check "a setting saved before Remove is still in use" setting_is timezone "America/Chicago"
+  check "one the setup asks about and was left alone, too" setting_is github.branch "trunk"
   check "the history from before Remove is still in the database" test "$(sqlite3 "$DATA/wallboard.db" 'select x from uitest_marker')" = history
   drive hub-remove-all
   check "after Remove with delete the login item is gone" item_gone "$LABEL"

@@ -415,7 +415,7 @@ enum Setup {
         guard let body = try? JSONSerialization.data(withJSONObject: ["keys": wizardKeys(c)]),
               let data = engine(["forget"], input: String(decoding: body, as: UTF8.self), dataFolder: c.dataFolder),
               let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok else {
-            throw Failure.step("The saved settings (settings.json in \(c.dataFolder)) could not be changed. Check that the folder can be written to. Nothing was changed.")
+            throw Failure.step("The saved settings (settings.json in \(c.dataFolder)) could not be changed. Check that the folder can be written to. The settings were left as they were.")
         }
     }
 
@@ -432,12 +432,25 @@ enum Setup {
     /// tell the person.
     @discardableResult
     static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws -> PairAnswer? {
+        // A setup that stops after the settings were written says so: what
+        // it says about the file it stopped on is not the whole of it.
+        var saved = false
+        do {
+            return try steps(c, saved: &saved, onCode: onCode, say: say)
+        } catch Failure.step(let message) where saved {
+            throw Failure.step(message + " The settings from this setup were already saved, and the copies from before are in the backups folder.")
+        }
+    }
+
+    private static func steps(_ c: Choices, saved: inout Bool, onCode: @escaping (PairCode?) -> Void, say: @escaping (String) -> Void) throws -> PairAnswer? {
+        if let fault = awayFault() { throw Failure.step(fault + " Nothing was changed.") }
         // Kept from an earlier setup, so Uninstall still finds Codex's hooks
         // when this run could not reach them. The earlier record stays
         // where Uninstall looks until this run has written its own: the
         // remembered data folder moves only at the end.
         let hookedCodex: String? = installed()?.hookedCodex
         var c = c
+        c.hubURL = c.hubURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
         let backups = backupFolder(data)
@@ -462,6 +475,8 @@ enum Setup {
             // Before the file is written: if this cannot be done, nothing
             // has changed yet.
             try writeSettings(c, backups: backups)
+            saved = true
+            agree(c, say: say)
 
             if stopsOld {
                 say("Stopping the board you started by hand before")
@@ -482,7 +497,7 @@ enum Setup {
             }
 
             say("Starting the board, and setting it to start when you log in")
-            try startBoard(c)
+            try startBoard(c, backups: backups)
 
             say("Waiting for the board to answer")
             guard waitForBoard(port: c.port, seconds: 90) else {
@@ -494,9 +509,10 @@ enum Setup {
         if c.role == .collector {
             say("Writing the collector's settings")
             try writeSettings(c, backups: backups)
+            saved = true
 
             say("Starting the collector, and setting it to start when you log in")
-            try startBoard(c)
+            try startBoard(c, backups: backups)
             guard waitForService(seconds: 30) else {
                 throw Failure.step("The collector did not start. Its log is at \(logFile.path).")
             }
@@ -556,7 +572,7 @@ enum Setup {
             try fm.createDirectory(at: backups, withIntermediateDirectories: true)
             try fm.copyItem(at: url, to: copy)
         } catch {
-            throw Failure.step("Could not keep a copy of \(url.path) before changing it (\(error.localizedDescription)). Nothing was changed.")
+            throw Failure.step("Could not keep a copy of \(url.path) before changing it (\(error.localizedDescription)), so it was left as it was.")
         }
     }
 
@@ -587,9 +603,54 @@ enum Setup {
             try replace(data.appendingPathComponent("settings.exs"), with: Data(settingsFile(c).utf8), backups: backups)
         } catch {
             let copy = backups.appendingPathComponent(saved.lastPathComponent)
-            if let before = fm.contents(atPath: copy.path) { try? before.write(to: saved, options: .atomic) }
+            // Only when forgetting the answers did change the file.
+            if let before = fm.contents(atPath: copy.path), fm.contents(atPath: saved.path) != before {
+                do { try before.write(to: saved, options: .atomic) } catch {
+                    throw Failure.step("Could not write settings.exs, and the saved settings (\(saved.path)) could not be put back as they were. The copy from before is at \(copy.path).")
+                }
+            }
             throw error
         }
+    }
+
+    /// The setup's answers as the settings screen writes them, by key.
+    static func wizardValues(_ c: Choices) -> [String: String] {
+        func flag(_ on: Bool) -> String { on ? "true" : "false" }
+        return [
+            "port": String(c.port),
+            "brand.name": c.boardName,
+            "claude.config_dirs": c.claudeFolders.joined(separator: "\n"),
+            "github.repos": ([c.repo] + (c.otherRepos ?? [])).filter { !$0.isEmpty }.joined(separator: "\n"),
+            "github.branch": c.branch,
+            "github.gate_workflow": c.gateWorkflow,
+            "github.dev_deploy": c.devWorkflow,
+            "github.prod_deploy": c.prodWorkflow,
+            "korium.enabled": flag(c.korium),
+            "codex.enabled": flag(c.codex ?? false),
+            "new_relic.enabled": flag(c.newRelic),
+            "new_relic.account_id": c.newRelicAccount,
+            "new_relic.api_key_ref": c.newRelicKeyRef,
+            "dev_power.aws_profile": c.devProfile,
+            "builds.prod_profile": c.prodProfile,
+            "alerts.phone": c.phone,
+            "alerts.via": c.textVia,
+        ]
+    }
+
+    /// Makes the settings in use agree with the setup's answers. A board
+    /// from before the app had a settings page that saved in the database,
+    /// and what it saved there wins over settings.exs: an answer changed
+    /// in the setup would otherwise not take. Any answer that is not what
+    /// is in use once settings.exs is written is saved the way the Settings
+    /// screen saves, which wins over both.
+    static func agree(_ c: Choices, say: (String) -> Void) {
+        guard c.settingsRead == true, let doc = settingsDoc(dataFolder: c.dataFolder) else { return }
+        func plain(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let now = Dictionary(doc.sections.flatMap { $0.fields }.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        let differ = wizardValues(c).filter { key, value in now[key].map { plain($0) != plain(value) } ?? false }
+        guard !differ.isEmpty else { return }
+        say("Saving the answers that differ from what an earlier board saved")
+        _ = save(differ, dataFolder: c.dataFolder)
     }
 
     /// The copy this app keeps of an earlier settings file, beside settings.exs.
@@ -628,6 +689,8 @@ enum Setup {
             throw Failure.step("Could not read your earlier settings file, \(imported). Nothing was changed. Check the file, or turn off carrying it over on the second step.")
         }
         try replace(copy, with: contents, backups: backups)
+        // It can hold a password; a new file is otherwise readable by all.
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
         return checked
     }
 
@@ -715,9 +778,11 @@ enum Setup {
         }
         let was = (item["ProgramArguments"] as? [String])?.first ?? ""
         if was != program {
-            return fm.isExecutableFile(atPath: was)
-                ? "The login item started VitalAIze from another copy of the app, at \(was)."
-                : "The login item started VitalAIze from \(was), which is gone."
+            // Another copy of the app that is still there keeps the login
+            // item: two copies would take it from each other every time
+            // one of them is opened.
+            if fm.isExecutableFile(atPath: was) { return nil }
+            return "The login item started VitalAIze from \(was), which is gone."
         }
         let settings = c.dataFolder + "/settings.exs"
         if (item["EnvironmentVariables"] as? [String: String])?["WALLBOARD_SETTINGS"] != settings {
@@ -750,6 +815,7 @@ enum Setup {
     /// it cannot load as it is, from the answers the setup recorded. Every
     /// file changed is copied to the backup folder first.
     static func mend(_ record: Installed, say: @escaping (String) -> Void) throws {
+        if let fault = awayFault() { throw Failure.step(fault) }
         var c = record.choices
         let data = URL(fileURLWithPath: c.dataFolder)
         let backups = backupFolder(data)
@@ -763,7 +829,7 @@ enum Setup {
             try replace(data.appendingPathComponent("settings.exs"), with: Data(settingsFile(c).utf8), backups: backups)
         }
         say("Setting the login item to start VitalAIze from this app")
-        try startBoard(c)
+        try startBoard(c, backups: backups)
         if c.role.runsBoard {
             guard waitForBoard(port: currentPort(c), seconds: 90) else {
                 throw Failure.step("The board did not start. Its log is at \(logFile.path).")
@@ -786,8 +852,17 @@ enum Setup {
         return c.port
     }
 
+    /// Why this copy of the app must not be what the login item starts,
+    /// or nil: macOS runs an app opened from a download or a disk image
+    /// from a place that is gone after a restart or an eject.
+    static func awayFault() -> String? {
+        let path = release.path
+        guard path.contains("/AppTranslocation/") || path.hasPrefix("/Volumes/") else { return nil }
+        return "This copy of VitalAIze runs from a place that will not be there after a restart (\(path)). Move VitalAIze into the Applications folder and open it from there."
+    }
+
     /// The login item that runs the board from inside this app.
-    static func startBoard(_ c: Choices) throws {
+    static func startBoard(_ c: Choices, backups: URL) throws {
         let data = c.dataFolder
         try fm.createDirectory(at: logFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(atPath: data + "/tmp", withIntermediateDirectories: true)
@@ -811,7 +886,7 @@ enum Setup {
             "StandardErrorPath": logFile.path
         ]
         let xml = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try replace(agentPlist, with: xml, backups: backupFolder(URL(fileURLWithPath: data)))
+        try replace(agentPlist, with: xml, backups: backups)
 
         let domain = "gui/\(getuid())"
         Shell.run("/bin/launchctl", ["bootout", "\(domain)/\(label)"])
@@ -858,8 +933,11 @@ enum Setup {
     /// so it is not in the way.
     static func portTakenByAnother(_ port: Int) -> Bool {
         guard Shell.run("/usr/bin/nc", ["-z", "-G", "1", "127.0.0.1", String(port)], timeout: 4).ok else { return false }
-        if serviceRunning(), let record = installed(), record.choices.role.runsBoard, currentPort(record.choices) == port { return false }
-        return true
+        guard serviceRunning() else { return true }
+        // With no record, a setup stopped part way and what it started is
+        // still running: that is what a new try is about to restart.
+        guard let record = installed() else { return false }
+        return !(record.choices.role.runsBoard && currentPort(record.choices) == port)
     }
 
     /// Whether the login item is running, as launchd sees it.
@@ -944,8 +1022,8 @@ enum Setup {
         guard let body = try? JSONSerialization.data(withJSONObject: ["values": values]),
               let data = engine(["save"], input: String(decoding: body, as: UTF8.self), dataFolder: folder),
               var answer = try? JSONDecoder().decode(SaveAnswer.self, from: data) else {
-            _ = wrote()
-            return failed
+            guard wrote(), let kept else { return failed }
+            return SaveAnswer(ok: false, lines: ["The settings were saved, but the save did not finish, so a change that needs a restart may not be in use yet. Go back and use Restart. The settings as they were before are in \(kept.copy.deletingLastPathComponent().path). The log is at \(logFile.path)."], errors: nil, service: nil)
         }
         if wrote(), answer.ok, let kept {
             answer.lines = (answer.lines ?? []) + ["The settings as they were before this save are in \(kept.copy.deletingLastPathComponent().path)."]
@@ -979,8 +1057,10 @@ enum Setup {
         return answer
     }
 
+    /// Asked at 127.0.0.1, where the board listens: "localhost" is tried
+    /// at ::1 first, where another program could be the one to answer.
     static func boardRunning(port: Int) -> Bool {
-        let r = Shell.run("/usr/bin/curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", "http://localhost:\(port)/"], timeout: 5)
+        let r = Shell.run("/usr/bin/curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", "http://127.0.0.1:\(port)/"], timeout: 5)
         // A board with a password answers 401 until the password is given:
         // it is running all the same.
         return r.output == "200" || r.output == "401"
@@ -1042,14 +1122,20 @@ enum Setup {
         let record = installed()
         // Kept in the backup folder unless everything is being deleted, so
         // a Remove by mistake can be put back by hand.
+        var copied = true
         if !deleteData, let folder = dataFolder {
             let backups = backupFolder(URL(fileURLWithPath: folder))
-            try? keep(agentPlist, in: backups)
-            try? keep(URL(fileURLWithPath: folder + "/install.json"), in: backups)
+            do {
+                try keep(agentPlist, in: backups)
+                try keep(URL(fileURLWithPath: folder + "/install.json"), in: backups)
+            } catch {
+                copied = false
+                say("\(error.localizedDescription) The login item and the setup record are left in place; it is stopped and will not start again until the app is opened.")
+            }
         }
         say(record?.choices.role.runsBoard == false ? "Stopping the collector" : "Stopping the board")
         Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
-        try? fm.removeItem(at: agentPlist)
+        if copied { try? fm.removeItem(at: agentPlist) }
         for folder in record?.hookedFolders ?? [] {
             say("Disconnecting \(folder)")
             unhook(folder: folder)
@@ -1061,7 +1147,7 @@ enum Setup {
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")
             try? fm.removeItem(atPath: folder)
-        } else if let folder = dataFolder {
+        } else if copied, let folder = dataFolder {
             try? fm.removeItem(atPath: folder + "/install.json")
         }
         dataFolder = nil

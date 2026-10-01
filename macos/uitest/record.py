@@ -46,7 +46,6 @@ def main():
     if not os.path.isdir(OUT):
         sys.exit("No run to write down: run macos/uitest/run.sh first.")
     shutil.rmtree(PICTURES, ignore_errors=True)
-    commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     lines = []
     total = failed = pictures = 0
     for scenario in sorted(os.listdir(OUT)):
@@ -83,7 +82,7 @@ def main():
     head = [
         "# The Mac app's last full run",
         "",
-        f"Written by `macos/uitest/record.py` from the run of `macos/uitest/run.sh --all` on {when}, at commit {commit}.",
+        f"Written by `macos/uitest/record.py` from the run of `macos/uitest/run.sh --all` on {when}.",
         "Do not edit it by hand: run the script again.",
         "",
         f"{total - failed} of {total} steps and checks passed. {pictures} pictures are in `pictures/`, one folder for each scenario.",

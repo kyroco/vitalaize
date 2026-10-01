@@ -42,6 +42,18 @@ scenario_pair() {
   drive_wait
   check "the collector still runs after a refused pairing" item_running "$LABEL"
 
+  # Pair again, approved: the old certificate stops working on the hub the
+  # moment the new one is given, so the collector must take up the new one.
+  rm -f "$OUT/c11-again-code.txt"
+  drive_start collector-pair-again
+  check "the hub's mailbox gets the third request" wait_until 120 test -f "$OUT/c11-again-code.txt"
+  wait_until 30 mailbox_has_code "$HUB_PORT"
+  CODE=$(mailbox "$HUB_PORT" list | head -1)
+  check "Approve the third code in the mailbox" mailbox "$HUB_PORT" approve "$CODE"
+  drive_wait
+  check "the collector took up the new certificate without a restart" grep -q "Collector: paired again" "$H/Library/Logs/VitalAIze/board.log"
+  check "and its link to the hub is up" wait_until 60 grep -q '"state":"up"' "$DATA/collector/link/state.json"
+
   drive collector-reconfigure
   check "after Reconfigure the collector still runs" item_running "$LABEL"
   check "and its link to the hub is up again" wait_until 60 grep -q '"state":"up"' "$DATA/collector/link/state.json"
