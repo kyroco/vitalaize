@@ -190,10 +190,10 @@ defmodule Wallboard.Link.Server do
     rows = events |> Enum.reverse() |> Enum.flat_map(&row/1)
 
     if rows != [] do
-      case Store.put_collector_events(s.machine, rows, System.os_time(:second)) do
-        :ok -> Hub.stored(s.machine, rows)
-        _ -> refuse(:unavailable, "the hub could not save; try again")
-      end
+      # The database tells the rest of the board what it saved (see
+      # `Wallboard.Store.put_collector_events/3`).
+      if Store.put_collector_events(s.machine, rows, System.os_time(:second)) != :ok,
+        do: refuse(:unavailable, "the hub could not save; try again")
     end
 
     # A collector that only says it is alive still gets an answer, so it can

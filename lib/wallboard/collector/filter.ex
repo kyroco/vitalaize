@@ -72,7 +72,9 @@ defmodule Wallboard.Collector.Filter do
     * what started the session (`cli`, `Codex Desktop`) and the login's
       short name
     * tool names: a plain word (`Bash`) or `mcp__server__tool`, and no more
-      than 200 different ones per file
+      than 200 different ones per file. The calls of every tool whose name
+      does not pass are added up under the one name `other`, so the hub's
+      count of tool calls is whole
     * a request id of letters, digits, `_` and `-`; any other id leaves as
       a hash of itself
 
@@ -124,6 +126,8 @@ defmodule Wallboard.Collector.Filter do
   alias Wallboard.Sources.Usage
 
   @text_limit 500
+  # The name the calls of tools with no sendable name are counted under.
+  @other "other"
   @tool_limit 200
   @pr_limit 50
   # The largest number a message field can hold.
@@ -187,6 +191,7 @@ defmodule Wallboard.Collector.Filter do
       helper: ctx[:subagent] == true,
       repo: {nil, ""},
       tools: MapSet.new(),
+      other: {0, 0},
       changes: %Proto.Changes{},
       counts: counts(reader.empty()),
       summary: %Proto.Summary{}
@@ -369,7 +374,7 @@ defmodule Wallboard.Collector.Filter do
   defp tools(%{tools: same}, %{tools: same}, s), do: {[], s}
 
   defp tools(old, new, s) do
-    changed = for {tool, c} <- new.tools, old.tools[tool] != c, do: {tool_name(tool), c}
+    changed = for {tool, c} <- new.tools, old.tools[tool] != c, do: {named(tool), c}
 
     {items, names} =
       changed
@@ -384,7 +389,37 @@ defmodule Wallboard.Collector.Filter do
         end
       end)
 
-    {Enum.reverse(items), %{s | tools: names}}
+    # Every tool that goes out under no name of its own, added up.
+    other =
+      Enum.reduce(new.tools, {0, 0}, fn {tool, c}, {calls, errors} ->
+        if MapSet.member?(names, named(tool)),
+          do: {calls, errors},
+          else: {calls + count(c.calls), errors + count(c.errors)}
+      end)
+
+    items =
+      if other == s.other do
+        items
+      else
+        {calls, errors} = other
+
+        [
+          {:tool, %Proto.ToolTally{name: @other, calls: count(calls), errors: count(errors)}}
+          | items
+        ]
+      end
+
+    {Enum.reverse(items), %{s | tools: names, other: other}}
+  end
+
+  # A tool's name as it may leave, or "" for one that is counted under
+  # `other`. A tool really called that is counted there too, so the name
+  # means one thing.
+  defp named(tool) do
+    case tool_name(tool) do
+      @other -> ""
+      name -> name
+    end
   end
 
   defp changes(t) do

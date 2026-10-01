@@ -84,6 +84,15 @@ defmodule Wallboard.Link.Client do
   """
   def rewound(client \\ __MODULE__), do: GenServer.call(client, :rewound, 30_000)
 
+  @doc """
+  The same, from a reader that is about to send these files (named as in
+  an event's `file`) again from the hub's positions: what still waits here
+  of those files is forgotten first, so nothing of them reaches the hub
+  ahead of the lines the reader sends now.
+  """
+  def rewound(client, files) when is_list(files),
+    do: GenServer.call(client, {:rewound, files}, 30_000)
+
   @doc "The pace the client keeps unless told otherwise."
   def pace, do: @defaults
 
@@ -148,6 +157,11 @@ defmodule Wallboard.Link.Client do
 
   def handle_call(:rewound, _from, s) do
     {:reply, :ok, %{s | buffer: Buffer.reopen(s.buffer)}}
+  end
+
+  def handle_call({:rewound, files}, _from, s) do
+    buffer = s.buffer |> Buffer.forget_files(files) |> Buffer.reopen()
+    {:reply, :ok, %{s | buffer: buffer, in_flight: Buffer.count_through(buffer, s.sent)}}
   end
 
   def handle_call(:status, _from, s) do

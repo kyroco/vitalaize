@@ -16,6 +16,12 @@ defmodule Wallboard.Link do
       open, sends events from a buffer on disk, and reconnects by itself.
     * `Wallboard.Link.Buffer`: that buffer.
     * `Wallboard.Link.Backoff`: how long to wait between tries.
+    * `Wallboard.Collector.Sender`: on the collector, hands the watcher's
+      outbox to the client, and goes back to the hub's place in each file
+      on every connect.
+    * `Wallboard.Link.Sessions`: on the hub, turns the saved events into
+      live cards on the board and rows in the archive
+      (`Wallboard.Link.Session` is one session's picture).
 
   ## Who may connect
 

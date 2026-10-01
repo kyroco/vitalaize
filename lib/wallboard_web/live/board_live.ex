@@ -73,6 +73,7 @@ defmodule WallboardWeb.BoardLive do
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(remote: Wallboard.Remote.sessions())
+      |> assign(stream: Wallboard.Link.Sessions.cards())
       |> assign(github: github.facts, github_meta: github.meta)
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
@@ -108,6 +109,10 @@ defmodule WallboardWeb.BoardLive do
   # A collector's session started or stopped waiting on you.
   def handle_info({:remote, sessions}, socket),
     do: {:noreply, socket |> assign(remote: sessions) |> derive_sessions()}
+
+  # Sessions that collectors stream from other machines.
+  def handle_info({:stream, cards}, socket),
+    do: {:noreply, socket |> assign(stream: cards) |> derive_sessions()}
 
   def handle_info({:source, :github, facts, meta}, socket),
     do:
@@ -257,11 +262,14 @@ defmodule WallboardWeb.BoardLive do
     %{settings: settings, now: now} = socket.assigns
     claude = (socket.assigns.claude && socket.assigns.claude.sessions) || []
     codex = (socket.assigns[:codex] && socket.assigns.codex.sessions) || []
-    # Sessions on other machines show only while they wait on you, and never
-    # twice when this machine's own check already has one.
-    local_ids = MapSet.new(claude, & &1.session_id)
-    remote = Enum.reject(socket.assigns[:remote] || [], &MapSet.member?(local_ids, &1.session_id))
-    sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex ++ remote
+    # A session shows once: this machine's own check comes first, then a
+    # collector's stream, which gives a full card. A machine that only
+    # uploads shows its sessions while they wait on you.
+    local_ids = MapSet.new(claude ++ codex, & &1.session_id)
+    stream = Enum.reject(socket.assigns[:stream] || [], &MapSet.member?(local_ids, &1.session_id))
+    shown = MapSet.union(local_ids, MapSet.new(stream, & &1.session_id))
+    remote = Enum.reject(socket.assigns[:remote] || [], &MapSet.member?(shown, &1.session_id))
+    sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex ++ stream ++ remote
     long = settings.claude.long_running_minutes
 
     sessions = Enum.map(sessions, &Map.put(&1, :long?, Claude.long_running?(&1, now, long)))
@@ -271,7 +279,9 @@ defmodule WallboardWeb.BoardLive do
       Enum.map_reduce(sessions, socket.assigns.repo_of, fn s, known ->
         cwd = s[:cwd]
         known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
-        {Map.put(s, :repo, known[cwd]), known}
+        # A streamed session names its own repository: its folder is on
+        # another machine.
+        {Map.put(s, :repo, s[:repo] || known[cwd]), known}
       end)
 
     needs = sessions |> Enum.filter(&(&1.status == :needs)) |> Enum.sort_by(&unix(&1.since))
@@ -1287,7 +1297,12 @@ defmodule WallboardWeb.BoardLive do
   defp session_card(assigns) do
     ~H"""
     <div
-      class={["session-card", @s.status == :needs && "needs", @machine && "tappable"]}
+      class={[
+        "session-card",
+        @s.status == :needs && "needs",
+        @s[:stale] && "stale",
+        @machine && "tappable"
+      ]}
       phx-click={@machine && @s.session_id && "open_session"}
       phx-value-machine={@machine}
       phx-value-id={@s.session_id}
@@ -1306,6 +1321,11 @@ defmodule WallboardWeb.BoardLive do
         <span :if={!@s[:repo] && @s.folder} class="sc-folder">{@s.folder}</span>
       </div>
       <div class="sc-task">{if @s.status == :needs, do: @s.why, else: @s.task}</div>
+      <%!-- Its machine's collector is not connected: this is how it stood
+           when the hub last heard. --%>
+      <div :if={@s[:stale]} class="stale-note small">
+        stale: no word from {@s.machine} since <.ago at={@s.stale_since} fmt="when" />
+      </div>
 
       <div :if={@d && @d.context_pct} class="ctx">
         <div class="bar thin">

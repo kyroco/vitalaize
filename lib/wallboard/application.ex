@@ -39,6 +39,8 @@ defmodule Wallboard.Application do
   defp link_children(settings) do
     if Wallboard.Link.hub?(settings) do
       [
+        # Listens for what the port saves, so it starts first.
+        Wallboard.Link.Sessions,
         {Wallboard.Link.Hub,
          dir: Wallboard.Link.Authority.dir(settings), port: settings.link.port}
       ]
@@ -48,9 +50,10 @@ defmodule Wallboard.Application do
   end
 
   @doc """
-  What runs for these settings. In the collector role that is the watcher
-  and its outbox alone: no web server, no board, no GitHub, AWS or New
-  Relic checks and no database. Any other role runs the board.
+  What runs for these settings. In the collector role that is the watcher,
+  its outbox and the sender that streams it to the hub: no web server, no
+  board, no GitHub, AWS or New Relic checks and no database. Any other
+  role runs the board.
   """
   def children(%{role: :collector} = settings), do: collector_children(settings)
   def children(settings), do: board_children(settings)
@@ -61,7 +64,9 @@ defmodule Wallboard.Application do
       {Wallboard.Collector.Outbox,
        dir: Path.join(settings.collector.dir, "outbox"),
        max_bytes: settings.collector.outbox_mb * 1_000_000},
-      Wallboard.Collector.Watcher
+      Wallboard.Collector.Watcher,
+      # Sends the outbox to the hub, once this machine is paired with one.
+      {Wallboard.Collector.Sender, dir: settings.collector.dir}
     ]
   end
 
