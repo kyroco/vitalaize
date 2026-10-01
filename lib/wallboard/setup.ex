@@ -59,18 +59,28 @@ defmodule Wallboard.Setup do
     before = Settings.load!()
 
     with :ok <- role_is_ours(values),
-         {:ok, saved} <- Settings.change(values, Settings.under_saved()) do
-      now = Settings.save!(saved)
-      plan = plan(before, now)
-
-      service =
-        cond do
-          plan.restart == [] -> :untouched
-          true -> restart(opts)
-        end
-
-      {:ok, Map.merge(plan, %{path: Settings.saved_path(), role: now.role, service: service})}
+         {:ok, saved} <- Settings.change(values) do
+      {:ok, saved!(before, saved, opts)}
     end
+  end
+
+  @doc """
+  Takes the given settings (keys like `"port"`) out of the saved ones, so
+  they follow the settings file again. The Mac app does this for what its
+  wizard asks, just before it writes that file anew: an answer given
+  there must not lose to an older saved value. Nothing is checked, so it
+  cannot fail on a value. Returns `{:ok, result}` like `save/2`.
+  """
+  def forget(keys, opts \\ []) do
+    before = Settings.load!()
+    {:ok, saved!(before, Settings.forget(keys), opts)}
+  end
+
+  defp saved!(before, saved, opts) do
+    now = Settings.save!(saved)
+    plan = plan(before, now)
+    service = if plan.restart == [], do: :untouched, else: restart(opts)
+    Map.merge(plan, %{path: Settings.saved_path(), role: now.role, service: service})
   end
 
   # WALLBOARD_ROLE wins over anything saved. Saving another role under it
@@ -529,6 +539,8 @@ defmodule Wallboard.Setup do
     * `["save"]`: reads `{"values": {"alerts.phone": "..."}}` from standard
       input, saves, and answers `ok`, `lines` (what happened, to show) and
       `service`, or `ok: false` and `errors` by path.
+    * `["forget"]`: reads `{"keys": ["port", ...]}` from standard input and
+      takes those settings out of the saved ones (`forget/2`).
     * `["pair"]` or `["pair", address]`: pairs with a hub. The code comes
       first, on a line that starts with `VITALAIZE_CODE`; the answer
       follows when the owner has decided.
@@ -600,6 +612,19 @@ defmodule Wallboard.Setup do
     end
   end
 
+  def json(["forget"], opts) do
+    input = opts |> Keyword.get(:io, :stdio) |> IO.read(:eof)
+
+    with text when is_binary(text) <- input,
+         {:ok, %{"keys" => keys}} when is_list(keys) <- Jason.decode(text),
+         true <- Enum.all?(keys, &is_binary/1) do
+      {:ok, result} = forget(keys, opts)
+      emit(opts, %{ok: true, lines: report(result), role: result.role})
+    else
+      _ -> {:error, ~s(Give {"keys": ["port", ...]} on standard input.)}
+    end
+  end
+
   def json(["pair" | rest], opts) do
     out = Keyword.get(opts, :out, :stdio)
     settings = Settings.load!()
@@ -637,7 +662,8 @@ defmodule Wallboard.Setup do
     emit(opts, %{hubs: discover.()})
   end
 
-  def json(_other, _opts), do: {:error, "Usage: --json show | save | pair [address] | hubs"}
+  def json(_other, _opts),
+    do: {:error, "Usage: --json show | save | forget | pair [address] | hubs"}
 
   defp quiet_address("", opts) do
     case opts[:discover].() do

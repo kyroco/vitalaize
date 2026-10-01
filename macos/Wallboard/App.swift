@@ -256,7 +256,8 @@ final class AppState: ObservableObject {
     func take(_ doc: SettingsDoc) {
         self.doc = doc
         let role: Role = doc.role == "collector" ? .collector : (doc.role == "hub" ? .hub : .hubAndCollector)
-        if role != choices.role { choices.role = role }
+        // Not while the wizard is open: there the role is the person's to pick.
+        if role != choices.role && (screen == .status || screen == .settings) { choices.role = role }
     }
 
     // MARK: Settings, saved here with no browser

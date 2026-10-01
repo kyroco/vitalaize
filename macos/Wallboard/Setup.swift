@@ -356,48 +356,28 @@ enum Setup {
         """
     }
 
-    /// The wizard's answers as saved settings, by key. Saving them makes
-    /// settings.json agree with the settings.exs just written: a value
-    /// saved earlier, in the app or with `vitalaize setup`, would otherwise
-    /// win over the wizard's new answer.
-    static func wizardValues(_ c: Choices) -> [String: String] {
-        if c.role == .collector {
-            let found = Set(c.claudeFolders) == Set(Detect.claudeFolders())
-            return ["role": "collector",
-                    "collector.claude_dirs": found ? "" : c.claudeFolders.joined(separator: "\n")]
-        }
-        var v: [String: String] = [
-            "role": c.role == .hub ? "hub" : "both",
-            "port": String(c.port),
-            "brand.name": c.boardName,
-            "claude.config_dirs": c.claudeFolders.joined(separator: "\n"),
-            "github.repos": ([c.repo] + (c.otherRepos ?? []).filter { !$0.isEmpty && $0 != c.repo }).joined(separator: "\n"),
-            "github.branch": c.branch,
-            "korium.enabled": c.korium ? "true" : "false",
-            "codex.enabled": (c.codex ?? false) ? "true" : "false",
-            "new_relic.enabled": c.newRelic ? "true" : "false",
-            "new_relic.account_id": c.newRelicAccount,
-            "dev_power.aws_profile": c.devProfile,
-            "builds.prod_profile": c.prodProfile,
-            "alerts.phone": c.phone,
-            "alerts.via": c.textVia,
-            "archive.collect_local": c.role == .hubAndCollector ? "true" : "false",
-        ]
-        // Left out when empty: the file then keeps what it had.
-        if !c.newRelicKeyRef.isEmpty { v["new_relic.api_key_ref"] = c.newRelicKeyRef }
-        if !c.gateWorkflow.isEmpty { v["github.gate_workflow"] = c.gateWorkflow }
-        if !c.devWorkflow.isEmpty { v["github.dev_deploy"] = c.devWorkflow }
-        if !c.prodWorkflow.isEmpty { v["github.prod_deploy"] = c.prodWorkflow }
-        return v
+    /// The settings the wizard asks about, by key. Before the wizard writes
+    /// settings.exs again, these are taken out of the saved settings
+    /// (settings.json): a value saved earlier, in the app or with `vitalaize
+    /// setup`, would otherwise win over the wizard's new answer. What the
+    /// wizard does not ask about stays saved.
+    static func wizardKeys(_ c: Choices) -> [String] {
+        if c.role == .collector { return ["role", "collector.claude_dirs"] }
+        return ["role", "port", "brand.name", "claude.config_dirs", "github.repos", "github.branch",
+                "github.gate_workflow", "github.dev_deploy", "github.prod_deploy",
+                "korium.enabled", "codex.enabled", "new_relic.enabled", "new_relic.account_id",
+                "new_relic.api_key_ref", "dev_power.aws_profile", "builds.prod_profile",
+                "alerts.phone", "alerts.via", "archive.collect_local"]
     }
 
-    /// Lays the wizard's answers over anything saved before. Stops the
-    /// install when one of them is not accepted.
-    static func saveWizardAnswers(_ c: Choices) throws {
-        let answer = save(wizardValues(c), dataFolder: c.dataFolder)
-        if !answer.ok {
-            let why = (answer.errors ?? [:]).sorted { $0.key < $1.key }.map { $0.value }
-            throw Failure.step((why.isEmpty ? answer.lines ?? [] : why).joined(separator: " "))
+    /// Takes the wizard's settings out of the saved ones. No value is
+    /// checked, so no answer can stop it; when the board's program cannot
+    /// be run at all, the install stops before anything is written.
+    static func forgetWizardKeys(_ c: Choices) throws {
+        guard let body = try? JSONSerialization.data(withJSONObject: ["keys": wizardKeys(c)]),
+              let data = engine(["forget"], input: String(decoding: body, as: UTF8.self), dataFolder: c.dataFolder),
+              let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok else {
+            throw Failure.step("The saved settings could not be read. The log is at \(logFile.path).")
         }
     }
 
@@ -427,8 +407,10 @@ enum Setup {
                 try fm.copyItem(at: URL(fileURLWithPath: imported), to: copy)
             }
             say("Writing the board's settings")
+            // Before the file is written: if this cannot be done, nothing
+            // has changed yet.
+            try forgetWizardKeys(c)
             try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
-            try saveWizardAnswers(c)
 
             if c.replaceOldBoard && Detect.oldLoginItemInstalled {
                 say("Stopping the board you started by hand before")
@@ -449,8 +431,8 @@ enum Setup {
 
         if c.role == .collector {
             say("Writing the collector's settings")
+            try forgetWizardKeys(c)
             try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
-            try saveWizardAnswers(c)
 
             say("Starting the collector, and setting it to start when you log in")
             try startBoard(c)

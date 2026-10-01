@@ -366,12 +366,20 @@ defmodule Wallboard.Settings do
   file and what an older settings page saved. The saved settings hold only
   what differs from this.
   """
-  def under_saved do
+  def under_saved, do: under_saved(nil)
+
+  @doc """
+  `under_saved/0` worked out as a machine in `role` would see it. The role
+  shapes other settings (a hub never saves its own sessions), so a value
+  is compared with what is under it in the role that will be in effect.
+  nil is the file's own role.
+  """
+  def under_saved(role) do
     file = if path = path(), do: file!(path), else: @defaults
     # The role decides whether there is a database to read, and it may be
-    # one the saved settings chose. The role itself is the file's.
+    # one the saved settings chose.
     with_saved_role = layers(file, Map.take(read_saved!(), [:role]))
-    with_saved_role |> Map.put(:role, env_role(file).role) |> normalize()
+    with_saved_role |> Map.put(:role, role || env_role(file).role) |> normalize()
   end
 
   @doc """
@@ -391,7 +399,7 @@ defmodule Wallboard.Settings do
   settings sit beside it, and a service belongs to these settings when it
   was started with this file (see `Wallboard.Setup.Service`).
   """
-  def file_place, do: path() || hd(places())
+  def file_place, do: path() || List.first(places()) || Path.expand("~/settings.exs")
 
   defp saved_in(dir), do: Path.join(dir, "settings.json")
 
@@ -422,16 +430,31 @@ defmodule Wallboard.Settings do
   `{:error, %{path => message}}`.
 
   Only the fields given are looked at. A value that is the same as what
-  is under the saved settings (`under`, from `under_saved/0`) is taken out
-  of them; any other is put in. Everything else saved stays as it is, and
-  nothing the settings file holds is checked or copied, so a value there
-  that this form would not take never stands in the way of a save. A
-  secret given as `kept/0` (the dots) is left alone.
+  is under the saved settings is taken out of them; any other is put in.
+  The other saved settings stay as they are, and nothing the settings
+  file holds is checked or copied, so a value there that this form would
+  not take never stands in the way of a save. A secret given as `kept/0`
+  (the dots) is left alone.
+
+  "Under" is worked out in the role that will be in effect after this
+  save (`under_saved/1`), since the role shapes other settings; the role
+  itself is compared with the file's.
   """
-  def change(values, under) do
+  def change(values) do
+    saved = read_saved!()
     fields = for {_, fs} <- editable(), f <- fs, into: %{}, do: {Enum.join(elem(f, 0), "."), f}
 
-    Enum.reduce(values, {read_saved!(), %{}}, fn {key, raw}, {saved, errors} ->
+    role =
+      case {parse({:choice, Map.keys(@roles)}, Map.get(values, "role", ""), [:role]), saved} do
+        {{:ok, role}, _} -> role
+        {_, %{role: role}} when is_binary(role) -> role
+        _ -> nil
+      end
+
+    under_file = under_saved(nil)
+    under = if role, do: under_saved(role), else: under_file
+
+    Enum.reduce(values, {saved, %{}}, fn {key, raw}, {saved, errors} ->
       case fields[key] do
         nil ->
           {saved, Map.put(errors, key, "#{key} is not a setting")}
@@ -442,7 +465,7 @@ defmodule Wallboard.Settings do
               {saved, errors}
 
             {:ok, value} ->
-              if value == current(under, path, type),
+              if value == current(if(path == [:role], do: under_file, else: under), path, type),
                 do: {drop_path(saved, path), errors},
                 else: {put_path(saved, path, value), errors}
 
@@ -455,6 +478,27 @@ defmodule Wallboard.Settings do
       {saved, errors} when errors == %{} -> {:ok, saved}
       {_, errors} -> {:error, errors}
     end
+  end
+
+  @doc """
+  The saved settings with the given keys taken out, to hand to `save!/1`.
+  Those settings then follow the settings file again. No value is read
+  or checked, so this cannot fail on one; a key that is not a setting is
+  passed over.
+  """
+  def forget(keys) do
+    fields =
+      for {_, fs} <- editable(),
+          {path, _, _, _, _} <- fs,
+          into: %{},
+          do: {Enum.join(path, "."), path}
+
+    Enum.reduce(keys, read_saved!(), fn key, saved ->
+      case fields[key] do
+        nil -> saved
+        path -> drop_path(saved, path)
+      end
+    end)
   end
 
   # Takes a value out, and with it any map left empty above it.
@@ -942,15 +986,27 @@ defmodule Wallboard.Settings do
 
   def path, do: Enum.find(places(), &File.regular?/1)
 
-  # Where the settings file is looked for, in order.
+  # Where the settings file is looked for, in order. A current folder that
+  # has been removed under a running board is skipped, never an error:
+  # the board looks here every two seconds.
   defp places do
+    cwd =
+      case File.cwd() do
+        {:ok, dir} -> Path.join(dir, "settings.exs")
+        _ -> nil
+      end
+
     [
       System.get_env("WALLBOARD_SETTINGS"),
       System.get_env("RELEASE_ROOT") && Path.join(System.get_env("RELEASE_ROOT"), "settings.exs"),
-      Path.join(File.cwd!(), "settings.exs")
+      cwd
     ]
     |> Enum.filter(&(is_binary(&1) and &1 != ""))
-    |> Enum.map(&Path.expand/1)
+    |> Enum.map(fn
+      "/" <> _ = path -> path
+      # A relative path needs the current folder to stand on.
+      path -> if cwd, do: Path.expand(path), else: path
+    end)
   end
 
   @doc "Deep merge, where the file's values win and lists replace lists."

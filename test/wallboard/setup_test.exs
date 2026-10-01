@@ -387,23 +387,47 @@ defmodule Wallboard.SetupTest do
 
     test "the app's wizard run again wins over what was saved before", %{dir: dir, saved: saved} do
       settings_file(dir)
-      assert {:ok, _} = Setup.save(%{"role" => "hub", "port" => "5000", "token" => "pw"}, mac())
 
-      # Reconfigure: the app writes settings.exs again, then saves the same
-      # answers, as macos/Wallboard/Setup.swift wizardValues does.
+      assert {:ok, _} =
+               Setup.save(%{"role" => "hub", "port" => "5000", "alerts.via" => "SMS"}, mac())
+
+      # Reconfigure, as macos/Wallboard/Setup.swift does it: the settings the
+      # wizard asks about are forgotten, then settings.exs is written anew.
+      out = io([])
+      keys = Jason.encode!(%{keys: ["role", "port", "not.a.setting"]})
+      assert :ok = Setup.json(["forget"], mac() ++ [io: io([keys]), out: out])
+      assert "VITALAIZE_JSON" <> json = String.trim(output(out))
+      assert %{"ok" => true} = Jason.decode!(json)
+
+      # A value the form would refuse is no obstacle: nothing is checked.
       File.write!(Path.join(dir, "settings.exs"), """
       %{
-        role: "collector",
-        collector: %{dir: #{inspect(Path.join(dir, "collector"))}}
+        role: "both",
+        port: 4801,
+        alerts: %{via: "sms"},
+        archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}, advertise: false}
       }
       """)
 
-      assert Settings.load!().role == :hub
-      answers = %{"role" => "collector", "collector.claude_dirs" => ""}
-      assert {:ok, result} = Setup.save(answers, mac())
-      assert result.role == :collector
-      # What the wizard did not ask about stays saved.
-      assert saved_json(saved) == %{"port" => 5000, "token" => "pw"}
+      assert %{role: :both, port: 4801} = Settings.load!()
+      # What the wizard did not name stays saved.
+      assert saved_json(saved) == %{"alerts" => %{"via" => "SMS"}}
+    end
+
+    test "turning this machine's own sessions off is kept when the saved role differs from the file's",
+         %{dir: dir, saved: saved} do
+      settings_file(dir, ~s(role: "hub",))
+      assert {:ok, _} = Setup.save(%{"role" => "both"}, mac())
+      assert Settings.get().archive.collect_local
+
+      assert {:ok, result} = Setup.save(%{"archive.collect_local" => "false"}, mac())
+      assert [%{path: [:archive, :collect_local]}] = result.changed
+      refute Settings.get().archive.collect_local
+      assert saved_json(saved) == %{"role" => "both", "archive" => %{"collect_local" => false}}
+
+      # And on again leaves the saved file.
+      assert {:ok, _} = Setup.save(%{"archive.collect_local" => "true"}, mac())
+      assert saved_json(saved) == %{"role" => "both"}
     end
 
     test "something that is not a setting is refused", %{dir: dir, saved: saved} do
@@ -620,6 +644,22 @@ defmodule Wallboard.SetupTest do
   end
 
   describe "a running board or collector" do
+    test "keeps looking when its working folder is removed under it", %{dir: dir, saved: saved} do
+      settings_file(dir)
+      Settings.load!()
+      gone = Path.join(dir, "gone")
+      File.mkdir_p!(gone)
+
+      File.cd!(gone, fn ->
+        File.rm_rf!(gone)
+        assert Settings.saved_path() == saved
+        watch = start_supervised!({Watch, name: :watch_gone, every_ms: 20, listener: self()})
+        File.write!(saved, Jason.encode!(%{rotate_seconds: 8}))
+        assert_receive {:settings, :reloaded}, 2_000
+        assert Process.alive?(watch)
+      end)
+    end
+
     test "takes up a saved setting within its next look, and keeps the old on a broken file",
          %{dir: dir, saved: saved} do
       settings_file(dir)

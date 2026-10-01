@@ -53,6 +53,9 @@ defmodule Wallboard.Settings.Watch do
       {:ok, stat} -> {stat.inode, stat.mtime, stat.size}
       {:error, reason} -> reason
     end
+  rescue
+    # Looking must never stop the board or the collector.
+    _ -> :unknown
   end
 
   defp reload(state) do

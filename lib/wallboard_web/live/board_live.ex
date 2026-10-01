@@ -51,14 +51,13 @@ defmodule WallboardWeb.BoardLive do
   end
 
   # The VitalAIze app or `vitalaize setup` saved a setting: a board left
-  # open shows it (its name, its time zone, how fast the pages turn) with
-  # no reload.
+  # open loads again, the way it does for new styles (see mount/3), so
+  # the page, its clock and its page turning all start from the new
+  # settings together.
   defp take_up_settings(socket) do
-    settings = Settings.get()
-
-    if settings == socket.assigns.settings,
+    if Settings.get() == socket.assigns.settings,
       do: socket,
-      else: assign(socket, settings: settings, tabs: tabs(settings))
+      else: redirect(socket, to: "/")
   end
 
   defp mount_board(socket, session) do
