@@ -9,6 +9,10 @@
 # from a source checkout (scripts/systemd.sh, after MIX_ENV=prod mix
 # release). Either way it uses settings.exs from that folder.
 #
+# With role: "collector" in settings.exs the same service runs the
+# collector: no board and no port, only the watcher for this machine's
+# Claude and Codex sessions.
+#
 # To keep the board running after you log out, also run once:
 #   loginctl enable-linger "$USER"
 set -e
@@ -48,7 +52,7 @@ case "$1" in
     mkdir -p "$UNIT_DIR"
     cat > "$UNIT" <<EOF
 [Unit]
-Description=VitalAIze board
+Description=VitalAIze
 After=network-online.target
 
 [Service]
@@ -69,14 +73,14 @@ EOF
     # own board, which systemd does not bring back after a clean stop.
     systemctl --user enable "$NAME.service"
     systemctl --user restart "$NAME.service"
-    echo "The board is on, and will start whenever you log in."
+    echo "VitalAIze is on, and will start whenever you log in."
     echo "Its log: journalctl --user -u $NAME -f"
     ;;
   off)
     systemctl --user disable --now "$NAME.service" >/dev/null 2>&1 || true
     rm -f "$UNIT"
     systemctl --user daemon-reload >/dev/null 2>&1 || true
-    echo "The board is off and will not start at login."
+    echo "VitalAIze is off and will not start at login."
     ;;
   *)
     echo "Usage: $0 on|off"
