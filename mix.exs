@@ -38,6 +38,12 @@ defmodule Wallboard.MixProject do
       # The messages a collector and the hub send each other (see
       # Wallboard.Collector.Filter).
       {:protobuf, "~> 0.17.0"},
+      # The stream those messages travel on (see Wallboard.Link): the hub's
+      # side and the collector's side.
+      {:grpc_server, "~> 1.0"},
+      {:grpc, "~> 1.0"},
+      # The HTTP/2 client the collector's side of grpc runs on.
+      {:mint, "~> 1.9"},
       # Security scanner for Phoenix code. CI runs it; run it yourself with
       # `mix sobelow`.
       {:sobelow, "~> 0.16", only: [:dev, :test], runtime: false}

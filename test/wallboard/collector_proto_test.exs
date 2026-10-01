@@ -25,7 +25,8 @@ defmodule Wallboard.CollectorProtoTest do
         state: :WAITING,
         why: :PERMISSION,
         tool: "Bash",
-        since: 1_790_000_000
+        since: 1_790_000_000,
+        question: "Run the migration now?"
       },
       summary: %Proto.Summary{
         title: "Fix the login loop",
@@ -103,10 +104,11 @@ defmodule Wallboard.CollectorProtoTest do
     point = %Proto.ResumePoint{session_id: "d299768e", file: "d299768e.jsonl", position: 4096}
 
     [
-      resume: %Proto.Resume{points: [point]},
+      resume: %Proto.Resume{points: [point], more: true},
       back_soon: %Proto.BackSoon{},
       disconnected: %Proto.Disconnected{},
-      answer: %Proto.Answer{}
+      answer: %Proto.Answer{},
+      stored: %Proto.Stored{seq: 41}
     ]
   end
 
@@ -121,7 +123,7 @@ defmodule Wallboard.CollectorProtoTest do
 
   test "every collector message survives encoding and decoding" do
     for body <- from_collector() do
-      message = %Proto.FromCollector{body: body}
+      message = %Proto.FromCollector{seq: 7, body: body}
       assert message |> Proto.FromCollector.encode() |> Proto.FromCollector.decode() == message
     end
   end
