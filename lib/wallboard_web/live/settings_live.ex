@@ -57,9 +57,13 @@ defmodule WallboardWeb.SettingsLive do
       key: if(settings.archive.enabled, do: Ingest.token()),
       machines: machines(settings),
       linked: linked(settings),
+      linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
   end
+
+  # How long "Tap again" stands after the first Disconnect tap.
+  @confirm_ms 8_000
 
   @kept "••••••••"
 
@@ -132,18 +136,43 @@ defmodule WallboardWeb.SettingsLive do
 
   def handle_info({:link, :hello, _machine, _info}, socket), do: {:noreply, relist(socket)}
   def handle_info({:mailbox, :changed}, socket), do: {:noreply, relist(socket)}
+
+  def handle_info({:forget_disconnect, machine}, socket) do
+    if socket.assigns.confirm_disconnect == machine,
+      do: {:noreply, assign(socket, confirm_disconnect: nil)},
+      else: {:noreply, socket}
+  end
+
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket),
-    do: assign(socket, linked: linked(settings))
+    do:
+      assign(socket,
+        linked: linked(settings),
+        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings)
+      )
 
   defp relist(socket), do: socket
 
+  # Every change on this page is the owner's to make, and that is asked
+  # again each time: the board password may have changed since the page
+  # opened.
   @impl true
-  def handle_event(_event, _params, %{assigns: %{allowed?: false}} = socket),
-    do: {:noreply, socket}
+  def handle_event(event, params, socket) do
+    cond do
+      not socket.assigns.allowed? ->
+        {:noreply, socket}
 
-  def handle_event("save", %{"s" => values}, socket) do
+      not Auth.may_decide?(socket.assigns.who) ->
+        {:noreply,
+         assign(socket, confirm_disconnect: nil, notice: "Open this page again to do that.")}
+
+      true ->
+        event(event, params, socket)
+    end
+  end
+
+  defp event("save", %{"s" => values}, socket) do
     before = Settings.get()
 
     case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
@@ -168,7 +197,7 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
-  def handle_event("restart", _params, %{assigns: %{release?: true}} = socket) do
+  defp event("restart", _params, %{assigns: %{release?: true}} = socket) do
     # The login item starts the board again as soon as it stops.
     Task.start(fn ->
       Process.sleep(500)
@@ -178,16 +207,16 @@ defmodule WallboardWeb.SettingsLive do
     {:noreply, assign(socket, notice: "Restarting. This page reconnects in a few seconds.")}
   end
 
-  def handle_event("restart", _params, socket),
+  defp event("restart", _params, socket),
     do: {:noreply, assign(socket, notice: "Restart the board by hand to apply these changes.")}
 
-  def handle_event("toggle_key", _params, socket),
+  defp event("toggle_key", _params, socket),
     do: {:noreply, assign(socket, show_key?: !socket.assigns.show_key?)}
 
-  def handle_event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
+  defp event("new_key", _params, %{assigns: %{confirm_new_key?: false}} = socket),
     do: {:noreply, assign(socket, confirm_new_key?: true)}
 
-  def handle_event("new_key", _params, socket) do
+  defp event("new_key", _params, socket) do
     Store.put_meta(
       "ingest_token",
       24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
@@ -205,16 +234,12 @@ defmodule WallboardWeb.SettingsLive do
 
   # Disconnect takes two taps: the first asks, the second revokes the
   # machine's certificate, which closes its stream at once and refuses it
-  # from then on.
-  def handle_event("disconnect", %{"machine" => machine}, socket) do
+  # from then on. The question lapses after a few seconds, so a tap much
+  # later is a first tap again.
+  defp event("disconnect", %{"machine" => machine}, socket) do
     cond do
-      # Asked again here, since the board password may have changed since
-      # this page opened.
-      not Auth.may_decide?(socket.assigns.who) ->
-        {:noreply,
-         assign(socket, confirm_disconnect: nil, notice: "Open this page again to do that.")}
-
       socket.assigns.confirm_disconnect != machine ->
+        Process.send_after(self(), {:forget_disconnect, machine}, @confirm_ms)
         {:noreply, assign(socket, confirm_disconnect: machine)}
 
       true ->
@@ -228,10 +253,12 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
-  def handle_event("refresh_archive", _params, socket) do
+  defp event("refresh_archive", _params, socket) do
     Collector.refresh()
     {:noreply, assign(socket, notice: "Saving every session again in the background.")}
   end
+
+  defp event(_event, _params, socket), do: {:noreply, socket}
 
   defp restart_paths do
     for {_, fs} <- Settings.editable(), {path, _, _, true, _} <- fs, do: path
@@ -297,6 +324,10 @@ defmodule WallboardWeb.SettingsLive do
             <span :if={m.hub?}></span>
           </div>
         </div>
+        <p :if={!@linked_readable?} class="bad-ink stat-note">
+          The list of machines cannot be read just now, so machines may be missing here.
+          None of them has been removed.
+        </p>
         <p class="stat-note">
           A new machine asks to connect with a code; approve it in the mailbox on the board.
           Disconnect takes a machine's certificate away at once.

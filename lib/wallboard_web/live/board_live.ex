@@ -263,6 +263,7 @@ defmodule WallboardWeb.BoardLive do
         case Mailbox.act(id, action) do
           :ok -> nil
           {:error, :gone} -> "That one was already decided, or it ran out."
+          {:error, :left} -> "That machine stopped waiting. Ask it to pair again."
           {:error, _} -> "That did not work just now. Try again in a moment."
         end
       else

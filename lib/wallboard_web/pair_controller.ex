@@ -21,7 +21,7 @@ defmodule WallboardWeb.PairController do
          {:ok, opened} <- Door.start(from(conn), body) do
       json(conn, 200, %{
         id: opened.id,
-        nonce: Base.encode16(opened.nonce, case: :lower),
+        commit: Base.encode16(opened.commit, case: :lower),
         ca: opened.ca_pem,
         link_port: opened.link_port,
         expires_in: opened.expires_in,
@@ -37,8 +37,8 @@ defmodule WallboardWeb.PairController do
     with {:ok, %{"id" => id, "nonce" => nonce}, conn} when is_binary(id) and is_binary(nonce) <-
            read(conn),
          {:ok, nonce} <- Base.decode16(nonce, case: :mixed),
-         :ok <- Door.confirm(from(conn), id, nonce) do
-      json(conn, 200, %{ok: true})
+         {:ok, hub_nonce} <- Door.confirm(from(conn), id, nonce) do
+      json(conn, 200, %{nonce: Base.encode16(hub_nonce, case: :lower)})
     else
       {:error, reason, conn} -> refuse(conn, reason)
       {:error, reason} -> refuse(conn, reason)

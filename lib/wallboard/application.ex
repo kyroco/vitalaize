@@ -43,7 +43,10 @@ defmodule Wallboard.Application do
 
       [
         {Wallboard.Link.Hub, dir: dir, port: settings.link.port},
-        {Wallboard.Pairing.Door, dir: dir, link_port: settings.link.port}
+        {Wallboard.Pairing.Door,
+         dir: dir,
+         link_port: settings.link.port,
+         hub_name: Wallboard.Archive.Collector.machine(settings)}
       ]
     else
       []

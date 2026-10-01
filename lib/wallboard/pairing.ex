@@ -28,26 +28,36 @@ defmodule Wallboard.Pairing do
     1. The collector picks a secret random number and sends its name, its
        public key and a fingerprint of the three together (`commit/3`).
        The fingerprint ties it to that number without showing it.
-    2. The hub answers with its authority's certificate and a random number
-       of its own.
+    2. The hub answers with its authority's certificate and a fingerprint
+       of a random number of its own (`hub_commit/1`), not the number.
     3. The collector sends its number. The hub checks it against the
-       fingerprint. Only now does the request appear in the mailbox.
+       fingerprint, puts the request in the mailbox, and only then answers
+       with its own number, which the collector checks the same way.
 
   Each end works the code out (`code/5`) from the collector's key and name,
   the hub's authority and both random numbers, as it saw them. Someone in
   the middle who swaps the collector's key, or the hub's authority, makes
   the two ends see different things, so the codes differ. They cannot pick
   a key that gives a matching code either: each end is bound to its own
-  number before it learns the other's, so every try is one blind guess in
-  a million, and each wrong guess is a request the owner sees with a code
-  that matches nothing.
+  number before it learns the other's, and the hub shows its number only
+  once the request is in the mailbox. So nobody can work out the hub's
+  code for a request and quietly drop it when it does not match: every
+  try is one blind guess in a million, it is a request the owner sees
+  with a code that matches nothing, and it holds that machine name's one
+  place until the owner refuses it or it runs out.
 
   ## Limits
 
   The numbers are in `limits/0`. A request lasts ten minutes. The mailbox
   holds five requests at most, one per network address and one per machine
-  name, so nobody can flood it. A request that never sends its number is
-  dropped after half a minute. Each address may start six requests a
+  name (never the hub's own), so nobody can flood it. A request that never sends its number is
+  dropped after half a minute, and one whose machine stopped asking for
+  the answer, after a minute (so a pairing given up with Ctrl-C frees its
+  place by itself). That minute is also what a wrong guess costs someone
+  in the middle: a request with the wrong code sits in the mailbox for at
+  least a minute under that machine's name, so they get about ten blind
+  guesses, each one in a million, in the ten minutes a collector's code
+  lasts. Each address may start six requests a
   minute and make 240 calls a minute; the door takes sixty new requests a
   minute in all. A request body over 4 KB is refused. The door takes these
   three calls and nothing else: no session data goes through it.
@@ -76,6 +86,11 @@ defmodule Wallboard.Pairing do
     expire_ms: 600_000,
     # How long a request may take to send its number (step 3).
     confirm_ms: 30_000,
+    # A request nobody has asked about for this long leaves the mailbox:
+    # its machine has gone. A waiting collector asks every two seconds.
+    gone_ms: 60_000,
+    # Approve is refused for a request that has been quiet this long.
+    quiet_ms: 15_000,
     # Requests the mailbox shows at once.
     max_pending: 5,
     # Requests still at step 2, on top of those.
@@ -97,6 +112,13 @@ defmodule Wallboard.Pairing do
       when is_binary(nonce) and is_binary(key_bytes) and is_binary(name) do
     :crypto.hash(:sha256, framed(["vitalaize-pair-commit-1", nonce, key_bytes, name]))
   end
+
+  @doc """
+  The fingerprint the hub sends before its random number: it binds the hub
+  to that number without showing it.
+  """
+  def hub_commit(nonce) when is_binary(nonce),
+    do: :crypto.hash(:sha256, framed(["vitalaize-pair-hub-1", nonce]))
 
   @doc """
   The code both ends show, like `"482-913"`: six digits from the collector's
@@ -193,6 +215,8 @@ defmodule Wallboard.Pairing do
       has a request waiting, or it asked too often; try again in a while
     * `{:error, :bad_name}`: the hub cannot put this name in a certificate
     * `{:error, :not_a_hub}`: the address answers, but pairing is not on there
+    * `{:error, {:folder, reason}}`: `dir` cannot be written. Nothing was
+      asked of the hub, unless the folder failed only at the very end.
     * `{:error, {:hub, reason}}`: the hub did not answer, or answered
       something that makes no sense
   """
@@ -203,7 +227,10 @@ defmodule Wallboard.Pairing do
     on_code = opts[:on_code] || fn _ -> :ok end
 
     with {:ok, hub} <- address(Keyword.fetch!(opts, :hub)),
-         true <- Authority.machine_name?(name) || {:error, :bad_name} do
+         true <- Authority.machine_name?(name) || {:error, :bad_name},
+         # Before anything is asked: a certificate the hub made and this
+         # machine could not save would be worse than none.
+         :ok <- writable(dir) do
       %{key_pem: key_pem, public_pem: public_pem} = Authority.new_key_pair()
       {:ok, key_bytes} = Authority.public_bytes(public_pem)
       nonce = :crypto.strong_rand_bytes(32)
@@ -216,9 +243,10 @@ defmodule Wallboard.Pairing do
 
       with {:ok, reply} <- call(hub, "start", start),
            {:ok, opened} <- opened(reply),
-           code = code(key_bytes, name, opened.ca_bytes, nonce, opened.nonce),
-           {:ok, _} <-
-             call(hub, "confirm", %{id: opened.id, nonce: Base.encode16(nonce, case: :lower)}) do
+           {:ok, shown} <-
+             call(hub, "confirm", %{id: opened.id, nonce: Base.encode16(nonce, case: :lower)}),
+           {:ok, hub_nonce} <- hub_nonce(shown, opened.hub_commit) do
+        code = code(key_bytes, name, opened.ca_bytes, nonce, hub_nonce)
         on_code.(%{code: code, hub: opened.hub, machine: name, expires_in: opened.expires_in})
         deadline = now() + opened.expires_in * 1000 + poll_ms
 
@@ -226,15 +254,17 @@ defmodule Wallboard.Pairing do
              true <-
                Authority.issued_for?(cert_pem, opened.ca_pem, name, public_pem) ||
                  {:error, {:hub, "the certificate is not for this machine's key"}} do
-          save!(dir, %{
-            "key.pem" => key_pem,
-            "cert.pem" => cert_pem,
-            "ca.pem" => opened.ca_pem,
-            "hub.json" =>
-              Jason.encode!(%{host: hub.host, link_port: opened.link_port, machine: name})
-          })
+          files = [
+            {"key.pem", key_pem},
+            {"ca.pem", opened.ca_pem},
+            {"hub.json",
+             Jason.encode!(%{host: hub.host, link_port: opened.link_port, machine: name})},
+            # Last: `load/1` takes the folder as paired only with all four,
+            # and a certificate must never sit beside an older key.
+            {"cert.pem", cert_pem}
+          ]
 
-          {:ok, %{dir: dir, machine: name, code: code}}
+          with :ok <- save(dir, files), do: {:ok, %{dir: dir, machine: name, code: code}}
         end
       end
     end
@@ -242,9 +272,9 @@ defmodule Wallboard.Pairing do
 
   # What the hub's first answer must hold. A hub is not trusted yet, so
   # every part is checked for its shape before it is used.
-  defp opened(%{"id" => id, "nonce" => nonce, "ca" => ca_pem} = reply)
-       when is_binary(id) and byte_size(id) <= 64 and is_binary(nonce) and is_binary(ca_pem) do
-    with {:ok, <<_::binary-size(32)>> = hub_nonce} <- Base.decode16(nonce, case: :mixed),
+  defp opened(%{"id" => id, "commit" => commit, "ca" => ca_pem} = reply)
+       when is_binary(id) and byte_size(id) <= 64 and is_binary(commit) and is_binary(ca_pem) do
+    with {:ok, <<_::binary-size(32)>> = hub_commit} <- Base.decode16(commit, case: :mixed),
          {:ok, ca_bytes} <- Authority.cert_bytes(ca_pem),
          port when is_integer(port) and port > 0 and port < 65_536 <- reply["link_port"] do
       expires_in =
@@ -256,7 +286,7 @@ defmodule Wallboard.Pairing do
       {:ok,
        %{
          id: id,
-         nonce: hub_nonce,
+         hub_commit: hub_commit,
          ca_pem: ca_pem,
          ca_bytes: ca_bytes,
          link_port: port,
@@ -269,6 +299,19 @@ defmodule Wallboard.Pairing do
   end
 
   defp opened(_), do: {:error, {:hub, "the hub's answer could not be read"}}
+
+  # The hub's number, shown once the request is in its mailbox. It must be
+  # the one the hub bound itself to at the start.
+  defp hub_nonce(%{"nonce" => nonce}, hub_commit) when is_binary(nonce) do
+    with {:ok, <<_::binary-size(32)>> = hub_nonce} <- Base.decode16(nonce, case: :mixed),
+         true <- Plug.Crypto.secure_compare(hub_commit(hub_nonce), hub_commit) do
+      {:ok, hub_nonce}
+    else
+      _ -> {:error, {:hub, "the hub changed its number on the way"}}
+    end
+  end
+
+  defp hub_nonce(_, _), do: {:error, {:hub, "the hub's answer could not be read"}}
 
   # The hub's own name, for the line "Connect to ...". Only shown.
   defp clean_label(label) when is_binary(label) do
@@ -378,12 +421,27 @@ defmodule Wallboard.Pairing do
     end
   end
 
-  # A folder only this user can read. Each file is written beside its
-  # place and moved over it, so it is never there half written or, for a
-  # moment, readable by others.
-  defp save!(dir, files) do
+  # The folder, made and tried out with a file of its own.
+  defp writable(dir) do
     File.mkdir_p!(dir)
     File.chmod!(dir, 0o700)
+    probe = Path.join(dir, ".probe.#{System.unique_integer([:positive])}.tmp")
+    File.write!(probe, "")
+    File.rm!(probe)
+    :ok
+  rescue
+    e in File.Error -> {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
+  end
+
+  # A folder only this user can read. Each file is written beside its
+  # place and moved over it, so it is never there half written or, for a
+  # moment, readable by others. The certificate of an earlier pairing goes
+  # first, so the folder never holds a certificate and a key that do not
+  # belong together.
+  defp save(dir, files) do
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
+    File.rm(Path.join(dir, "cert.pem"))
 
     for {name, text} <- files do
       tmp = Path.join(dir, ".#{name}.#{System.unique_integer([:positive])}.tmp")
@@ -394,6 +452,8 @@ defmodule Wallboard.Pairing do
     end
 
     :ok
+  rescue
+    e in File.Error -> {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
   end
 
   # ---------------------------------------------------------------------------
@@ -456,7 +516,9 @@ defmodule Wallboard.Pairing do
   def why(:expired), do: "Nobody approved the code in time. Ask again for a new one."
 
   def why(:busy),
-    do: "The hub has too many requests waiting, or one from this machine. Try again in a minute."
+    do:
+      "The hub has too many requests waiting, or one from this machine or under its name. " <>
+        "Try again in a minute."
 
   def why(:bad_name),
     do: "Use letters, numbers, spaces, dots, - and _ for the machine's name, 63 at most."
@@ -464,6 +526,7 @@ defmodule Wallboard.Pairing do
   def why(:not_a_hub),
     do: "That board does not take collectors. Turn the link on in its settings (link.enabled)."
 
+  def why({:folder, reason}), do: "Could not save the certificate in #{reason}"
   def why({:hub, reason}), do: "Could not pair: #{reason}"
   def why(other), do: "Could not pair: #{inspect(other)}"
 
@@ -492,7 +555,8 @@ defmodule Wallboard.Pairing do
       true ->
         []
     end
-    |> Enum.uniq()
+    # One hub with two network cards answers once per card. It is one hub.
+    |> Enum.uniq_by(&{&1.name, &1.port})
   end
 
   # `dns-sd` never stops by itself, so it runs under a small shell that
@@ -517,7 +581,7 @@ defmodule Wallboard.Pairing do
     for line <- String.split(out, "\n"),
         [_, name] <- [Regex.run(~r/\sAdd\s.*?\s_wallboard\._tcp\.\s+(.+?)\s*\z/, line)],
         uniq: true,
-        do: name
+        do: printable(name)
   end
 
   @doc false
@@ -541,8 +605,18 @@ defmodule Wallboard.Pairing do
         do: %{name: unescape(name), host: address, port: port}
   end
 
-  # avahi writes a space in a name as \032 (its decimal code).
+  # avahi writes a space in a name as \032 (its decimal code). A name
+  # comes from whoever announces it, and it is printed in a terminal, so
+  # nothing that is not plain text survives.
   defp unescape(name) do
-    Regex.replace(~r/\\(\d{3})/, name, fn _, code -> <<String.to_integer(code)::utf8>> end)
+    ~r/\\(\d{3})/
+    |> Regex.replace(name, fn _, code -> <<String.to_integer(code)::utf8>> end)
+    |> printable()
+  end
+
+  defp printable(text) do
+    if String.valid?(text),
+      do: text |> String.replace(~r/[\p{C}]/u, "") |> String.slice(0, 80),
+      else: ""
   end
 end

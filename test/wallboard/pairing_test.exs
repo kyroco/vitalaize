@@ -265,7 +265,7 @@ defmodule Wallboard.PairingTest do
       assert :ok = Mailbox.act("machine:" <> id, "refuse")
       assert {:error, :refused} = Task.await(task, 5_000)
       assert Pairing.load(Path.join(dir, "air")) == :error
-      refute File.exists?(Path.join(dir, "air"))
+      assert File.ls!(Path.join(dir, "air")) == []
       assert Authority.machines(Path.join(dir, "link")) == []
       # It cannot be approved after all.
       assert {:error, :gone} = Door.approve(id)
@@ -286,6 +286,48 @@ defmodule Wallboard.PairingTest do
       assert {:error, :gone} = Door.approve(id)
       assert Pairing.load(Path.join(dir, "air")) == :error
       assert Authority.machines(Path.join(dir, "link")) == []
+    end
+
+    test "Approve at the last moment still reaches the collector", %{dir: dir} do
+      port = start_hub(dir, %{expire_ms: 600})
+      me = self()
+
+      task =
+        Task.async(fn ->
+          Pairing.pair(
+            hub: "127.0.0.1:#{port}",
+            dir: Path.join(dir, "air"),
+            name: "air",
+            poll_ms: 400,
+            on_code: &send(me, {:code, "air", &1})
+          )
+        end)
+
+      assert_receive {:code, "air", _}, 5_000
+      [%{id: id}] = Door.pending()
+      # After the collector's second question, and before its third, which
+      # comes after the request's own time is up.
+      Process.sleep(450)
+      assert :ok = Door.approve(id)
+      assert {:ok, %{machine: "air"}} = Task.await(task, 5_000)
+      assert {:ok, _} = Pairing.load(Path.join(dir, "air"))
+    end
+
+    test "a collector that cannot save says so before it asks the hub anything", %{dir: dir} do
+      port = start_hub(dir)
+      File.write!(Path.join(dir, "a-file"), "")
+
+      assert {:error, {:folder, reason}} =
+               Pairing.pair(
+                 hub: "127.0.0.1:#{port}",
+                 dir: Path.join(dir, "a-file/air"),
+                 name: "air"
+               )
+
+      assert Pairing.why({:folder, reason}) =~ "Could not save the certificate in"
+      assert Door.pending() == []
+      # The door was never asked, so the address is free to try again.
+      assert {:ok, _} = Door.start({127, 0, 0, 1}, elem(start_params("air"), 0))
     end
 
     test "a machine that pairs again replaces its older certificate", %{dir: dir} do
@@ -373,6 +415,28 @@ defmodule Wallboard.PairingTest do
       assert Pairing.load(Path.join(dir, "air")) == :error
     end
 
+    test "a hub number changed on the way is noticed, and no code is shown", %{dir: dir} do
+      port = start_hub(dir)
+
+      middle =
+        web(
+          {Wallboard.PairingTest.Middle,
+           port: port,
+           change: fn
+             "confirm", :answer, body ->
+               %{body | "nonce" => Base.encode16(:crypto.strong_rand_bytes(32))}
+
+             _, _, body ->
+               body
+           end}
+        )
+
+      assert {:error, {:hub, "the hub changed its number on the way"}} =
+               Task.await(ask(middle, dir, "air"), 5_000)
+
+      refute_received {:code, _, _}
+    end
+
     test "a swapped hub authority shows a different code on each side", %{dir: dir} do
       port = start_hub(dir)
       other = Path.join(dir, "other-link")
@@ -432,7 +496,7 @@ defmodule Wallboard.PairingTest do
       {params, nonce} = start_params(name)
 
       with {:ok, %{id: id}} <- Door.start(from, params),
-           :ok <- Door.confirm(from, id, nonce),
+           {:ok, _} <- Door.confirm(from, id, nonce),
            do: {:ok, id}
     end
 
@@ -454,6 +518,53 @@ defmodule Wallboard.PairingTest do
       :ok = Door.refuse(id)
       assert {:error, :busy} = open({10, 0, 0, 7}, "machine-6")
       assert length(Door.pending()) == 4
+    end
+
+    test "requests started together and shown together still fill only five places" do
+      started =
+        for n <- 1..10 do
+          {params, nonce} = start_params("machine-#{n}")
+          {:ok, %{id: id}} = Door.start({10, 0, 0, n}, params)
+          {n, id, nonce}
+        end
+
+      answers = for {n, id, nonce} <- started, do: Door.confirm({10, 0, 0, n}, id, nonce)
+      assert Enum.count(answers, &match?({:ok, _}, &1)) == 5
+      assert Enum.count(answers, &(&1 == {:error, :busy})) == 5
+      assert length(Door.pending()) == 5
+      assert length(Mailbox.items()) == 5
+    end
+
+    test "a name is held only by a request the owner can see" do
+      # Someone starts a request under a machine's name and never shows
+      # its number. The real machine is not kept out by it.
+      {params, _} = start_params("air")
+      assert {:ok, %{id: squat}} = Door.start({10, 0, 0, 66}, params)
+      assert {:ok, id} = open({10, 0, 0, 1}, "air")
+      assert [%{id: ^id, name: "air"}] = Door.pending()
+
+      # Shown later, the first one is too late: the name has its request.
+      assert {:error, _} = Door.confirm({10, 0, 0, 66}, squat, :crypto.strong_rand_bytes(32))
+      {params, nonce} = start_params("box")
+      {:ok, %{id: first}} = Door.start({10, 0, 0, 2}, params)
+      {:ok, _} = open({10, 0, 0, 3}, "Box")
+      assert {:error, :busy} = Door.confirm({10, 0, 0, 2}, first, nonce)
+      assert Door.pending() |> Enum.map(& &1.name) |> Enum.sort() == ["Box", "air"]
+    end
+
+    test "nothing may pair under the hub's own name", %{dir: dir} do
+      stop_supervised!(Door)
+
+      start_supervised!(
+        {Door, dir: Path.join(dir, "link"), link_port: Hub.port(), hub_name: "Papa"}
+      )
+
+      for name <- ["Papa", "papa"] do
+        {params, _} = start_params(name)
+        assert {:error, :bad_name} = Door.start({10, 0, 0, 1}, params)
+      end
+
+      assert {:ok, _} = open({10, 0, 0, 1}, "Papa-2")
     end
 
     test "one address may start six requests a minute" do
@@ -479,11 +590,69 @@ defmodule Wallboard.PairingTest do
 
       assert {:error, :bad_request} = Door.confirm({10, 0, 0, 2}, id, nonce)
       assert Door.pending() == []
-      assert :ok = Door.confirm({10, 0, 0, 1}, id, nonce)
+      assert {:ok, _} = Door.confirm({10, 0, 0, 1}, id, nonce)
       assert [%{name: "air"}] = Door.pending()
       # A second number is not a second try.
       assert {:error, :bad_request} = Door.confirm({10, 0, 0, 1}, id, nonce)
       assert {:ok, :waiting} = Door.status({10, 0, 0, 1}, id)
+    end
+
+    test "nobody learns a request's code before the owner sees it" do
+      # Someone in the middle who knows the code on the real collector
+      # would like to try keys against the hub and drop each request whose
+      # code does not match, unseen. The hub's answer to a start gives them
+      # nothing to work a code out from: only a fingerprint of its number.
+      {params, nonce} = start_params("air")
+      {:ok, bytes} = Authority.public_bytes(params["key"])
+      {:ok, opened} = Door.start({10, 0, 0, 1}, params)
+      refute Map.has_key?(opened, :nonce)
+      assert byte_size(opened.commit) == 32
+      assert Door.pending() == []
+
+      # The number comes with the confirm, and by then the request is in
+      # the mailbox under the machine's name, where it stays.
+      assert {:ok, hub_nonce} = Door.confirm({10, 0, 0, 1}, opened.id, nonce)
+      assert Pairing.hub_commit(hub_nonce) == opened.commit
+      {:ok, ca} = Authority.cert_bytes(opened.ca_pem)
+      assert [%{name: "air", code: code}] = Door.pending()
+      assert code == Pairing.code(bytes, "air", ca, nonce, hub_nonce)
+
+      # A second try under that name has to wait for the first to go.
+      assert {:error, :busy} = open({10, 0, 0, 2}, "air")
+      assert [%{code: ^code}] = Door.pending()
+    end
+
+    test "a request whose machine stopped asking leaves the mailbox, and is not approved",
+         %{dir: dir} do
+      stop_supervised!(Door)
+      link = Path.join(dir, "link")
+
+      start_supervised!(
+        {Door, dir: link, link_port: Hub.port(), limits: %{gone_ms: 400, quiet_ms: 100}}
+      )
+
+      # The machine holds a certificate already, and asks for another.
+      {:ok, _} = Authority.issue(link, "air")
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
+      {:ok, id} = open({10, 0, 0, 1}, "air")
+      assert [%{id: ^id, replaces?: true}] = Door.pending()
+
+      # It asks, so it is still there...
+      assert {:ok, :waiting} = Door.status({10, 0, 0, 1}, id)
+      # ...then goes quiet. Approve now would revoke the certificate it
+      # holds and hand the new one to nobody.
+      Process.sleep(150)
+      assert {:error, :left} = Door.approve(id)
+      assert Door.pending() == []
+      assert [%{revoked_at: nil}] = Authority.machines(link)
+
+      # Left alone, a quiet request goes by itself, and frees its place.
+      {:ok, id} = open({10, 0, 0, 1}, "air")
+      assert_receive {:mailbox, :changed}, 1_000
+      Process.sleep(450)
+      assert Door.pending() == []
+      assert {:error, :gone} = Door.status({10, 0, 0, 1}, id)
+      assert {:ok, _} = open({10, 0, 0, 1}, "air")
     end
 
     test "bad names, bad keys and anything else are refused" do
@@ -638,6 +807,23 @@ defmodule Wallboard.PairingTest do
       assert {:ok, _} = Task.await(task, 5_000)
     end
 
+    test "the hub's own machine means a connection from it, asked for by one of its own names" do
+      {:ok, own} = :inet.gethostname()
+      own = to_string(own)
+
+      for host <- ["localhost", "LOCALHOST", "127.0.0.1", "192.168.1.20", "[::1]", own] do
+        assert Auth.own_host?(host), host
+      end
+
+      assert Auth.own_host?(String.replace_suffix(own, ".local", "") <> ".local")
+
+      # A page on somebody else's name, pointed at this machine, connects
+      # from this machine too. Its name gives it away.
+      for host <- ["evil.example", "127.0.0.1.evil.example", "localhost.evil.example", "", nil] do
+        refute Auth.own_host?(host), inspect(host)
+      end
+    end
+
     test "with no board password, only the hub's own machine may decide", %{dir: dir} do
       port = start_hub(dir)
       task = ask(port, dir, "air")
@@ -731,6 +917,37 @@ defmodule Wallboard.PairingTest do
       assert length(Store.collector_events("box")) == 2
     end
 
+    test "a list of machines that cannot be read is not taken for an empty one", %{dir: dir} do
+      port = start_hub(dir)
+      pair!(port, dir, "air")
+
+      settings =
+        Settings.defaults()
+        |> put_in([:archive, :path], Path.join(dir, "wallboard.db"))
+        |> put_in([:link, :enabled], true)
+
+      assert Machines.readable?(settings)
+      assert [_hub, %{name: "air"}] = Machines.list(settings)
+
+      file = Path.join([dir, "link", "machines.json"])
+      good = File.read!(file)
+      File.write!(file, "{ not json")
+      refute Machines.readable?(settings)
+      assert [%{hub?: true}] = Machines.list(settings)
+
+      page = socket(%{allowed?: true, who: %{local?: true}, settings: settings, notice: nil})
+      page = %{page | assigns: Map.put(page.assigns, :confirm_disconnect, "air")}
+
+      assert {:noreply, page} =
+               SettingsLive.handle_event("disconnect", %{"machine" => "air"}, page)
+
+      assert page.assigns.notice =~ "could not be disconnected"
+      refute page.assigns.linked_readable?
+
+      File.write!(file, good)
+      assert Authority.working?(Path.join(dir, "link"), "air")
+    end
+
     test "Disconnect is refused once the board password no longer matches", %{dir: dir} do
       port = start_hub(dir)
       pair!(port, dir, "air")
@@ -750,6 +967,12 @@ defmodule Wallboard.PairingTest do
 
       assert page.assigns.notice =~ "Open this page again"
       assert Authority.working?(Path.join(dir, "link"), "air")
+
+      # The same goes for everything else the page can do.
+      assert {:noreply, page} = SettingsLive.handle_event("new_key", %{}, page)
+      assert page.assigns.notice =~ "Open this page again"
+      assert {:noreply, _} = SettingsLive.handle_event("save", %{"s" => %{}}, page)
+      assert Settings.get().token == "new password"
     end
   end
 

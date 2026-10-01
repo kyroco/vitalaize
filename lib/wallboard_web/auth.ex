@@ -60,11 +60,22 @@ defmodule WallboardWeb.Auth do
   `mount` once `connected?/1` is true.
   """
   def who(socket, session) do
-    local? =
+    from_here? =
       case Phoenix.LiveView.get_connect_info(socket, :peer_data) do
         %{address: addr} -> this_machine?(addr)
         _ -> false
       end
+
+    # A browser on this machine can be led to a page on someone else's
+    # name that then points that name at this machine. That page connects
+    # from here too. What gives it away is the name it asked for.
+    asked_by_own_name? =
+      case Phoenix.LiveView.get_connect_info(socket, :uri) do
+        %URI{host: host} -> own_host?(host)
+        _ -> false
+      end
+
+    local? = from_here? and asked_by_own_name?
 
     %{local?: local?, token_hash: session["token_hash"]}
   end
@@ -74,8 +85,9 @@ defmodule WallboardWeb.Auth do
 
   With a board password set, that is anyone whose browser has given it,
   and nobody else, checked against the password as it is now. With none,
-  only someone at the hub's own machine: everyone else on the network can
-  look, and could otherwise approve a machine of their own.
+  only someone at the hub's own machine, who opened the board by one of
+  that machine's own names: everyone else on the network can look, and
+  could otherwise approve a machine of their own.
   """
   def may_decide?(%{local?: local?} = who) do
     case Wallboard.Settings.get().token do
@@ -97,6 +109,23 @@ defmodule WallboardWeb.Auth do
   replies needed to finish connecting.
   """
   def this_machine?(addr), do: addr |> unmap() |> then(&(loopback?(&1) or &1 in own_addresses()))
+
+  @doc """
+  True when `host`, the name a browser asked for, is one this machine goes
+  by: `localhost`, a plain network address, or its own host name (with or
+  without `.local`). Any other name could belong to anyone.
+  """
+  def own_host?(host) when is_binary(host) do
+    host = host |> String.downcase() |> String.trim_trailing(".")
+    {:ok, own} = :inet.gethostname()
+    own = own |> to_string() |> String.downcase()
+    bare = host |> String.trim_leading("[") |> String.trim_trailing("]")
+
+    host in ["localhost", own, String.replace_suffix(own, ".local", ""), own <> ".local"] or
+      match?({:ok, _}, :inet.parse_strict_address(String.to_charlist(bare)))
+  end
+
+  def own_host?(_), do: false
 
   defp loopback?({127, _, _, _}), do: true
   defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true

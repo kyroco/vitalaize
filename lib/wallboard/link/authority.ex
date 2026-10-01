@@ -216,6 +216,13 @@ defmodule Wallboard.Link.Authority do
     _ -> false
   end
 
+  @doc """
+  True when the list of machines can be read right now. `machines/1` gives
+  an empty list both for no machines and for a list it cannot read; this
+  tells the two apart.
+  """
+  def readable?(dir), do: match?({:ok, _}, read_index(dir))
+
   @doc "True when a machine of this name holds a working certificate."
   def working?(dir, machine) do
     Enum.any?(machines(dir), &(&1.machine == machine and &1.revoked_at == nil))

@@ -26,6 +26,10 @@ defmodule Wallboard.Link.Machines do
     * `folders`: the Claude and Codex folders it watches
 
   `local_sessions` is how many sessions this hub's own machine has now.
+
+  `readable?/1` says whether the list behind it could be read: when it
+  could not, only the hub's own row comes back, and that is not the same
+  as no machines.
   """
   def list(settings, local_sessions \\ 0) do
     dir = Authority.dir(settings)
@@ -54,6 +58,9 @@ defmodule Wallboard.Link.Machines do
 
     [hub_row(settings, local_sessions, now) | Enum.sort_by(others, &String.downcase(&1.name))]
   end
+
+  @doc "False when the hub's list of machines cannot be read just now."
+  def readable?(settings), do: Authority.readable?(Authority.dir(settings))
 
   defp hub_row(settings, sessions, now) do
     folders =
