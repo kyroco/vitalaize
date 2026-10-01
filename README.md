@@ -58,9 +58,10 @@ its setup again, to add the new hooks.
 4. On a hub, it fills in what it can find (your Claude and Codex folders,
    the GitHub repositories your sessions work in, up to six, busiest first,
    the busiest one's workflows, your AWS profiles) and asks you to check it.
-   Add or remove repositories there. Click **Install**. The board starts now
-   and again every time you log in. On a collector, click **Start the
-   collector and pair** instead; steps 5 and 6 are for the hub.
+   Add or remove repositories there. Click **Install and start the board**.
+   The board starts now and again every time you log in. On a collector,
+   click **Start the collector and pair** instead; steps 5 and 6 are for
+   the hub.
 5. On your iPad, open the address VitalAIze shows in Safari, tap Share, then
    **Add to Home Screen**. Opened from the Home Screen, the board fills the
    screen. Turn the iPad sideways, and set Auto-Lock to Never in the iPad's

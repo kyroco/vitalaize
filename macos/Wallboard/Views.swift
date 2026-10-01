@@ -528,7 +528,7 @@ struct StatusView: View {
         .sheet(isPresented: $confirmRemove) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Remove VitalAIze from this Mac?").font(.headline)
-                Text("This stops the board and takes out the hooks it added. Your Claude settings otherwise stay as they are.")
+                Text("This stops VitalAIze on this Mac and takes away its login item. Upload hooks an earlier version added to Claude or Codex are taken out too. Your Claude settings otherwise stay as they are.")
                     .foregroundStyle(.secondary)
                 Toggle("Also delete the database and settings in \(Setup.dataFolder ?? "")", isOn: $deleteData)
                 HStack {
