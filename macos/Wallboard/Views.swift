@@ -189,12 +189,15 @@ struct FoldersPage: View {
                         Spacer()
                         Button("Change…") {
                             if let url = pickFolder(start: state.choices.dataFolder, message: "Pick where the board keeps its settings, database and logs") {
-                                state.choices.dataFolder = url
+                                state.useFolder(url)
                             }
                         }
                     }
                     Text("Its settings, its database of sessions and runs, and incoming sessions from other Macs. The board itself stays inside this app.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let note = state.folderNote {
+                        Label(note, systemImage: "info.circle").fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).padding(6)
             }

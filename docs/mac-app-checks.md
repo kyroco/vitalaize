@@ -19,7 +19,7 @@ The run builds the board and a test copy of the app, the same code with one
 more file (`macos/uitest/Driver.swift`) that reads the app's own windows and
 clicks in them. Each scenario gets a throwaway home folder under
 `macos/build/uitest/homes`, with made-up "acme" data, its own login item name
-and its own port (4981 to 4994). Nothing in your own home, your login items,
+and its own port (4981 to 4996). Nothing in your own home, your login items,
 `/Applications` or your board on 4747 is read or changed. While it runs, the
 test boards show up on your network as "VitalAIze on (this Mac)", like any board.
 
@@ -45,6 +45,7 @@ It needs `gh` signed in for the GitHub step, and `node` for the hub's mailbox.
 | Fresh Mac, hub only | `hub-only` | An empty home | Passed |
 | Fresh Mac, collector only | `pair` | An empty home, and a hub in a second home | Passed |
 | Fresh Mac with a board started by hand | `by-hand` | A `local.wallboard` login item and `~/projects/wallboard/settings.exs` | Passed |
+| Fresh Mac, picking a folder an older board left | `kept-folder` | A folder with that board's settings, a port saved in them, and a name its own settings page kept in the database | Passed |
 | Installing over 0.2.0 | `over-0-2-0` | 0.2.0's settings file and setup record, its board still running | Passed |
 | Installing over an install from before the rename | `over-renamed` | Data in `Vitalize`, a login item that starts an app that is gone, a carried-over settings file that is gone | Passed |
 | Reconfigure | `fresh-hub`, `pair`, `over-renamed`, `over-0-2-0`, `failures` | A Mac that is already set up | Passed |
@@ -85,6 +86,7 @@ Pictures: [hub](mac-app-checks/pictures/fresh-hub/02-folders.jpg),
 | A switch for each Claude folder found | Turned off and on | With none on, Continue is greyed out |
 | Add another Claude folder… | Clicked twice: the folder panel cancelled, then a folder picked | Cancelled: nothing added. Picked: the folder is listed with its switch on |
 | Change… (where the board keeps its files) | Clicked three times: cancelled, a folder picked, the first folder picked again | The folder shown changes each time a folder is picked |
+| Change…, picking a folder that already holds a board's settings | Clicked | "This folder holds a board's settings. The setup is filled in from them…" ([picture](mac-app-checks/pictures/kept-folder/k01-folder.jpg)). The name and port shown are that board's; after the setup its other saved settings and its history are still there, and a changed answer wins |
 | Carry over its settings from … | Turned off and on | Stays on the page when off, so it can be turned on again. The review says "Carried over" |
 | Stop that board and run this one instead | Turned off and on | With it on, the setup takes the by-hand login item away and keeps a copy |
 | Back, Continue | Clicked | Back keeps what was picked |

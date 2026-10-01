@@ -173,6 +173,8 @@ final class AppState: ObservableObject {
     /// Said on the wizard's second step when the earlier settings file the
     /// setup carried over before is gone.
     @Published var importNote: String?
+    /// Said under the board's folder when it already holds a board's settings.
+    @Published var folderNote: String?
     /// Where "Back" goes after a failure: the setup, or the first screen
     /// when it was Remove that stopped.
     @Published var failureBack: Screen = .wizard
@@ -288,6 +290,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.choices = found
                 self.importNote = nil
+                self.folderNote = found.settingsReadFrom == nil ? nil : AppState.keptNote
                 self.offeredImport = nil
                 self.lookupNote = nil
                 self.koriumFound = found.korium
@@ -297,6 +300,33 @@ final class AppState: ObservableObject {
                 self.step = 0
                 self.screen = .wizard
                 self.finder.start()
+            }
+        }
+    }
+
+    static let keptNote = "This folder holds a board's settings. The setup is filled in from them, so they are kept unless you change an answer."
+
+    /// Takes the folder picked for the board's files. One that already
+    /// holds a board's settings fills the setup in from the settings in
+    /// use there, as the usual folder does when the app opens: the answers
+    /// then start from what that board has, and nothing it saved is lost.
+    func useFolder(_ folder: String) {
+        choices.dataFolder = folder
+        choices.settingsReadFrom = nil
+        folderNote = nil
+        guard FileManager.default.fileExists(atPath: folder + "/settings.exs") else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let doc = Setup.settingsDoc(dataFolder: folder) else { return }
+            DispatchQueue.main.async {
+                // Another folder may have been picked meanwhile.
+                guard self.screen == .wizard, self.choices.dataFolder == folder else { return }
+                // What this Mac does was picked on the first step.
+                let role = self.choices.role
+                var filled = Setup.prefill(self.choices, from: doc)
+                filled.role = role
+                filled.settingsReadFrom = folder
+                self.choices = filled
+                self.folderNote = AppState.keptNote
             }
         }
     }
@@ -311,6 +341,7 @@ final class AppState: ObservableObject {
         step = 0
         screen = .detecting
         lookupNote = nil
+        folderNote = nil
         koriumFound = nil
         finder.start()
         let before = choices

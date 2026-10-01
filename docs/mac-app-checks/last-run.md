@@ -3,7 +3,7 @@
 Written by `macos/uitest/record.py` from the run of `macos/uitest/run.sh --all` on October 1, 2026.
 Do not edit it by hand: run the script again.
 
-841 of 841 steps and checks passed. 80 pictures are in `pictures/`, one folder for each scenario.
+898 of 898 steps and checks passed. 85 pictures are in `pictures/`, one folder for each scenario.
 
 A step is one line of a file in `macos/uitest/steps/`: `click`, `type`, `toggle` and `press` use a control,
 `wait`, `expect`, `absent`, `value`, `enabled` and `disabled` look at the screen, `opened` checks what the app
@@ -603,6 +603,64 @@ ok    wait 90 "What this Mac does"
 - ok: after Remove with delete the data folder is gone
 
 
+## kept-folder
+
+### kept-wizard: 25 of 25 steps passed
+
+```
+ok    wait 90 "What this Mac does"
+ok    click "Continue"
+ok    wait "Claude folders to include"
+ok    absent "This folder holds a board's settings."
+ok    folder "~/BoardKept"
+ok    click "Change…"
+ok    wait 5 "~/BoardKept"
+ok    wait 40 "This folder holds a board's settings."
+ok    snap k01-folder
+ok    click "Continue"
+ok    wait "Main branch"
+ok    value "Repository" "acme/rockets"
+ok    click "Continue"
+ok    wait "Name at the top"
+ok    value "Name at the top" "Acme Page"
+ok    value "Port" "4996"
+ok    type "Name at the top" "Acme Typed"
+ok    click "Continue"
+ok    wait "This Mac"
+ok    expect "Acme Typed at http://localhost:4996"
+ok    click "Install and start the board"
+ok    wait 10 "Setting up…"
+ok    wait 150 "The board is running"
+ok    absent "That did not work"
+ok    snap k02-status
+```
+
+### hub-remove-all: 11 of 11 steps passed
+
+```
+ok    wait 40 "The board is running"
+ok    press "Remove VitalAIze…"
+ok    wait 5 "Remove VitalAIze from this Mac?"
+ok    toggle "Also delete the database and settings"
+ok    snap 15-remove-sheet-delete
+ok    press "Remove"
+ok    wait 60 "VitalAIze was removed from this Mac"
+ok    expect "Its database and settings were deleted too."
+ok    snap 15-removed-all
+ok    click "Set up again"
+ok    wait 90 "What this Mac does"
+```
+
+### Checked from outside the app
+
+- ok: the board answers on the port saved in Settings
+- ok: nothing is set up any more
+- ok: the board answers on the port that folder had saved
+- ok: the name typed wins over the one the older page saved
+- ok: a setting the setup does not ask about is still as saved
+- ok: the history is still in the database
+
+
 ## over-0-2-0
 
 ### v020-open: 7 of 7 steps passed
@@ -667,7 +725,7 @@ ok    snap v02-reconfigured
 
 ## over-renamed
 
-### aged-open: 9 of 9 steps passed
+### aged-open: 10 of 10 steps passed
 
 ```
 ok    wait 10 "Kyroco VitalAIze"
@@ -677,6 +735,7 @@ ok    expect "Settings beyond the ones this setup asks about were not carried ov
 ok    expect "Writing the settings file again from your setup answers"
 ok    expect "Setting the login item to start VitalAIze from this app"
 ok    expect "The files as they were are in"
+ok    expect "The log is at"
 ok    wait 40 "The board is running"
 ok    snap a01-mended
 ```
@@ -746,6 +805,22 @@ ok    wait 5 "This Mac"
 ok    expect "Acme Changed"
 ```
 
+### aged-remove-fails: 11 of 11 steps passed
+
+```
+ok    wait 40 "The board is running"
+ok    press "Remove VitalAIze…"
+ok    wait 5 "Remove VitalAIze from this Mac?"
+ok    press "Remove"
+ok    wait 60 "That did not work"
+ok    expect "Could not keep a copy of"
+ok    expect "Nothing was removed."
+ok    expect "The board that was set up before is still running at http://localhost:4984."
+ok    snap a05-remove-failed
+ok    click "Back"
+ok    wait 20 "The board is running"
+```
+
 ### aged-open-copy: 7 of 7 steps passed
 
 ```
@@ -773,6 +848,9 @@ ok    snap a04-mended-copy-kept
 - ok: Reconfigure kept the name saved in Settings
 - ok: a failed write left all four files as they were
 - ok: the board still answers after the failed write
+- ok: a Remove that could not keep its copies left all four files as they were
+- ok: and the login item still runs
+- ok: and the board still answers
 - ok: with the copy kept, the board answers
 - ok: what the earlier file held beyond the wizard is still in use
 - ok: and its page turning too
