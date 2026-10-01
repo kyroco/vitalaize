@@ -555,43 +555,28 @@ defmodule Wallboard.Sources.GitHub do
 
   # With no gate, main's state comes from the pushes to main. Only "push"
   # runs on the main branch count: a pull request's run can carry a branch
-  # of the same name, and a nightly or a bot's run says nothing about the
-  # commit. The workflows looked at are the ones that ran on the newest
-  # commit, and each speaks through its newest finished run on main, so a
-  # workflow still running on the newest commit keeps what it said about
-  # the commit before. Main is red when one of them failed and green when
-  # all passed; the run returned is the failed one, or the one that
-  # finished last. A run made again keeps its place: its first start is
-  # what orders it.
+  # of the same name, and a nightly or a bot's run says nothing about a
+  # commit. Every workflow that ran for a push speaks through its newest
+  # finished run, so one that is still running, or that the newest commit
+  # did not start, keeps what it said last. Main is red when one of them
+  # failed and green when all passed; the run returned is the failed one,
+  # or the one that finished last. A run made again keeps its place: its
+  # first start is what orders it.
   defp main_state(all, _completed, nil, branch) do
-    on_main =
-      Enum.filter(all, &(&1.event == "push" and &1.branch == branch and is_binary(&1.sha)))
+    latest =
+      all
+      |> Enum.filter(fn r ->
+        r.event == "push" and r.branch == branch and is_binary(r.sha) and
+          r.status == :completed and r.conclusion in ["success", "failure"]
+      end)
+      |> Enum.sort_by(&unix(&1[:created_at] || &1.started_at), :desc)
+      |> Enum.uniq_by(&(&1.workflow || &1.name))
 
-    made = &unix(&1[:created_at] || &1.started_at)
-    flow = &(&1.workflow || &1.name)
-
-    case Enum.max_by(on_main, made, fn -> nil end) do
-      nil ->
-        nil
-
-      newest ->
-        here = on_main |> Enum.filter(&(&1.sha == newest.sha)) |> MapSet.new(flow)
-
-        latest =
-          on_main
-          |> Enum.filter(fn r ->
-            r.status == :completed and r.conclusion in ["success", "failure"] and
-              MapSet.member?(here, flow.(r))
-          end)
-          |> Enum.sort_by(made, :desc)
-          |> Enum.uniq_by(flow)
-
-        Enum.find(
-          latest,
-          Enum.max_by(latest, &unix(&1.updated_at), fn -> nil end),
-          &(&1.conclusion == "failure")
-        )
-    end
+    Enum.find(
+      latest,
+      Enum.max_by(latest, &unix(&1.updated_at), fn -> nil end),
+      &(&1.conclusion == "failure")
+    )
   end
 
   defp deploy_state(all, file) do

@@ -851,6 +851,16 @@ defmodule Wallboard.Settings do
   or as a map when it names workflows of its own.
   """
   def current(settings, [:github, :repos], :repos), do: repo_fields(settings)
+
+  # The workflow fields are the first repository's, so they show what is in
+  # use for it: its own entry's where a settings file gives it one.
+  def current(settings, [:github, key] = path, _type) when key in @repo_keys do
+    case github_repos(settings) do
+      [first | _] -> first[key]
+      [] -> get_in(settings, path)
+    end
+  end
+
   def current(%{role: _} = settings, [:role], _type), do: settings |> role() |> Atom.to_string()
   def current(settings, path, _type), do: get_in(settings, path)
 
@@ -973,8 +983,13 @@ defmodule Wallboard.Settings do
         # As the form shows them, so a repository keeps the workflows it names.
         settings
         |> repo_fields()
+        |> Enum.reject(&(repo_line(&1) == @defaults.github.repo))
+        |> case do
+          # With the example gone, the one now first is a name alone.
+          [%{repo: first} | rest] -> [first | rest]
+          fields -> fields
+        end
         |> Enum.map(&repo_line/1)
-        |> Enum.reject(&(&1 == @defaults.github.repo))
         |> Kernel.++([name])
         |> save_repos()
     end
@@ -1070,7 +1085,20 @@ defmodule Wallboard.Settings do
   a repository by name, or with the workflows it names; one the file
   describes with a map of its own settings keeps the rest of them.
   """
-  def apply_overrides(file, overrides), do: file |> merge(overrides) |> keep_repo_details(file)
+  def apply_overrides(file, overrides),
+    do: file |> merge(overrides) |> keep_repo_details(file) |> first_repo_fields(overrides)
+
+  # A form shows the first repository's gate and deploys as the three
+  # workflow fields. When one of those was saved, it is the first
+  # repository's, also where the file's entry for it names its own.
+  defp first_repo_fields(settings, overrides) do
+    set = Enum.filter(@repo_keys, &has_path?(overrides, [:github, &1]))
+
+    update_in(settings, [:github, :repos], fn
+      [%{} = first | rest] when set != [] -> [Map.drop(first, set) | rest]
+      repos -> repos
+    end)
+  end
 
   defp keep_repo_details(settings, file) do
     details =

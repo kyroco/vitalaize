@@ -834,10 +834,10 @@ defmodule WallboardWeb.BoardLive do
   end
 
   # Why main's state is not known. A repository with a gate workflow waits
-  # for a gate run; one without waits for any run on main.
+  # for a gate run; one without waits for a run a push to main started.
   defp no_main_run(repos) do
     if Enum.all?(repos, &match?(%{s: %{main_from: :runs}}, &1)),
-      do: "no run on main today",
+      do: "no push to main ran today",
       else: "no gate run today"
   end
 

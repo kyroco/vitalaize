@@ -110,7 +110,7 @@
     # anything else in this section for it, for example
     #   repos: ["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]
     # A repository that names no gate workflow gets main's state from the
-    # latest runs on its main branch. The Git tab gives up to four a column
+    # runs its pushes to main started. The Git tab gives up to four a column
     # each; Dev and Prod follow the first. Left empty, the board follows
     # `repo` alone.
     repos: [],

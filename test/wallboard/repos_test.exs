@@ -173,7 +173,46 @@ defmodule Wallboard.ReposTest do
       assert {:ok, over} = Settings.check(page_values(settings), settings)
       refute Map.has_key?(over, :github)
       [api, mobile] = Settings.github_repos(settings)
-      assert api.gate_workflow == "own.yml" and mobile.gate_workflow == "two words.yml"
+      assert mobile.gate_workflow == "two words.yml"
+      # The gate field shows the first repo's gate as it is in use, here the
+      # one its own entry in the file names.
+      assert api.gate_workflow == "own.yml"
+      assert Settings.shown(settings)["github.gate_workflow"] == "own.yml"
+    end
+
+    test "the workflow fields are the first repo's: what they show is in use, and what is saved there wins" do
+      file =
+        Settings.merge(Settings.defaults(), %{
+          github: %{
+            gate_workflow: "gate.yml",
+            repos: ["acme/api", %{repo: "acme/mobile", gate_workflow: "build.yml"}]
+          }
+        })
+
+      # Moved to the top on a form, mobile keeps its own gate, and the gate
+      # field shows that one.
+      moved = Settings.apply_overrides(file, %{github: %{repos: ["acme/mobile", "acme/api"]}})
+
+      assert [%{repo: "acme/mobile", gate_workflow: "build.yml"}, api] =
+               Settings.github_repos(moved)
+
+      assert api.gate_workflow == nil
+      assert Settings.shown(moved)["github.gate_workflow"] == "build.yml"
+
+      # A gate saved in the field is the first repo's from then on.
+      values = %{page_values(moved) | "github.gate_workflow" => "other.yml"}
+      assert {:ok, over} = Settings.check(values, file)
+      assert over.github.gate_workflow == "other.yml"
+
+      set = Settings.apply_overrides(file, over)
+      assert [%{repo: "acme/mobile", gate_workflow: "other.yml"}, _] = Settings.github_repos(set)
+      assert Settings.shown(set)["github.gate_workflow"] == "other.yml"
+
+      # It does not reach the second repo's own gate.
+      second = Settings.apply_overrides(file, %{github: %{gate_workflow: "other.yml"}})
+
+      assert [%{gate_workflow: "other.yml"}, %{repo: "acme/mobile", gate_workflow: "build.yml"}] =
+               Settings.github_repos(second)
     end
 
     test "a line the Mac app writes into the settings file keeps what an older file gave the repo" do
@@ -647,6 +686,15 @@ defmodule Wallboard.ReposTest do
                Map.put(again, :created_at, DateTime.add(@now, -3600))
              ]) == {"failure", :runs}
 
+      # A push that starts only another workflow does not hide the failure,
+      # while that workflow runs or once it passes.
+      failed = run(1, "ci.yml", sha: "old", ago_min: 30, conclusion: "failure")
+
+      assert main.([failed, run(2, "docs.yml", sha: "new", status: :in_progress, ago_min: 0)]) ==
+               {"failure", :runs}
+
+      assert main.([failed, run(2, "docs.yml", sha: "new", ago_min: 2)]) == {"failure", :runs}
+
       # A run with no commit named is passed over, not a crash.
       assert main.([%{run(1, "ci.yml", ago_min: 5) | sha: nil}]) == {nil, :runs}
 
@@ -766,6 +814,14 @@ defmodule Wallboard.ReposTest do
       assert labels(boosters) == ["CI"]
       assert boosters.s.main.conclusion == "success"
     end
+  end
+
+  test "a run's first start is read from GitHub's answer, apart from its latest start" do
+    json = ~s({"workflow_runs": [{"id": 1, "status": "completed", "created_at":
+      "2026-09-30T10:00:00Z", "run_started_at": "2026-09-30T17:00:00Z"}]})
+
+    assert {:ok, [%{created_at: ~U[2026-09-30 10:00:00Z], started_at: ~U[2026-09-30 17:00:00Z]}]} =
+             GitHub.parse_runs(json)
   end
 
   test "parse_workflows/1 reads a repo's workflow files by name" do

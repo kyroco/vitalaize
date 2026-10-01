@@ -124,6 +124,21 @@ defmodule Wallboard.SetupTest do
 
       assert [_, %{gate_workflow: "ios.yml"}, %{gate_workflow: "ci.yml"}, _] =
                Settings.github_repos(Settings.load!())
+
+      # A Track with the example repo listed first: the one that moves to the
+      # top is saved by name alone.
+      File.rm!(c.saved)
+
+      File.write!(Path.join(c.dir, "settings.exs"), """
+      %{
+        archive: %{path: #{inspect(Path.join(c.dir, "wallboard.db"))}, advertise: false},
+        github: %{repos: ["your-org/your-repo", %{repo: "acme/mobile", gate_workflow: "build.yml"}]}
+      }
+      """)
+
+      Settings.load!()
+      assert :ok = Settings.track_repo("acme/docs")
+      assert Jason.decode!(File.read!(c.saved))["github"]["repos"] == ["acme/mobile", "acme/docs"]
     end
   end
 
