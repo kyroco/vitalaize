@@ -306,6 +306,37 @@ defmodule Wallboard.Settings do
   defaults and caches the result.
   """
   def load! do
+    settings = read!()
+    :persistent_term.put(@key, settings)
+    settings
+  end
+
+  @doc """
+  Loads the settings again under a board or collector that is running,
+  for `Wallboard.Settings.Watch`. Every setting that is only read at the
+  start (`editable/0` marks those: the role, the ports, the board
+  password and the rest) keeps the value in use. Those change when
+  VitalAIze starts, never under it, so a settings file that goes missing
+  cannot take the password off a board that is still running.
+
+  Returns `{in_use, read, now}`: the settings before, the ones just read,
+  and the ones in use from here on.
+  """
+  def reload! do
+    in_use = get()
+    read = read!()
+
+    now =
+      for {_, fields} <- editable(), {path, _, _, true, _} <- fields, reduce: read do
+        acc -> put_in(acc, path, get_in(in_use, path))
+      end
+
+    :persistent_term.put(@key, now)
+    {in_use, read, now}
+  end
+
+  # The settings as the files give them, cached nowhere.
+  defp read! do
     saved = read_saved!()
 
     file =
@@ -322,9 +353,7 @@ defmodule Wallboard.Settings do
           file!(path)
       end
 
-    settings = file |> layers(saved) |> normalize()
-    :persistent_term.put(@key, settings)
-    settings
+    file |> layers(saved) |> normalize()
   end
 
   defp file!(path) do

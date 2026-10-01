@@ -735,29 +735,77 @@ defmodule Wallboard.SetupTest do
 
     test "keeps its settings, the board password too, when the folder it was started in is removed",
          %{dir: dir} do
-      # A board run by hand: nothing names the settings file, so it is the
-      # one in the folder the board was started in.
+      # A release run by hand: nothing names the settings file and the
+      # release's own folder has none, so it is the one in the folder the
+      # board was started in.
       System.delete_env("WALLBOARD_SETTINGS")
+      release = Path.join(dir, "release")
       started_in = Path.join(dir, "started-in")
+      File.mkdir_p!(release)
       File.mkdir_p!(started_in)
+      System.put_env("RELEASE_ROOT", release)
 
       File.write!(Path.join(started_in, "settings.exs"), """
-      %{token: "hunter2", archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}, advertise: false}}
+      %{
+        token: "hunter2",
+        rotate_seconds: 11,
+        archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}, advertise: false}
+      }
       """)
 
       File.cd!(started_in, fn ->
-        assert Settings.load!().token == "hunter2"
+        assert %{token: "hunter2", rotate_seconds: 11} = Settings.load!()
         watch = start_supervised!({Watch, name: :watch_moved, every_ms: 20, listener: self()})
 
+        # With the folder gone there is no settings file to find, and the
+        # saved settings are looked for in the release's folder. Something
+        # saved there must not be loaded over nothing but the defaults.
         File.rm_rf!(started_in)
+        assert Settings.saved_path() == Path.join(release, "settings.json")
+        File.write!(Path.join(release, "settings.json"), Jason.encode!(%{brand: %{name: "X"}}))
 
-        # With no folder to look in there is no settings file to find.
-        # Loading now would give the defaults, which have no password.
-        assert_receive {:settings, :moved}, 2_000
-        refute_received {:settings, :reloaded}
-        assert Settings.get().token == "hunter2"
+        refute_receive {:settings, :reloaded}, 300
+        assert_received {:settings, :moved}
+        assert %{token: "hunter2", rotate_seconds: 11} = Settings.get()
         assert Process.alive?(watch)
       end)
+    end
+
+    test "keeps its password when the saved settings that hold it are removed", %{
+      dir: dir,
+      saved: saved
+    } do
+      # Set up with `vitalaize setup` alone: no settings.exs, and the
+      # password is in settings.json.
+      File.write!(saved, Jason.encode!(%{token: "hunter2", rotate_seconds: 9}))
+      assert %{token: "hunter2", rotate_seconds: 9} = Settings.load!()
+      start_supervised!({Watch, name: :watch_removed, every_ms: 20, listener: self()})
+
+      # The folder is removed, or replaced by a newer download.
+      File.rm_rf!(dir)
+      assert_receive {:settings, :reloaded}, 2_000
+
+      # What is read as it goes follows the files. The password is only
+      # read at the start, so the running board keeps the one it has.
+      assert %{token: "hunter2", rotate_seconds: 30} = Settings.get()
+    end
+
+    test "a setting that is only read at the start waits for the next start", %{
+      dir: dir,
+      saved: saved
+    } do
+      settings_file(dir)
+      assert %{token: nil, port: 4747, role: :both} = Settings.load!()
+      start_supervised!({Watch, name: :watch_start_only, every_ms: 20, listener: self()})
+
+      # Saved from another program, on a machine with no service to restart.
+      values = %{token: "hunter2", port: 4999, role: "hub", rotate_seconds: 7}
+      File.write!(saved, Jason.encode!(values))
+      assert_receive {:settings, :reloaded}, 2_000
+      assert %{token: nil, port: 4747, role: :both, rotate_seconds: 7} = Settings.get()
+
+      # The next start takes them up.
+      assert %{token: "hunter2", port: 4999, role: :hub, rotate_seconds: 7} = Settings.load!()
     end
 
     test "keeps its settings while the settings file is gone, and takes up a save once it is back",

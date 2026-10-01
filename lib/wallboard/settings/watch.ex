@@ -9,7 +9,9 @@ defmodule Wallboard.Settings.Watch do
   that reads its settings as it goes then uses the new ones, with no
   restart. The few settings that are only read at the start (the ports,
   the role, the board password) wait for the restart that whoever saved
-  them asks for (see `Wallboard.Setup`).
+  them asks for (see `Wallboard.Setup`): loading again keeps them as they
+  are in use (`Wallboard.Settings.reload!/0`). So whatever happens to the
+  files, a board that is running keeps its password until it stops.
 
   A file that cannot be read changes nothing: the settings in use stay.
 
@@ -17,8 +19,8 @@ defmodule Wallboard.Settings.Watch do
   start: the settings file is gone or another one is found, or the saved
   settings would now be looked for somewhere else (the folder the board
   was started in was removed, say). Loading then would fall back to the
-  defaults, which have no board password. The earlier settings stay until
-  the files are back or VitalAIze is restarted.
+  defaults. The earlier settings stay until the files are back or
+  VitalAIze is restarted.
   """
 
   use GenServer
@@ -96,17 +98,21 @@ defmodule Wallboard.Settings.Watch do
   end
 
   defp reload(state) do
-    before = Settings.get()
-    now = Settings.load!()
+    {before, read, now} = Settings.reload!()
+    taken = Wallboard.Setup.plan(before, now).changed
+    paths = Enum.map(taken, & &1.path)
+    waiting = Enum.reject(Wallboard.Setup.plan(before, read).changed, &(&1.path in paths))
 
     # Names only: a value may be a password or a key.
-    case Wallboard.Setup.plan(before, now).changed do
-      [] ->
-        :ok
+    if taken != [],
+      do: Logger.info("Saved settings taken up: #{Enum.map_join(taken, ", ", & &1.label)}")
 
-      changed ->
-        Logger.info("Saved settings taken up: #{Enum.map_join(changed, ", ", & &1.label)}")
-    end
+    if waiting != [],
+      do:
+        Logger.info(
+          "Only read at the start, so as they were until VitalAIze starts again: " <>
+            Enum.map_join(waiting, ", ", & &1.label)
+        )
 
     if state.listener, do: send(state.listener, {:settings, :reloaded})
   rescue

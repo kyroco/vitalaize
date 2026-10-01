@@ -364,9 +364,11 @@ enum Setup {
     ///
     /// The three workflows and the two New Relic values are named only when
     /// the wizard has an answer for them. Left empty they are no answer:
-    /// `settingsFile` then names no workflow, and no account or key address,
-    /// so one saved in the app would be taken out with nothing to replace
-    /// it. Empty is tested here the way `settingsFile` tests it.
+    /// `settingsFile` then leaves the workflow out and writes nil for the
+    /// account and the key address, so one saved in the app would be taken
+    /// out with nothing to replace it. Kept, the saved one goes on winning
+    /// over that nil; it is cleared in the app's Settings. Empty is tested
+    /// here the way `settingsFile` tests it.
     static func wizardKeys(_ c: Choices) -> [String] {
         if c.role == .collector { return ["role", "collector.claude_dirs"] }
         let answered = [("github.gate_workflow", c.gateWorkflow),
