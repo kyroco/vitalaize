@@ -42,8 +42,9 @@ terminal you started it in. A collector writes to the same log as a board.
 **Open the board**: the board opens with this Mac's own sessions on the Agents
 tab.
 
-**If not:** the first screen says why, and **Show the log** opens the board
-log. "Port 4747 is already used by another program" means an older board is
+**If not:** the screen says why. When the setup itself stops, its button is
+**Open the log**; on the first screen it is **Show the log**. Both open the
+board log. "Port 4747 is already used by another program" means an older board is
 still running: stop it, or pick another port on the setup's fourth step.
 
 ## 2. Let the hub take collectors
@@ -67,8 +68,9 @@ with this Mac as the first row, marked "(this hub)".
 2. Pick **Collector only**, then **Continue**.
 3. Check the Claude folders it found, then **Continue**.
 4. On **Your hub**, pick the hub from "Hubs on your network". If the list
-   stays empty, type the hub's address, like `http://192.168.1.20:4747`.
-5. Click **Start the collector and pair**.
+   stays empty, type the hub's address, like `http://192.168.1.20:4747`. Then
+   **Continue**.
+5. On the last step, the review, click **Start the collector and pair**.
 
 **You should see:** a six-digit code in large type, like `482-913`, and
 "Waiting for the hub to approve…". Go to step 4.
@@ -96,15 +98,16 @@ bin/vitalaize setup
 ```
 
 Answer `collector` to "What this machine does". Press Enter at the two folder
-questions to let it find them. At "The hub's address", press Enter to look for
-a hub on the network, or type the hub's address. Say yes to the systemd
-service, or start it yourself afterwards with `bin/wallboard start`.
+questions to let it find them. At "The hub's address", type the hub's address,
+like `192.168.1.20`. Pressing Enter instead looks for a hub on the network,
+which on Linux only works with `avahi-utils` installed on this machine.
 
-**You should see:** a code, then "Open the mailbox on the hub's board and
-approve this code." and "Waiting for the hub to approve...". Go to step 4.
+**You should see:** a code, then "Open the mailbox on <the hub's name>'s board
+and approve this code." and "Waiting for the hub to approve...". Go to step 4.
 
-**If not:** "No hub found on this network." means the hub's announcements do
-not reach this machine: run `bin/vitalaize setup` again and type the address.
+**If not:** "No hub found on this network." means this machine has no
+`avahi-utils`, or the hub's announcements do not reach it. Run
+`bin/vitalaize setup` again and type the address.
 
 ## 4. Approve the code in the mailbox
 
@@ -118,6 +121,11 @@ On the hub Mac itself (not on the iPad, unless the board has a password):
 **You should see:** on the second Mac, the code goes and the app's first screen
 says "Connected to the hub at … as …". On Linux, setup prints "Approved. This
 machine is connected as …". The mailbox is empty again.
+
+**On Linux, one more question.** Only now does setup ask "Set it up as a
+systemd user service and start it now?". Say yes, or start the collector
+yourself with `bin/wallboard start`. Until one of those, the collector is not
+running and the "connected" lines below do not appear.
 
 **In the hub's log,** in this order:
 
@@ -155,7 +163,9 @@ and about 5 seconds later your alert arrives, named "<session> on <machine>".
 Answer it on the second machine and the card goes back to Working.
 
 Also check **Settings**, **Connected machines** on the board: the second
-machine's row says "Seen now" and "1 session".
+machine's row says "Seen now" and a number of sessions. On its first start a
+collector reports its sessions from the last 14 days, so for the first 10
+minutes that number can be much more than 1.
 
 **If not:** in the collector's log, look for "Collector is up. Watching …". It
 names the folders it watches. If your Claude folder is not there, add it:
@@ -163,7 +173,8 @@ names the folders it watches. If your Claude folder is not there, add it:
 
 ## 6. Take the collector off the network and bring it back
 
-1. Turn Wi-Fi off on the second machine for a minute.
+1. Turn Wi-Fi off on the second machine and wait two minutes. The hub gives
+   a silent machine 90 seconds before it calls the link closed.
 2. On the hub's board, its card stays, with a dashed border and a red note:
    "stale: no word from <machine> since …".
 3. Turn Wi-Fi back on.
@@ -182,8 +193,10 @@ again." The hub's log says "Link: <machine> was removed." The collector's log
 says "Collector: the hub removed this machine. Nothing more is sent." Its cards
 on the board turn stale.
 
-To connect it again: **Pair with a hub…** in the app, or `bin/vitalaize setup`
-on Linux, and approve the new code.
+To connect it again: **Pair again…** in the app. On Linux, run
+`bin/vitalaize setup` and, at "A hub's address to pair again, or Enter to keep
+this", type the hub's address. Enter alone keeps the pairing the hub just took
+away, and shows no code. Then approve the new code.
 
 ## 8. A machine that was connected by 0.2.0
 
@@ -215,8 +228,9 @@ Nothing here deletes your sessions or your settings.
 - **Go back to 0.2.0 on the hub.** Use **Remove VitalAIze…** with "Also delete
   the database and settings" left off, then install the 0.2.0 package from the
   [releases page](https://github.com/kyroco/vitalaize/releases). The settings
-  as they were before 0.3.0 touched them are in the newest folder under
-  `backups/` in the data folder. Not tried: whether 0.2.0 opens a database
+  as they were before 0.3.0 touched them are in the oldest folder under
+  `backups/` in the data folder, the one made when you first opened 0.3.0.
+  Every later setup or Save makes a newer folder. Not tried: whether 0.2.0 opens a database
   that 0.3.0 has written to. To be safe, copy `wallboard.db` somewhere before
   step 1.
 

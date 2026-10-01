@@ -24,13 +24,14 @@ machines, known limits, building from source and how it works.
 - **Your other machines, live**: a small collector on each one watches its
   own Claude and Codex sessions and streams them to the hub over an encrypted
   connection. Their sessions get cards on the board as they work, show Needs
-  you, and send your alerts. It sends numbers and short lines only, never
-  the agent's replies, commands or your files; the
+  you, and send your alerts. It sends numbers and a few short lines (a
+  session's title, its folder and branch, and the start of your prompts),
+  never the agent's replies, the commands it ran or your files; the
   [wiki](https://github.com/kyroco/vitalaize/wiki/How-it-works) lists what
   crosses the network.
 - **Connect a machine by code**: the new machine shows a six-digit code, and
-  you approve the same code in the mailbox on the hub's board. No key, and
-  nothing typed or pasted.
+  you approve the same code in the mailbox on the hub's board. There is no
+  key to copy. At most you type the hub's address.
 - **Settings in the app**, or with `vitalaize setup` in a terminal. Most
   changes are in use within seconds, with no restart.
 - **Codex**: Codex sessions can show Needs you (new, and not yet tried with
@@ -68,10 +69,10 @@ the archive and trends.
    - **Hub only**: it runs the board and keeps what other Macs send it.
    - **Collector only**, for your other Macs: a small collector watches
      this Mac's Claude and Codex sessions and streams them to a hub as they
-     happen. It finds hubs on your network by itself. Nothing is typed or
+     happen. It finds hubs on your network by itself. No key is typed or
      pasted: this Mac shows a short code, and you approve the same code in
      the mailbox on the hub's board (the envelope by the clock). The hub
-     must take collectors: turn on **Collectors on other machines** in the
+     must take collectors: turn on **Take collectors**, under Collectors on other machines, in the
      hub's settings first.
 4. On a hub, it fills in what it can find (your Claude and Codex folders,
    the GitHub repositories your sessions work in, up to six, busiest first,
@@ -142,7 +143,7 @@ without it, collectors type the hub's address.
 A Linux machine can be a collector too: unpack the download on it, run
 `bin/vitalaize setup` and answer `collector`. It finds the hub on your
 network or takes its address, and shows a short code; approve the same code
-in the mailbox on the hub's board. Nothing is typed or pasted.
+in the mailbox on the hub's board. No key is copied.
 
 To take VitalAIze off a Linux machine, run `bin/vitalaize remove`. It stops
 VitalAIze, takes it out of what starts at login, deletes the machine's
