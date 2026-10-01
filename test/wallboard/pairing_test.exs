@@ -344,6 +344,37 @@ defmodule Wallboard.PairingTest do
       assert {:ok, _} = Door.start({127, 0, 0, 1}, elem(start_params("air"), 0))
     end
 
+    test "approved, but the hub cannot make the certificate: the collector is told so at once",
+         %{dir: dir} do
+      port = start_hub(dir)
+      link = Path.join(dir, "link")
+      task = ask(port, dir, "air")
+      assert_receive {:code, "air", _}, 5_000
+      [%{id: id}] = Door.pending()
+
+      # The hub's list of machines is broken when the machine comes for
+      # its answer.
+      file = Path.join(link, "machines.json")
+      good = File.read!(file)
+      File.write!(file, "{ not json")
+      :ok = Door.approve(id)
+
+      # Not "nobody approved", and not ten minutes of waiting.
+      assert {:error, :hub_failed} = Task.await(task, 5_000)
+      assert Pairing.why(:hub_failed) =~ "could not make the certificate"
+      assert Pairing.load(Path.join(dir, "air")) == :error
+
+      # The request is over: mending the list does not bring it back, and
+      # no certificate was made on the quiet.
+      File.write!(file, good)
+      assert {:ok, :failed} = Door.status({127, 0, 0, 1}, id)
+      assert {:error, :gone} = Door.approve(id)
+      assert Authority.machines(link) == []
+
+      # The machine asks again and pairs.
+      assert %{machine: "air"} = pair!(port, dir, "air")
+    end
+
     test "a machine that pairs again replaces its older certificate", %{dir: dir} do
       port = start_hub(dir)
       first = pair!(port, dir, "air")

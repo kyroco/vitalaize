@@ -13,6 +13,8 @@ defmodule Wallboard.Pairing.Door do
     * `:approved`: the owner said yes; the certificate is made when the
       collector comes for it
     * `:refused`: the collector is told so
+    * `:failed`: approved, but the certificate could not be made; the
+      collector is told so, and asks again
 
   Whatever its state, a request is forgotten ten minutes after it was
   made (an approved one, ten minutes after Approve, so the collector has
@@ -58,7 +60,8 @@ defmodule Wallboard.Pairing.Door do
 
   @doc """
   What became of a request: `{:ok, :waiting}`, `{:ok, {:approved, cert_pem}}`,
-  `{:ok, :refused}`, or `{:error, :gone}` once it is forgotten.
+  `{:ok, :refused}`, `{:ok, :failed}` when it was approved and the hub
+  could not make the certificate, or `{:error, :gone}` once it is forgotten.
   """
   def status(from, id), do: call({:status, from, id})
 
@@ -195,9 +198,17 @@ defmodule Wallboard.Pairing.Door do
                 Logger.info("Pairing: #{r.name} has its certificate.")
                 {{:ok, {:approved, cert}}, put_in(s.requests[id], %{r | cert_pem: cert})}
 
+              # The owner said yes and the hub cannot keep its word (its
+              # list of machines is locked or cannot be read). The machine
+              # is told that, not left to wait for an answer that never
+              # comes; it asks again once the hub is mended.
               {:error, reason} ->
-                Logger.warning("Pairing: no certificate for #{r.name} yet: #{inspect(reason)}")
-                {{:ok, :waiting}, s}
+                Logger.error(
+                  "Pairing: #{r.name} was approved, but its certificate could not be made: " <>
+                    "#{inspect(reason)}. It has to pair again."
+                )
+
+                {{:ok, :failed}, put_in(s.requests[id], %{r | state: :failed})}
             end
 
           %{state: :approved} ->
@@ -205,6 +216,9 @@ defmodule Wallboard.Pairing.Door do
 
           %{state: :refused} ->
             {{:ok, :refused}, s}
+
+          %{state: :failed} ->
+            {{:ok, :failed}, s}
 
           # Only the machine that asked keeps its request alive.
           %{state: :pending, from: ^from} = r ->
