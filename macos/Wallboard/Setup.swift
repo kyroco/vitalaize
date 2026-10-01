@@ -361,13 +361,25 @@ enum Setup {
     /// (settings.json): a value saved earlier, in the app or with `vitalaize
     /// setup`, would otherwise win over the wizard's new answer. What the
     /// wizard does not ask about stays saved.
+    ///
+    /// The three workflows and the two New Relic values are named only when
+    /// the wizard has an answer for them. Left empty they are no answer:
+    /// `settingsFile` then names no workflow, and no account or key address,
+    /// so one saved in the app would be taken out with nothing to replace
+    /// it. Empty is tested here the way `settingsFile` tests it.
     static func wizardKeys(_ c: Choices) -> [String] {
         if c.role == .collector { return ["role", "collector.claude_dirs"] }
+        let answered = [("github.gate_workflow", c.gateWorkflow),
+                        ("github.dev_deploy", c.devWorkflow),
+                        ("github.prod_deploy", c.prodWorkflow),
+                        ("new_relic.account_id", c.newRelicAccount.trimmingCharacters(in: .whitespaces)),
+                        ("new_relic.api_key_ref", c.newRelicKeyRef.trimmingCharacters(in: .whitespaces))]
+            .filter { !$0.1.isEmpty }
+            .map { $0.0 }
         return ["role", "port", "brand.name", "claude.config_dirs", "github.repos", "github.branch",
-                "github.gate_workflow", "github.dev_deploy", "github.prod_deploy",
-                "korium.enabled", "codex.enabled", "new_relic.enabled", "new_relic.account_id",
-                "new_relic.api_key_ref", "dev_power.aws_profile", "builds.prod_profile",
-                "alerts.phone", "alerts.via", "archive.collect_local"]
+                "korium.enabled", "codex.enabled", "new_relic.enabled",
+                "dev_power.aws_profile", "builds.prod_profile",
+                "alerts.phone", "alerts.via", "archive.collect_local"] + answered
     }
 
     /// Takes the wizard's settings out of the saved ones. No value is

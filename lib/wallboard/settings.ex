@@ -376,10 +376,12 @@ defmodule Wallboard.Settings do
   """
   def under_saved(role) do
     file = if path = path(), do: file!(path), else: @defaults
-    # The role decides whether there is a database to read, and it may be
-    # one the saved settings chose.
-    with_saved_role = layers(file, Map.take(read_saved!(), [:role]))
-    with_saved_role |> Map.put(:role, role || env_role(file).role) |> normalize()
+    # The role decides whether there is a database of older values to
+    # read, so the layers are worked out in the role asked for, not the
+    # one saved now: a save that changes the role must see what will be
+    # under its values once that role is in effect.
+    chosen = if role, do: %{role: role}, else: %{}
+    file |> layers(chosen) |> Map.put(:role, role || env_role(file).role) |> normalize()
   end
 
   @doc """
@@ -481,24 +483,32 @@ defmodule Wallboard.Settings do
   end
 
   @doc """
-  The saved settings with the given keys taken out, to hand to `save!/1`.
-  Those settings then follow the settings file again. No value is read
-  or checked, so this cannot fail on one; a key that is not a setting is
-  passed over.
+  Takes the given keys out of the saved settings, so those settings follow
+  the settings file again. Only settings.json is read and written: the
+  settings file is not loaded and nothing is loaded again, so this works
+  beside a settings file that does not load. No value is read or checked,
+  so it cannot fail on one; a key that is not a setting is passed over.
+  With nothing to take out, the file is left as it is, or not there.
   """
-  def forget(keys) do
+  def forget!(keys) do
     fields =
       for {_, fs} <- editable(),
           {path, _, _, _, _} <- fs,
           into: %{},
           do: {Enum.join(path, "."), path}
 
-    Enum.reduce(keys, read_saved!(), fn key, saved ->
-      case fields[key] do
-        nil -> saved
-        path -> drop_path(saved, path)
-      end
-    end)
+    saved = read_saved!()
+
+    left =
+      Enum.reduce(keys, saved, fn key, acc ->
+        case fields[key] do
+          nil -> acc
+          path -> drop_path(acc, path)
+        end
+      end)
+
+    if left != saved, do: write_saved!(left)
+    :ok
   end
 
   # Takes a value out, and with it any map left empty above it.
@@ -522,6 +532,13 @@ defmodule Wallboard.Settings do
   hold the board password and alert keys.
   """
   def save!(overrides) do
+    write_saved!(overrides)
+    load!()
+  end
+
+  # Writes the saved settings and nothing else: the settings file is not
+  # read and nothing is loaded again.
+  defp write_saved!(overrides) do
     path = saved_path()
     File.mkdir_p!(Path.dirname(path))
     tmp = "#{path}.#{System.unique_integer([:positive])}.tmp"
@@ -529,7 +546,7 @@ defmodule Wallboard.Settings do
     File.chmod!(tmp, 0o600)
     File.write!(tmp, Jason.encode_to_iodata!(overrides, pretty: true))
     File.rename!(tmp, path)
-    load!()
+    :ok
   end
 
   @doc """

@@ -12,6 +12,13 @@ defmodule Wallboard.Settings.Watch do
   them asks for (see `Wallboard.Setup`).
 
   A file that cannot be read changes nothing: the settings in use stay.
+
+  So do they when the settings are no longer where they were at the
+  start: the settings file is gone or another one is found, or the saved
+  settings would now be looked for somewhere else (the folder the board
+  was started in was removed, say). Loading then would fall back to the
+  defaults, which have no board password. The earlier settings stay until
+  the files are back or VitalAIze is restarted.
   """
 
   use GenServer
@@ -29,33 +36,63 @@ defmodule Wallboard.Settings.Watch do
     state = %{
       every_ms: Keyword.get(opts, :every_ms, @every_ms),
       listener: opts[:listener],
-      stamp: stamp()
+      place: place(),
+      moved?: false
     }
 
     Process.send_after(self(), :look, state.every_ms)
-    {:ok, state}
+    {:ok, Map.put(state, :stamp, stamp(state.place))}
   end
 
   @impl true
   def handle_info(:look, state) do
-    stamp = stamp()
-    if stamp != state.stamp, do: reload(state)
+    state =
+      if place() == state.place do
+        stamp = stamp(state.place)
+        if stamp != state.stamp, do: reload(state)
+        %{state | stamp: stamp, moved?: false}
+      else
+        # The stamp stays, so a save made meanwhile is taken up once the
+        # settings are back where they were.
+        unless state.moved?, do: moved(state)
+        %{state | moved?: true}
+      end
+
     Process.send_after(self(), :look, state.every_ms)
-    {:noreply, %{state | stamp: stamp}}
+    {:noreply, state}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
 
+  # Where the settings are: the settings file in use (nil with none) and
+  # the file the saved settings are in.
+  defp place do
+    {Settings.path(), Settings.saved_path()}
+  rescue
+    # Looking must never stop the board or the collector.
+    _ -> :unknown
+  end
+
   # Which file is there now. Saving replaces the file with a new one, so
   # its number on disk changes even when its size and time do not.
-  defp stamp do
-    case File.stat(Settings.saved_path(), time: :posix) do
+  defp stamp({_file, saved}) do
+    case File.stat(saved, time: :posix) do
       {:ok, stat} -> {stat.inode, stat.mtime, stat.size}
       {:error, reason} -> reason
     end
   rescue
-    # Looking must never stop the board or the collector.
     _ -> :unknown
+  end
+
+  defp stamp(_unknown), do: :unknown
+
+  defp moved(state) do
+    Logger.warning(
+      "The settings are no longer where they were when VitalAIze started, so the " <>
+        "earlier ones stay. Put them back, or restart VitalAIze to use the ones there now."
+    )
+
+    if state.listener, do: send(state.listener, {:settings, :moved})
   end
 
   defp reload(state) do

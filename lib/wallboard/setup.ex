@@ -68,12 +68,19 @@ defmodule Wallboard.Setup do
   Takes the given settings (keys like `"port"`) out of the saved ones, so
   they follow the settings file again. The Mac app does this for what its
   wizard asks, just before it writes that file anew: an answer given
-  there must not lose to an older saved value. Nothing is checked, so it
-  cannot fail on a value. Returns `{:ok, result}` like `save/2`.
+  there must not lose to an older saved value.
+
+  Only settings.json is read and written. The settings file is not
+  loaded, so one that does not load is no obstacle to replacing it, and
+  nothing is restarted: a service stopped here would come back on the old
+  settings file before the new one is written. The app starts the service
+  again itself once the new file is there. Nothing is checked, so it
+  cannot fail on a value. Returns `{:ok, %{path: path}}`, the file the
+  saved settings are in.
   """
-  def forget(keys, opts \\ []) do
-    before = Settings.load!()
-    {:ok, saved!(before, Settings.forget(keys), opts)}
+  def forget(keys) do
+    :ok = Settings.forget!(keys)
+    {:ok, %{path: Settings.saved_path()}}
   end
 
   defp saved!(before, saved, opts) do
@@ -540,7 +547,8 @@ defmodule Wallboard.Setup do
       input, saves, and answers `ok`, `lines` (what happened, to show) and
       `service`, or `ok: false` and `errors` by path.
     * `["forget"]`: reads `{"keys": ["port", ...]}` from standard input and
-      takes those settings out of the saved ones (`forget/2`).
+      takes those settings out of the saved ones (`forget/1`). It loads no
+      settings and restarts nothing.
     * `["pair"]` or `["pair", address]`: pairs with a hub. The code comes
       first, on a line that starts with `VITALAIZE_CODE`; the answer
       follows when the owner has decided.
@@ -618,8 +626,8 @@ defmodule Wallboard.Setup do
     with text when is_binary(text) <- input,
          {:ok, %{"keys" => keys}} when is_list(keys) <- Jason.decode(text),
          true <- Enum.all?(keys, &is_binary/1) do
-      {:ok, result} = forget(keys, opts)
-      emit(opts, %{ok: true, lines: report(result), role: result.role})
+      {:ok, result} = forget(keys)
+      emit(opts, %{ok: true, path: result.path})
     else
       _ -> {:error, ~s(Give {"keys": ["port", ...]} on standard input.)}
     end

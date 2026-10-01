@@ -173,6 +173,25 @@ defmodule Wallboard.SetupTest do
       assert {:ok, _} = Setup.save(%{"rotate_seconds" => "45"}, mac())
       assert %{rotate_seconds: 45, token: "old"} = Settings.load!()
     end
+
+    test "a save that changes the role is held against the older page's values that role reads",
+         %{dir: dir, saved: saved} do
+      settings_file(dir)
+      start_supervised!({Store, path: Path.join(dir, "wallboard.db")})
+      Store.put_meta("settings_overrides", Jason.encode!(%{rotate_seconds: 12}))
+
+      # A collector has no database, so the older page's 12 is out of sight.
+      assert {:ok, _} = Setup.save(%{"role" => "collector"}, mac())
+      assert Settings.get().rotate_seconds == 30
+
+      # Back to a board in one save, with a value the same as the file's.
+      # The board reads the database again, so the value is kept as saved:
+      # dropped as "same as the file", it would lose to the older 12.
+      assert {:ok, _} = Setup.save(%{"role" => "both", "rotate_seconds" => "30"}, mac())
+      assert Settings.get().rotate_seconds == 30
+      assert saved_json(saved) == %{"rotate_seconds" => 30}
+      assert Settings.load!().rotate_seconds == 30
+    end
   end
 
   describe "saving on a Mac that runs the board" do
@@ -397,7 +416,7 @@ defmodule Wallboard.SetupTest do
       keys = Jason.encode!(%{keys: ["role", "port", "not.a.setting"]})
       assert :ok = Setup.json(["forget"], mac() ++ [io: io([keys]), out: out])
       assert "VITALAIZE_JSON" <> json = String.trim(output(out))
-      assert %{"ok" => true} = Jason.decode!(json)
+      assert %{"ok" => true, "path" => ^saved} = Jason.decode!(json)
 
       # A value the form would refuse is no obstacle: nothing is checked.
       File.write!(Path.join(dir, "settings.exs"), """
@@ -412,6 +431,44 @@ defmodule Wallboard.SetupTest do
       assert %{role: :both, port: 4801} = Settings.load!()
       # What the wizard did not name stays saved.
       assert saved_json(saved) == %{"alerts" => %{"via" => "SMS"}}
+    end
+
+    test "the wizard can replace a settings.exs that does not load, and stops no service", %{
+      dir: dir,
+      saved: saved
+    } do
+      settings_file(dir)
+
+      assert {:ok, _} =
+               Setup.save(%{"role" => "hub", "port" => "5000", "brand.name" => "Hall"}, mac())
+
+      in_use = Settings.get()
+      flush()
+
+      # The settings file is broken now, and the wizard is run to write it anew.
+      File.write!(Path.join(dir, "settings.exs"), "%{port: ")
+      assert_raise TokenMissingError, fn -> Settings.load!() end
+
+      out = io([])
+      keys = Jason.encode!(%{keys: ["role", "port"]})
+      assert :ok = Setup.json(["forget"], mac() ++ [io: io([keys]), out: out])
+      assert "VITALAIZE_JSON" <> json = String.trim(output(out))
+      assert %{"ok" => true} = Jason.decode!(json)
+      assert saved_json(saved) == %{"brand" => %{"name" => "Hall"}}
+
+      # A saved role and port were taken out, and the running service was
+      # not asked to stop, nor even looked for: stopped now, it would come
+      # back on the old settings file. The app starts it again itself once
+      # the new file is written.
+      assert flush() == []
+      # Nothing was loaded again either.
+      assert Settings.get() == in_use
+    end
+
+    test "taking out what was never saved writes no file", %{dir: dir, saved: saved} do
+      settings_file(dir)
+      assert {:ok, %{path: ^saved}} = Setup.forget(["role", "port", "not.a.setting"])
+      refute File.exists?(saved)
     end
 
     test "turning this machine's own sessions off is kept when the saved role differs from the file's",
@@ -674,6 +731,51 @@ defmodule Wallboard.SetupTest do
       File.write!(saved, "{ not json")
       assert_receive {:settings, :unreadable}, 2_000
       assert Settings.get().rotate_seconds == 7
+    end
+
+    test "keeps its settings, the board password too, when the folder it was started in is removed",
+         %{dir: dir} do
+      # A board run by hand: nothing names the settings file, so it is the
+      # one in the folder the board was started in.
+      System.delete_env("WALLBOARD_SETTINGS")
+      started_in = Path.join(dir, "started-in")
+      File.mkdir_p!(started_in)
+
+      File.write!(Path.join(started_in, "settings.exs"), """
+      %{token: "hunter2", archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}, advertise: false}}
+      """)
+
+      File.cd!(started_in, fn ->
+        assert Settings.load!().token == "hunter2"
+        watch = start_supervised!({Watch, name: :watch_moved, every_ms: 20, listener: self()})
+
+        File.rm_rf!(started_in)
+
+        # With no folder to look in there is no settings file to find.
+        # Loading now would give the defaults, which have no password.
+        assert_receive {:settings, :moved}, 2_000
+        refute_received {:settings, :reloaded}
+        assert Settings.get().token == "hunter2"
+        assert Process.alive?(watch)
+      end)
+    end
+
+    test "keeps its settings while the settings file is gone, and takes up a save once it is back",
+         %{dir: dir, saved: saved} do
+      settings_file(dir, ~s(token: "hunter2"))
+      Settings.load!()
+      start_supervised!({Watch, name: :watch_gone_file, every_ms: 20, listener: self()})
+
+      file = Path.join(dir, "settings.exs")
+      File.rename!(file, file <> ".away")
+      File.write!(saved, Jason.encode!(%{rotate_seconds: 8}))
+      assert_receive {:settings, :moved}, 2_000
+      refute_received {:settings, :reloaded}
+      assert %{token: "hunter2", rotate_seconds: 30} = Settings.get()
+
+      File.rename!(file <> ".away", file)
+      assert_receive {:settings, :reloaded}, 2_000
+      assert %{token: "hunter2", rotate_seconds: 8} = Settings.get()
     end
   end
 
