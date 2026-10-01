@@ -77,10 +77,20 @@ defmodule Wallboard.StreamTest do
   # The two sides
 
   defp start_hub(c) do
-    start_supervised!({Store, path: Path.join(c.dir, "wallboard.db")})
-    start_supervised!({Sessions, save_ms: 100})
-    start_supervised!({Hub, dir: c.link, port: c.port})
+    once({Store, path: Path.join(c.dir, "wallboard.db")})
+    once({Sessions, save_ms: 100})
+    once({Hub, dir: c.link, port: c.port})
     :ok
+  end
+
+  # Started under the test's supervisor, which must not start it again
+  # when the test kills it. Left to restart, the hub can find its port
+  # still held by the one just killed; it is then neither running nor
+  # stopped, and `stop_supervised/1` fails on it. These tests say when
+  # each side comes back.
+  defp once(child, opts \\ []) do
+    spec = Supervisor.child_spec(child, Keyword.put(opts, :restart, :temporary))
+    start_supervised!(spec)
   end
 
   # The hub, its sessions and its database, gone at once.
@@ -120,10 +130,10 @@ defmodule Wallboard.StreamTest do
   defp start_collector(c) do
     dir = c.collector.collector.dir
     world = c.world
-    outbox = start_supervised!({Outbox, dir: Path.join(dir, "outbox"), name: nil}, id: :outbox)
+    outbox = once({Outbox, dir: Path.join(dir, "outbox"), name: nil}, id: :outbox)
 
     watcher =
-      start_supervised!(
+      once(
         {Watcher,
          name: nil,
          outbox: outbox,
@@ -135,7 +145,7 @@ defmodule Wallboard.StreamTest do
       )
 
     sender =
-      start_supervised!(
+      once(
         {Sender,
          name: nil,
          dir: dir,
