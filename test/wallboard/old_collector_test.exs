@@ -5,8 +5,7 @@ defmodule Wallboard.OldCollectorTest do
   # under the temp folder (see config/test.exs for the guard).
   use ExUnit.Case, async: false
 
-  alias Wallboard.{Mailbox, OldCollectors, Pairing, Settings, Setup, Store}
-  alias Wallboard.Link.Authority
+  alias Wallboard.{Mailbox, Pairing, Settings, Setup, Store}
   alias Wallboard.Setup.OldHooks
   alias WallboardWeb.OldCollectorController
 
@@ -702,9 +701,9 @@ defmodule Wallboard.OldCollectorTest do
     setup %{dir: dir} do
       Settings.put(%{archive: %{path: Path.join(dir, "wallboard.db"), machine: "the-hub"}})
       start_supervised!({Store, path: Path.join(dir, "wallboard.db")})
-      # A hub that had old collectors: the key it gave them is in its database.
+      # A hub that had old collectors: the key it gave them is still a row
+      # in its database. Nothing reads it any more.
       Store.put_meta("ingest_token", "the-old-shared-key")
-      start_supervised!(OldCollectors)
 
       pid =
         start_supervised!(
@@ -713,11 +712,11 @@ defmodule Wallboard.OldCollectorTest do
 
       {:ok, {_, port}} = ThousandIsland.listener_info(pid)
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
-      %{port: port, link: Path.join(dir, "link")}
+      %{port: port}
     end
 
     # What the old upload script sends: the shared key, and a body.
-    defp old_call(port, path, body \\ "a transcript", key \\ "the-old-shared-key") do
+    defp old_call(port, path, body, key) do
       url = ~c"http://127.0.0.1:#{port}#{path}"
       headers = if key, do: [{~c"authorization", ~c"Bearer #{key}"}], else: []
       request = {url, headers, ~c"application/gzip", body}
@@ -728,132 +727,47 @@ defmodule Wallboard.OldCollectorTest do
       {status, answer}
     end
 
-    defp old_items, do: for(%{id: "old:" <> _} = item <- Mailbox.items(), do: item)
-
-    test "gets the refusal, and the mailbox gets exactly one item for that machine", c do
+    test "gets the refusal, and raises nothing", c do
       refusal = OldCollectorController.refusal()
       assert refusal =~ "no longer takes uploads from the old collector"
       assert refusal =~ "vitalaize setup"
 
-      assert {410, ^refusal} =
-               old_call(c.port, "/ingest/transcript?machine=build-box&account=.claude")
+      # A Claude upload, a Codex upload and a "waiting" message, with the
+      # key the hub once gave out, with a wrong one and with none.
+      for key <- ["the-old-shared-key", "a-guess", nil] do
+        assert {410, ^refusal} =
+                 old_call(
+                   c.port,
+                   "/ingest/transcript?machine=build-box&account=.claude",
+                   "x",
+                   key
+                 )
 
-      assert_receive {:mailbox, :changed}
+        assert {410, ^refusal} =
+                 old_call(
+                   c.port,
+                   "/ingest/transcript?tool=codex&machine=build-box&account=.codex",
+                   "x",
+                   key
+                 )
 
-      assert [item] = old_items()
-      assert item.id == "old:build-box"
-      assert item.title == "A machine still uses the old collector"
+        assert {410, ^refusal} =
+                 old_call(c.port, "/ingest/status?machine=build-box&at=1", "{}", key)
+      end
 
-      assert item.body == [
-               {:strong, "build-box"},
-               {:text, " still uses the old collector. Install the new one on it."}
-             ]
+      # The script being fetched again, and any other address under it.
+      for path <- ["/ingest/install.sh", "/ingest/upload.sh", "/ingest/x?machine=from-a-page"] do
+        assert {:ok, {{_, 410, _}, _, _}} =
+                 :httpc.request(:get, {~c"http://127.0.0.1:#{c.port}#{path}", []}, [], [])
+      end
 
-      # Every later call is refused the same, and adds nothing: a Codex
-      # upload, a "waiting" message, and the script being fetched again.
-      assert {410, ^refusal} =
-               old_call(c.port, "/ingest/transcript?tool=codex&machine=build-box&account=.codex")
-
-      assert {410, ^refusal} = old_call(c.port, "/ingest/status?machine=build-box&at=1", "{}")
-
-      assert {:ok, {{_, 410, _}, _, _}} =
-               :httpc.request(
-                 :get,
-                 {~c"http://127.0.0.1:#{c.port}/ingest/install.sh", []},
-                 [],
-                 []
-               )
-
-      assert [%{id: "old:build-box"}] = old_items()
-      refute_receive {:mailbox, :changed}, 100
-
-      # Nothing it sent was kept: no session, and no inbox folder.
+      # Nothing it sent was kept, and nothing is asked of the owner: no
+      # session, no inbox folder, no mailbox item, no word to open boards.
       assert Store.counts().total == 0
       refute File.exists?(Path.join(c.dir, "inbox"))
-
-      # Another machine has its own item.
-      assert {410, _} = old_call(c.port, "/ingest/transcript?machine=papa-mac")
-      assert Enum.map(old_items(), & &1.id) == ["old:build-box", "old:papa-mac"]
-    end
-
-    test "the item goes when that machine pairs", c do
-      # The old script and a certificate do not spell a machine's name the
-      # same way: capitals, ".local", and what stands in for a space.
-      old_call(c.port, "/ingest/transcript?machine=Build_Box.local")
-      old_call(c.port, "/ingest/transcript?machine=papa-mac")
-      assert [_, _] = old_items()
-
-      # The owner approves the new collector: it now holds a certificate.
-      Authority.ensure!(c.link)
-      {:ok, _} = Authority.issue(c.link, "build-box")
-      assert Enum.map(old_items(), & &1.id) == ["old:papa-mac"]
-
-      # Its hooks may run on for a moment: that brings no item back.
-      old_call(c.port, "/ingest/status?machine=Build_Box.local", "{}")
-      assert Enum.map(old_items(), & &1.id) == ["old:papa-mac"]
-    end
-
-    test "Dismiss takes an item off for good, and the list outlives a restart", c do
-      old_call(c.port, "/ingest/transcript?machine=build-box")
-      old_call(c.port, "/ingest/transcript?machine=gone-box")
-      assert_receive {:mailbox, :changed}
-      assert_receive {:mailbox, :changed}
-
-      assert :ok = Mailbox.act("old:gone-box", "dismiss")
-      assert_receive {:mailbox, :changed}
-      assert {:error, :gone} = Mailbox.act("old:gone-box", "dismiss")
-      assert {:error, :gone} = Mailbox.act("old:build-box", "approve")
-
-      old_call(c.port, "/ingest/transcript?machine=gone-box")
-      assert Enum.map(old_items(), & &1.id) == ["old:build-box"]
-
-      stop_supervised!(OldCollectors)
-      start_supervised!(OldCollectors)
-      old_call(c.port, "/ingest/transcript?machine=gone-box")
-      assert Enum.map(old_items(), & &1.id) == ["old:build-box"]
-    end
-
-    test "a call cannot fill the mailbox or put its own words there", c do
-      for name <- ["..", "a%20b", "a%2Fb", "x%0Ay", String.duplicate("n", 65), ""] do
-        assert {410, _} = old_call(c.port, "/ingest/transcript?machine=#{name}")
-      end
-
-      assert {410, _} = old_call(c.port, "/ingest/transcript")
-      assert old_items() == []
-
-      # Without the key this hub gave its old collectors, a call is refused
-      # the same and names nobody: a stranger on the network cannot write
-      # in the owner's mailbox, nor a web page opened there.
-      refusal = OldCollectorController.refusal()
-
-      for key <- [nil, "a-guess", "the-old-shared-key-and-more", ""] do
-        assert {410, ^refusal} =
-                 old_call(c.port, "/ingest/transcript?machine=stranger", "x", key)
-      end
-
-      assert {:ok, {{_, 410, _}, _, _}} =
-               :httpc.request(
-                 :get,
-                 {~c"http://127.0.0.1:#{c.port}/ingest/x?machine=from-a-web-page", []},
-                 [],
-                 []
-               )
-
-      assert old_items() == []
-
-      # Even real old machines cannot fill it: twenty at most wait.
-      for n <- 1..30, do: old_call(c.port, "/ingest/status?machine=flood-#{n}", "{}")
-      assert length(old_items()) == 20
-    end
-
-    test "a hub that never had old collectors lists nobody", c do
-      stop_supervised!(OldCollectors)
-      Store.put_meta("ingest_token", nil)
-      start_supervised!(OldCollectors)
-
-      assert {410, _} = old_call(c.port, "/ingest/transcript?machine=build-box")
-      assert {410, _} = old_call(c.port, "/ingest/transcript?machine=build-box", "x", "")
-      assert old_items() == []
+      assert Mailbox.items() == []
+      refute_receive {:mailbox, :changed}, 100
+      assert Store.get_meta("ingest_token") == "the-old-shared-key"
     end
   end
 end

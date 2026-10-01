@@ -36,8 +36,8 @@ could run commands on your machine. 0.3.0 turns remote control off.
 
 A machine connected by 0.2.0 or earlier sent its sessions with upload hooks.
 0.3.0 replaces those with the collector, and the hub no longer takes uploads:
-it refuses them, and its mailbox names each machine that still sends them.
-On each of those machines, install 0.3.0 and set it up as a collector (the
+it refuses them, so such a machine's sessions stop arriving until it is moved
+across. On each of those machines, install 0.3.0 and set it up as a collector (the
 app on a Mac, `bin/vitalaize setup` on Linux). Setup takes VitalAIze's old
 hooks out of that machine's Claude and Codex settings, leaves every other
 hook as it was, and keeps a copy of each file it changes beside it

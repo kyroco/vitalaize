@@ -2,9 +2,8 @@ defmodule WallboardWeb.OldCollectorController do
   @moduledoc """
   Answers the calls the upload hooks of VitalAIze 0.2.0 make. The hub
   takes nothing that way any more: every call is refused in plain words,
-  whoever makes it, and nothing it sent is kept. A call that carries the
-  key this hub gave its old collectors puts the machine it names in the
-  mailbox, once (see `Wallboard.OldCollectors`).
+  whoever makes it. Nothing it sent is looked at or kept, and nothing is
+  noted about who called.
 
   For one release: the release after 0.3.0 takes this out.
   """
@@ -23,18 +22,6 @@ defmodule WallboardWeb.OldCollectorController do
   def refusal, do: @refusal
 
   def refuse(conn, _params) do
-    # The old script names its machine in the address, and sends its key
-    # as a Bearer token, never in the body.
-    conn = fetch_query_params(conn)
-
-    key =
-      case get_req_header(conn, "authorization") do
-        ["Bearer " <> key] -> String.trim(key)
-        _ -> nil
-      end
-
-    Wallboard.OldCollectors.seen(conn.query_params["machine"], key)
-
     conn
     # What the call sent is not read here, so the connection ends with the answer.
     |> put_resp_header("connection", "close")

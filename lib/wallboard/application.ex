@@ -25,9 +25,7 @@ defmodule Wallboard.Application do
       {Wallboard.Store, path: a.path},
       # Asks in the mailbox about work in a repo the Git tab does not follow.
       Wallboard.RepoPrompts,
-      Wallboard.Archive.StatusRecorder,
-      # Remembers which machines still call the old upload address.
-      Wallboard.OldCollectors
+      Wallboard.Archive.StatusRecorder
     ] ++
       if(a.collect_local, do: [Wallboard.Archive.Collector], else: []) ++
       [Wallboard.Archive.GitHubCollector] ++
