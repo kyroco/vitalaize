@@ -21,15 +21,19 @@ defmodule Wallboard.Collector.Filter do
           and whether a helper agent made it; the event's `at` is its time
         * `ToolTally`: one tool's name, calls and errors
         * `Changes`: lines added, lines removed and how many files changed
-        * `Status`: working, waiting or idle, with the kind of wait
+        * `Status`: working, waiting or idle, with the kind of wait and
+          what the session asks
         * `Summary`: the short texts listed under "What may leave"
         * `SessionEnded`
         * `Counts`: prompts, turns, time, errors, context size and Korium use
     * `Ack`: the collector got the hub message with that id.
 
+  Each carries a `seq` that counts up, so the hub can say how far it saved.
+
   Hub to collector (`FromHub`, each with an id the collector acks):
 
     * `Resume`: the last position the hub has for each session file
+    * `Stored`: the hub saved every collector message up to that `seq`
     * `BackSoon`: the hub is restarting on purpose; keep data and retry
     * `Disconnected`: this machine was removed; stop
     * `Answer`: empty, kept for answers to waiting agents (VIT-11)
@@ -85,11 +89,12 @@ defmodule Wallboard.Collector.Filter do
     * pull request links on github.com, 50 at most; the number and the
       repo are read from the link
     * the folder's GitHub repository as owner/name
+    * what a session asks its person while it waits on them, so a card on
+      another machine can quote it. Only in a status that says waiting.
 
-  What never leaves: any other prompt, the model's replies and thinking,
-  tool inputs and outputs, commands, file names and file contents, patches,
-  pasted text and images, and the words of the question a session waits on
-  (only its kind: a permission request, a question and so on).
+  What never leaves: any other prompt, the model's other replies and its
+  thinking, tool inputs and outputs, commands, file names and file
+  contents, patches, and pasted text and images.
 
   A name-shaped value is still text someone chose: a model told to call a
   tool named after a short secret would get that name out. The shapes and
@@ -101,8 +106,11 @@ defmodule Wallboard.Collector.Filter do
   format them:
 
       mix escript.install hex protobuf 0.17.0
-      protoc --elixir_out=lib -I priv/protos collector.proto
+      protoc --elixir_out=plugins=grpc:lib -I priv/protos collector.proto
       mix format
+
+  `plugins=grpc` also builds the service and the stub the link uses
+  (`Wallboard.Link`).
 
   Add fields; never reuse or renumber one. A new text field needs a line in
   the list above and a case in `test/wallboard/collector_filter_test.exs`.
@@ -211,7 +219,8 @@ defmodule Wallboard.Collector.Filter do
   (or `:waiting`) or `:idle`. Options: `why`, the kind of wait
   (`:permission`, `:question`, `:dialog`, `:network`, `:helper`, `:goal`, or
   the word `claude agents` gives in `waitingFor`); `tool`, the name of the
-  tool a permission request is for; `since`, when the state began; `at`.
+  tool a permission request is for; `question`, what the session asks its
+  person; `since`, when the state began; `at`.
   """
   def status(ctx, state, opts \\ []) when state in [:working, :needs, :waiting, :idle] do
     waiting? = state in [:needs, :waiting]
@@ -225,7 +234,8 @@ defmodule Wallboard.Collector.Filter do
         end,
       why: if(waiting?, do: why(opts[:why]), else: :WHY_UNKNOWN),
       tool: if(waiting?, do: tool_name(opts[:tool]), else: ""),
-      since: unix(opts[:since])
+      since: unix(opts[:since]),
+      question: if(waiting?, do: text(opts[:question]), else: "")
     }
 
     event(ctx, "", 0, unix(opts[:at]), false, status: body)

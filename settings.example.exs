@@ -138,6 +138,16 @@
     github_jobs_per_round: 100
   },
 
+  # The link: collectors on other machines stream their sessions to this
+  # hub, encrypted, and only machines this hub has approved may connect.
+  # Off until you turn it on. It listens on its own port, not the board's,
+  # and needs the archive above. Its certificates are kept in a "link"
+  # folder beside the database.
+  link: %{
+    enabled: false,
+    port: 4748
+  },
+
   # Whether prod runs the same build as dev, read from AWS. Off until you name
   # a read-only AWS profile for prod; then the Prod tile says Current when
   # both run the same images and Behind when dev has a different one. The

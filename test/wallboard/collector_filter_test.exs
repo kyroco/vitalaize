@@ -666,7 +666,7 @@ defmodule Wallboard.CollectorFilterTest do
   end
 
   describe "live status" do
-    test "says the kind of wait, never its words" do
+    test "the kind of wait is a kind, and only the question is words" do
       ctx = claude_ctx()
       at = ~U[2026-09-29 13:05:00Z]
 
@@ -703,6 +703,36 @@ defmodule Wallboard.CollectorFilterTest do
                last([Filter.status(ctx, :working, why: :question, tool: "Bash")], :status)
 
       assert %Proto.Status{state: :IDLE} = last([Filter.status(ctx, :idle)], :status)
+    end
+
+    test "a waiting session's question leaves, clipped, and only while it waits" do
+      ctx = claude_ctx()
+      asked = "Should I run the migration\non staging first?"
+
+      assert %Proto.Status{state: :WAITING, why: :QUESTION, question: question} =
+               last([Filter.status(ctx, :needs, why: :question, question: asked)], :status)
+
+      assert question == "Should I run the migration on staging first?"
+
+      # Cut like any other free text: 500 characters, counted one by one.
+      long = String.duplicate("why? ", 400)
+      status = last([Filter.status(ctx, :waiting, question: long)], :status)
+      assert length(String.codepoints(status.question)) == 500
+      assert String.ends_with?(status.question, "…")
+
+      # Characters that do not show are taken out before the cut.
+      hidden = "ok?" <> String.duplicate(<<0xE0041::utf8>>, 2000) <> <<0x202E::utf8>>
+      assert last([Filter.status(ctx, :needs, question: hidden)], :status).question == "ok?"
+
+      # A session that works or idles asks nothing, whatever the caller passes.
+      for state <- [:working, :idle] do
+        event = Filter.status(ctx, state, question: "PLANTED_QUESTION_SECRET?")
+        assert last([event], :status).question == ""
+        refute wire([event]) =~ "PLANTED"
+      end
+
+      assert last([Filter.status(ctx, :needs, question: 42)], :status).question == ""
+      assert last([Filter.status(ctx, :needs, question: <<255, 254>>)], :status).question == ""
     end
 
     test "a session's end and a collector's hello" do

@@ -28,10 +28,24 @@ defmodule Wallboard.Application do
     ] ++
       if(a.collect_local, do: [Wallboard.Archive.Collector], else: []) ++
       [Wallboard.Archive.GitHubCollector] ++
-      if(a.advertise, do: [{Wallboard.Advertise, port: settings.port}], else: [])
+      if(a.advertise, do: [{Wallboard.Advertise, port: settings.port}], else: []) ++
+      link_children(settings)
   end
 
   defp archive_children(_), do: []
+
+  # The port collectors stream to. After the database, which is where what
+  # they send goes.
+  defp link_children(settings) do
+    if Wallboard.Link.hub?(settings) do
+      [
+        {Wallboard.Link.Hub,
+         dir: Wallboard.Link.Authority.dir(settings), port: settings.link.port}
+      ]
+    else
+      []
+    end
+  end
 
   defp board_children do
     settings = Wallboard.Settings.load!()
@@ -156,6 +170,14 @@ defmodule Wallboard.Application do
       channels ->
         Logger.info("Alerts go by #{Enum.map_join(channels, ", ", &Wallboard.Alerts.name/1)}.")
     end
+  end
+
+  # A planned stop: connected collectors are told the hub will be back, so
+  # they wait a little before they try again, and get a moment to hear it.
+  @impl true
+  def prep_stop(state) do
+    if Wallboard.Link.Hub.back_soon() > 0, do: Process.sleep(300)
+    state
   end
 
   @impl true

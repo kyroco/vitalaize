@@ -184,6 +184,14 @@ defmodule Wallboard.Settings do
       github_poll_seconds: 300,
       github_jobs_per_round: 100
     },
+    # The link: collectors on other machines stream their sessions to this
+    # hub over gRPC, encrypted, with a certificate on both ends (see
+    # Wallboard.Link). Off until turned on; it needs the archive, since
+    # that is where the sessions go. The port is its own, not the board's.
+    link: %{
+      enabled: false,
+      port: 4748
+    },
     builds: %{
       prod_profile: nil,
       dev_profile: nil,
