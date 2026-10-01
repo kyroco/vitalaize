@@ -7,7 +7,9 @@
 #
 # It works from the downloaded release (this script sits beside bin/) and
 # from a source checkout (scripts/systemd.sh, after MIX_ENV=prod mix
-# release). Either way it uses settings.exs from that folder.
+# release). Either way it uses the settings in that folder: settings.exs,
+# and settings.json, which bin/vitalaize setup writes. `vitalaize setup`
+# offers to run this for you.
 #
 # With role: "collector" in settings.exs the same service runs the
 # collector: no board and no port, only the watcher for this machine's
@@ -36,7 +38,10 @@ UNIT="$UNIT_DIR/$NAME.service"
 case "$1" in
   on)
     [ -x "$REL/bin/wallboard" ] || { echo "Build the release first: MIX_ENV=prod mix release"; exit 1; }
-    [ -f "$SETTINGS" ] || { echo "No settings.exs in $ROOT. Copy settings.example.exs and fill it in."; exit 1; }
+    [ -f "$SETTINGS" ] || [ -f "$ROOT/settings.json" ] || {
+      echo "No settings in $ROOT. Run bin/vitalaize setup, or copy settings.example.exs to settings.exs and fill it in."
+      exit 1
+    }
     command -v systemctl >/dev/null 2>&1 || { echo "This needs systemd (systemctl)."; exit 1; }
 
     # A board started by hand holds the port, so stop any board running from

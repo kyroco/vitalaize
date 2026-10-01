@@ -6,6 +6,9 @@ import SwiftUI
 ///   VitalAIze --detect                print what setup would fill in (JSON)
 ///   VitalAIze --install FILE.json     install from saved choices
 ///   VitalAIze --uninstall             remove it again (keeps the data)
+///   VitalAIze --settings              print this Mac's settings (JSON)
+///   VitalAIze --save FILE.json        save settings: {"values": {"port": "4800"}}
+///   VitalAIze --pair [ADDRESS]        pair this Mac with a hub by code
 ///
 /// The command line is for setting up Macs by script, and for testing.
 @main
@@ -43,6 +46,30 @@ enum CLI {
         case "--uninstall":
             Setup.uninstall(deleteData: args.contains("--delete-data")) { print($0) }
             return 0
+        case "--settings":
+            guard let doc = Setup.settingsDoc() else {
+                print("Could not read the settings.")
+                return 1
+            }
+            print(String(decoding: try! enc.encode(doc), as: UTF8.self))
+            return 0
+        case "--save":
+            guard args.count > 1, let data = FileManager.default.contents(atPath: args[1]),
+                  let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let values = body["values"] as? [String: String] else {
+                print("Usage: VitalAIze --save FILE.json, holding {\"values\": {\"port\": \"4800\"}}")
+                return 2
+            }
+            let answer = Setup.save(values)
+            for line in answer.lines ?? [] { print(line) }
+            for (key, message) in (answer.errors ?? [:]).sorted(by: { $0.key < $1.key }) { print("\(key): \(message)") }
+            return answer.ok ? 0 : 1
+        case "--pair":
+            let answer = Setup.pair(hub: args.count > 1 ? args[1] : "") { code in
+                print("Approve this code in the mailbox on \(code.hub.isEmpty ? "the hub" : code.hub)'s board: \(code.code)")
+            }
+            print(answer.message)
+            return answer.ok ? 0 : 1
         default:
             return nil
         }
@@ -69,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Which screen shows, and the work behind each.
 final class AppState: ObservableObject {
-    enum Screen { case detecting, wizard, working, status }
+    enum Screen { case detecting, wizard, working, status, settings }
 
     @Published var screen: Screen = .detecting
     @Published var choices = Choices()
@@ -80,6 +107,20 @@ final class AppState: ObservableObject {
     @Published var workflows: [String] = []
     @Published var awsProfiles: [String] = []
     @Published var tools: [(String, Bool)] = []
+
+    /// The settings as the board's own code gives them, and what has been
+    /// typed over them on the Settings screen (by setting key).
+    @Published var doc: SettingsDoc?
+    @Published var edits: [String: String] = [:]
+    @Published var saveLines: [String] = []
+    @Published var saveErrors: [String: String] = [:]
+    @Published var busy = false
+
+    /// Pairing with a hub: the code to show while the hub's owner decides,
+    /// and how it ended.
+    @Published var pairCode: PairCode?
+    @Published var pairMessage: String?
+    @Published var pairing = false
 
     let finder = HubFinderHolder.shared
 
@@ -168,7 +209,8 @@ final class AppState: ObservableObject {
         let c = choices
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try Setup.install(c) { line in DispatchQueue.main.async { self.log.append(line) } }
+                try Setup.install(c, onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
+                                  say: { line in DispatchQueue.main.async { self.log.append(line) } })
                 DispatchQueue.main.async {
                     self.finder.stop()
                     self.screen = .status
@@ -189,12 +231,92 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Looks again at what runs here: the board answering on its port or
+    /// the collector's login item, and the settings as they are now.
     func refreshStatus() {
-        let c = choices
-        guard c.role.runsBoard else { running = false; return }
+        let runsBoard = choices.role.runsBoard
         DispatchQueue.global().async {
-            let up = Setup.boardRunning(port: c.port)
-            DispatchQueue.main.async { self.running = up }
+            let doc = Setup.settingsDoc()
+            // The port may have been changed here or with vitalaize setup.
+            let port = doc?.sections.flatMap { $0.fields }.first { $0.key == "port" }.flatMap { Int($0.value) }
+            let up = runsBoard ? Setup.boardRunning(port: port ?? self.choices.port) : Setup.serviceRunning()
+            DispatchQueue.main.async {
+                if let port { self.choices.port = port }
+                if let doc { self.doc = doc }
+                self.running = up
+            }
+        }
+    }
+
+    // MARK: Settings, saved here with no browser
+
+    func openSettings() {
+        saveLines = []
+        saveErrors = [:]
+        screen = .settings
+        loadSettings()
+    }
+
+    func loadSettings() {
+        busy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let doc = Setup.settingsDoc()
+            DispatchQueue.main.async {
+                self.busy = false
+                self.doc = doc
+                self.edits = [:]
+                if doc == nil { self.saveLines = ["The settings could not be read. The log is at \(Setup.logFile.path)."] }
+            }
+        }
+    }
+
+    /// What the Settings screen shows for a setting: what was typed, or
+    /// its saved value.
+    func value(_ field: SettingsField) -> String { edits[field.key] ?? field.value }
+
+    /// Saves what was changed. The board's own code writes the file and
+    /// restarts the board or the collector only when a change needs it; the
+    /// lines it answers say which.
+    func saveSettings() {
+        let fields = doc?.sections.flatMap { $0.fields } ?? []
+        let changed = edits.filter { key, text in fields.first { $0.key == key }?.value != text }
+        guard !changed.isEmpty else { saveLines = ["Nothing changed."]; return }
+        busy = true
+        saveLines = []
+        saveErrors = [:]
+        DispatchQueue.global(qos: .userInitiated).async {
+            let answer = Setup.save(changed)
+            let doc = answer.ok ? Setup.settingsDoc() : nil
+            DispatchQueue.main.async {
+                self.busy = false
+                self.saveLines = answer.lines ?? []
+                self.saveErrors = answer.errors ?? [:]
+                if answer.ok {
+                    if let doc { self.doc = doc }
+                    self.edits = [:]
+                    // A restarted board takes a few seconds to answer again.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.refreshStatus() }
+                }
+            }
+        }
+    }
+
+    // MARK: Pairing with a hub
+
+    /// Asks a hub to pair and shows the code until its owner decides.
+    /// `hub` is its address, or empty to look for one on the network.
+    func pair(hub: String) {
+        pairing = true
+        pairCode = nil
+        pairMessage = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let answer = Setup.pair(hub: hub) { code in DispatchQueue.main.async { self.pairCode = code } }
+            DispatchQueue.main.async {
+                self.pairing = false
+                self.pairCode = nil
+                self.pairMessage = answer.message
+                self.refreshStatus()
+            }
         }
     }
 

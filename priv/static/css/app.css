@@ -396,15 +396,14 @@ button { font: inherit; }
 /* Settings page: a plain scrolling page, not the scaled board. */
 .settings-page { position: fixed; inset: 0; overflow-y: auto; touch-action: pan-y; user-select: text; -webkit-user-select: text; padding: 32px max(16px, calc((100vw - 880px) / 2)); display: flex; flex-direction: column; gap: 18px; }
 .settings-title { margin: 0; font-family: var(--font-display); font-size: 34px; font-weight: 400; color: var(--text); }
-.settings-form { display: flex; flex-direction: column; gap: 18px; }
 .settings-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
-.settings-field { display: flex; flex-direction: column; gap: 4px; }
-.settings-label { font-size: 14px; font-weight: 500; color: var(--text); }
-.settings-input { font: inherit; font-size: 15px; color: var(--text); background: var(--page); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; width: 100%; }
-textarea.settings-input { resize: vertical; }
-.settings-save { font: inherit; font-weight: 700; font-size: 15px; color: #fff; background: var(--info); border: 0; border-radius: 9999px; padding: 10px 22px; cursor: pointer; flex: none; }
+.settings-where { margin: 0; font-size: 15px; color: var(--text-body); }
+.settings-where code { font-size: 14px; background: var(--page); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
+.settings-values { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.settings-value { display: grid; grid-template-columns: minmax(160px, 280px) 1fr; gap: 12px; font-size: 15px; }
+.settings-value dt { color: var(--text-body); }
+.settings-value dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 .settings-notice { margin: 0; font-size: 14px; color: var(--ok); font-weight: 700; }
-.settings-restart { font-size: 14px; color: var(--warn-deep); }
 .settings-code { margin: 0; font-size: 13px; background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings-table { max-width: 520px; }
 /* Connected machines: one row each, like the mockup's list. */

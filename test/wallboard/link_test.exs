@@ -630,6 +630,34 @@ defmodule Wallboard.LinkTest do
       assert Client.status(client).phase in [:waiting, :connecting]
     end
 
+    test "a collector told \"back soon\" waits, then reconnects once the hub is up, with one try",
+         %{dir: dir, link: link} do
+      port = free_port()
+      start_hub(dir, port: port)
+      {:ok, papa} = Authority.issue(link, "papa")
+
+      # Without "back soon" this collector would try again after 20 to 40 ms
+      # and then at growing waits: four or five tries while the hub is away.
+      backoff = [base_ms: 40, cap_ms: 2_000, back_soon_ms: 600]
+      client = start_client(dir, port, papa, backoff: backoff)
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      # The planned stop the app makes before the hub restarts for a setting.
+      Wallboard.Application.prep_stop(:state)
+      assert_receive {:wallboard_link, :back_soon}, 5_000
+      stop_hub()
+      Process.sleep(400)
+      start_hub(dir, port: port)
+
+      # It comes back by itself once the hub is up.
+      assert_receive {:wallboard_link, {:resume, _}}, 10_000
+      wait_until(fn -> Client.status(client).phase == :live end)
+
+      # One wait, the long one, and so one try: no burst while the hub was away.
+      assert [wait] = for({:wallboard_link, {:down, wait}} <- flush(), do: wait)
+      assert wait >= 600
+    end
+
     test "a hub that vanishes without a word gets the short first wait", %{dir: dir, link: link} do
       port = free_port()
       start_hub(dir, port: port)

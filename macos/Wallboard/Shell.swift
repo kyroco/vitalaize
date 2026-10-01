@@ -70,6 +70,61 @@ enum Shell {
                       output: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Runs a program and hands over each line it prints as it is printed,
+    /// for a program that says something useful before it is done.
+    @discardableResult
+    static func stream(_ program: String, _ args: [String], env: [String: String] = [:],
+                       input: String? = nil, timeout: TimeInterval = 60,
+                       onLine: @escaping (String) -> Void) -> Result {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: program)
+        process.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = pathValue
+        for (k, v) in env { environment[k] = v }
+        process.environment = environment
+
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = out
+        let stdin = Pipe()
+        process.standardInput = stdin
+
+        do {
+            try process.run()
+        } catch {
+            return Result(status: -1, output: error.localizedDescription)
+        }
+        if let input { stdin.fileHandleForWriting.write(Data(input.utf8)) }
+        try? stdin.fileHandleForWriting.close()
+
+        var all = Data()
+        var rest = Data()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue(label: "shell-stream").async {
+            while true {
+                let chunk = out.fileHandleForReading.availableData
+                if chunk.isEmpty { break }
+                all.append(chunk)
+                rest.append(chunk)
+                while let end = rest.firstIndex(of: 0x0A) {
+                    onLine(String(decoding: rest[rest.startIndex..<end], as: UTF8.self))
+                    rest.removeSubrange(rest.startIndex...end)
+                }
+            }
+            if !rest.isEmpty { onLine(String(decoding: rest, as: UTF8.self)) }
+            group.leave()
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline { usleep(50_000) }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        group.wait()
+        return Result(status: process.terminationStatus,
+                      output: String(decoding: all, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     /// Runs a tool found on the search path.
     @discardableResult
     static func tool(_ name: String, _ args: [String], timeout: TimeInterval = 60) -> Result {

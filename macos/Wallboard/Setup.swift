@@ -20,7 +20,7 @@ enum Role: String, Codable, CaseIterable, Identifiable {
         case .hub:
             return "Runs the board and its database, and keeps only what other Macs send."
         case .collector:
-            return "Sends this Mac's Claude sessions to a hub on your network. No board runs here."
+            return "Watches this Mac's Claude and Codex sessions and streams them to a hub on your network. No board runs here."
         }
     }
 
@@ -74,6 +74,66 @@ struct Installed: Codable {
     var installedAt: Date
 }
 
+/// One setting, as the board's own code describes it (`vitalaize setup
+/// --json show`). The app draws its Settings screen from these, so the app
+/// and the terminal command always offer the same settings.
+struct SettingsField: Codable, Identifiable {
+    var key: String
+    var label: String
+    /// string, integer, port, boolean, secret, choice, lines, repos or folders.
+    var type: String
+    var options: [String]
+    /// True when a change restarts the board or the collector.
+    var restart: Bool
+    var help: String?
+    var value: String
+    var id: String { key }
+}
+
+struct SettingsSection: Codable, Identifiable {
+    var title: String
+    var fields: [SettingsField]
+    var id: String { title }
+}
+
+struct Paired: Codable {
+    var host: String
+    var port: Int
+    var machine: String
+}
+
+struct SettingsDoc: Codable {
+    var role: String
+    /// The file the settings are saved in.
+    var path: String
+    /// running, stopped, or none when no login item is set up.
+    var service: String
+    var paired: Paired?
+    var sections: [SettingsSection]
+}
+
+struct SaveAnswer: Codable {
+    var ok: Bool
+    /// What the save did, to show the person.
+    var lines: [String]?
+    /// What is wrong, by setting key.
+    var errors: [String: String]?
+    var service: String?
+}
+
+struct PairCode: Codable {
+    var code: String
+    var hub: String
+    var machine: String
+    var expires_in: Int
+}
+
+struct PairAnswer: Codable {
+    var ok: Bool
+    var message: String
+    var machine: String?
+}
+
 enum Setup {
     static let label = ProcessInfo.processInfo.environment["WALLBOARD_LABEL"] ?? "ai.kyroco.wallboard"
     static let fm = FileManager.default
@@ -86,12 +146,22 @@ enum Setup {
     static var agentPlist: URL { home.appendingPathComponent("Library/LaunchAgents/\(label).plist") }
     static var logFile: URL { home.appendingPathComponent("Library/Logs/VitalAIze/board.log") }
 
-    /// The board itself, inside this app.
-    static var release: URL { Bundle.main.resourceURL!.appendingPathComponent("board") }
+    /// The board itself, inside this app. VITALAIZE_RELEASE names another
+    /// copy, for running the app's command line from a build folder.
+    static var release: URL {
+        if let path = ProcessInfo.processInfo.environment["VITALAIZE_RELEASE"], !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        return Bundle.main.resourceURL!.appendingPathComponent("board")
+    }
 
     /// Where the data folder is, remembered between launches.
+    /// VITALAIZE_DATA names one for this run only, for scripts and tests.
     static var dataFolder: String? {
-        get { UserDefaults.standard.string(forKey: "dataFolder") }
+        get {
+            if let path = ProcessInfo.processInfo.environment["VITALAIZE_DATA"], !path.isEmpty { return path }
+            return UserDefaults.standard.string(forKey: "dataFolder")
+        }
         set { UserDefaults.standard.set(newValue, forKey: "dataFolder") }
     }
 
@@ -193,6 +263,7 @@ enum Setup {
     /// base and these answers are laid over it, so anything the wizard does
     /// not ask about (New Relic checks, the theme) carries over.
     static func settingsFile(_ c: Choices) -> String {
+        if c.role == .collector { return collectorSettingsFile(c) }
         let data = c.dataFolder
         let lanes = [("Gate", c.gateWorkflow), ("Dev deploy", c.devWorkflow), ("Prod", c.prodWorkflow)]
             .filter { !$0.1.isEmpty }
@@ -221,6 +292,7 @@ enum Setup {
 
         let answers = """
         %{
+            role: \(ex(c.role == .hub ? "hub" : "both")),
             port: \(c.port),
             brand: %{name: \(ex(c.boardName))},
             claude: %{config_dirs: [\(c.claudeFolders.map(ex).joined(separator: ", "))]},
@@ -238,13 +310,7 @@ enum Setup {
           }
         """
 
-        let header = """
-        # Written by the VitalAIze app. Change the board from its settings page
-        # (Settings, at the top beside the clock), or run the app
-        # again and pick Reconfigure. Edits here are kept until the next
-        # Reconfigure.
-
-        """
+        let header = settingsHeader
 
         if c.importedSettings != nil {
             return header + """
@@ -262,6 +328,34 @@ enum Setup {
         return header + answers + "\n"
     }
 
+    /// What every settings.exs the app writes starts with.
+    static let settingsHeader = """
+        # Written by the VitalAIze app when it set this Mac up. Change settings
+        # in the app (Settings) or with `vitalaize setup` in a terminal: both
+        # save to settings.json beside this file, and what is saved there wins
+        # over this file. Edits here are kept until the next Reconfigure.
+
+        """
+
+    /// settings.exs for a collector: its role, and where it keeps its place
+    /// and its certificate. It finds the Claude and Codex folders itself;
+    /// they are listed only when the wizard's choice differs from that.
+    static func collectorSettingsFile(_ c: Choices) -> String {
+        var collector = ["dir: \(ex(c.dataFolder + "/collector"))"]
+        if !c.claudeFolders.isEmpty && Set(c.claudeFolders) != Set(Detect.claudeFolders()) {
+            collector.append("claude_dirs: [\(c.claudeFolders.map(ex).joined(separator: ", "))]")
+        }
+        // `role:` starts its own line: the board's start script reads it there
+        // to run a collector small.
+        return settingsHeader + """
+        %{
+          role: "collector",
+          collector: %{\(collector.joined(separator: ", "))}
+        }
+
+        """
+    }
+
     // MARK: Installing
 
     enum Failure: Error, LocalizedError {
@@ -270,12 +364,12 @@ enum Setup {
     }
 
     /// Installs everything the choices ask for. `say` reports each step.
-    static func install(_ c: Choices, say: (String) -> Void) throws {
+    static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws {
         // Kept from an earlier setup, so Uninstall still finds Codex's hooks
         // when this run could not reach them. The earlier record stays
         // where Uninstall looks until this run has written its own: the
         // remembered data folder moves only at the end.
-        var hookedCodex: String? = installed()?.hookedCodex
+        let hookedCodex: String? = installed()?.hookedCodex
         let data = URL(fileURLWithPath: c.dataFolder)
         try fm.createDirectory(at: data, withIntermediateDirectories: true)
         var hooked: [String] = []
@@ -308,26 +402,32 @@ enum Setup {
         }
 
         if c.role == .collector {
-            say("Checking the hub and its key")
-            let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey)
-            for folder in c.claudeFolders {
-                say("Connecting \(folder) to the hub")
-                try hookUp(folder: folder, script: script)
-                hooked.append(folder)
+            say("Writing the collector's settings")
+            try settingsFile(c).write(to: data.appendingPathComponent("settings.exs"), atomically: true, encoding: .utf8)
+
+            say("Starting the collector, and setting it to start when you log in")
+            try startBoard(c)
+            guard waitForService(seconds: 30) else {
+                throw Failure.step("The collector did not start. Its log is at \(logFile.path).")
             }
-            if Detect.usesCodex() {
-                let folder = home.appendingPathComponent(".codex").path
-                say("Connecting \(folder) to the hub")
-                // Codex is extra: a problem here is reported, and the Claude
-                // folders stay connected.
-                do {
-                    let script = try fetchUploadScript(hub: c.hubURL, key: c.hubKey, name: "codex-upload.sh")
-                    try hookUp(folder: folder, script: script, file: "hooks.json", wanted: codexHooks)
-                    hookedCodex = folder
-                    say("Codex skips a new hook until you trust it: type /hooks in Codex and trust the two wallboard-upload.sh hooks")
-                } catch {
-                    say("Codex was not connected. \(error.localizedDescription)")
+            say("The collector is running")
+
+            // Hooks from an earlier setup stay recorded, so Remove still
+            // takes them out.
+            hooked = installed()?.hookedFolders ?? []
+
+            if c.hubURL.isEmpty && paired(dataFolder: c.dataFolder) != nil {
+                say("This Mac is already paired with its hub")
+            } else {
+                say("Asking the hub to pair")
+                let answer = pair(hub: c.hubURL, dataFolder: c.dataFolder) { code in
+                    say("Approve this code in the mailbox on \(code.hub.isEmpty ? "the hub" : code.hub)'s board: \(code.code)")
+                    onCode(code)
                 }
+                onCode(nil)
+                // The collector is set up either way; pairing can be done
+                // again from the app's first screen.
+                say(answer.ok ? answer.message : "Not paired yet. \(answer.message) Pair from this app when the hub is ready.")
             }
         }
 
@@ -375,8 +475,102 @@ enum Setup {
         if !r.ok { throw Failure.step("Could not start the board: \(r.output)") }
     }
 
+    /// Asks the board or the collector to stop; the login item starts it
+    /// again. A plain stop, not a kill, so a hub gets to tell its collectors
+    /// it will be back soon before it goes.
     static func restartBoard() {
-        Shell.run("/bin/launchctl", ["kickstart", "-k", "gui/\(getuid())/\(label)"])
+        let target = "gui/\(getuid())/\(label)"
+        Shell.run("/bin/launchctl", ["kill", "SIGTERM", target])
+        // In case it was not running at all.
+        Shell.run("/bin/launchctl", ["kickstart", target])
+    }
+
+    /// Whether the login item is running, as launchd sees it.
+    static func serviceRunning() -> Bool {
+        let r = Shell.run("/bin/launchctl", ["print", "gui/\(getuid())/\(label)"], timeout: 5)
+        return r.ok && r.output.contains("state = running")
+    }
+
+    static func waitForService(seconds: Int) -> Bool {
+        for _ in 0..<seconds {
+            if serviceRunning() { return true }
+            sleep(1)
+        }
+        return false
+    }
+
+    // MARK: Settings and pairing, through the board's own code
+
+    /// What the board's `vitalaize setup --json` needs to find this Mac's
+    /// settings: the same file and login item the app set up.
+    static func engineEnv(dataFolder folder: String? = nil) -> [String: String] {
+        let data = folder ?? dataFolder ?? defaultDataFolder
+        try? fm.createDirectory(atPath: data + "/tmp", withIntermediateDirectories: true)
+        return ["WALLBOARD_SETTINGS": data + "/settings.exs",
+                "RELEASE_TMP": data + "/tmp",
+                "RELEASE_DISTRIBUTION": "none",
+                "WALLBOARD_LABEL": label,
+                "HOME": home.path]
+    }
+
+    /// Runs one `vitalaize setup --json` command and gives back its answer:
+    /// the line that starts with VITALAIZE_JSON. `onLine` sees every line as
+    /// it is printed, for the pairing code that comes before the answer.
+    static func engine(_ args: [String], input: String? = nil, dataFolder folder: String? = nil,
+                       timeout: TimeInterval = 60, onLine: ((String) -> Void)? = nil) -> Data? {
+        let bin = release.appendingPathComponent("bin/wallboard").path
+        guard fm.isExecutableFile(atPath: bin) else { return nil }
+        var env = engineEnv(dataFolder: folder)
+        env["VITALAIZE_ARGS"] = (["--json"] + args).joined(separator: " ")
+        var answer: Data?
+        Shell.stream(bin, ["eval", "Wallboard.Setup.main()"], env: env, input: input, timeout: timeout) { line in
+            if line.hasPrefix("VITALAIZE_JSON") { answer = line.dropFirst(14).data(using: .utf8) }
+            onLine?(line)
+        }
+        return answer
+    }
+
+    /// The settings this Mac's role uses, with their values, and whether it
+    /// is paired and running.
+    static func settingsDoc(dataFolder folder: String? = nil) -> SettingsDoc? {
+        guard let data = engine(["show"], dataFolder: folder) else { return nil }
+        return try? JSONDecoder().decode(SettingsDoc.self, from: data)
+    }
+
+    /// Saves the given values (text by key). The board's code checks them,
+    /// writes settings.json and restarts the login item only when a change
+    /// needs it.
+    static func save(_ values: [String: String], dataFolder folder: String? = nil) -> SaveAnswer {
+        let failed = SaveAnswer(ok: false, lines: ["The settings could not be saved. The log is at \(logFile.path)."], errors: nil, service: nil)
+        guard let body = try? JSONSerialization.data(withJSONObject: ["values": values]),
+              let data = engine(["save"], input: String(decoding: body, as: UTF8.self), dataFolder: folder),
+              let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data) else { return failed }
+        return answer
+    }
+
+    /// The hub this Mac is paired with, or nil.
+    static func paired(dataFolder folder: String? = nil) -> Paired? {
+        settingsDoc(dataFolder: folder)?.paired
+    }
+
+    /// Pairs this Mac with a hub by code. `hub` is its address, or empty to
+    /// look for one on the network. `onCode` gets the code to show as soon
+    /// as there is one; the call returns when the owner has approved or
+    /// refused it on the hub, or the code ran out (ten minutes).
+    static func pair(hub: String, dataFolder folder: String? = nil, onCode: @escaping (PairCode) -> Void) -> PairAnswer {
+        // The address goes in as one word; an address has no spaces.
+        let address = hub.trimmingCharacters(in: .whitespaces)
+        guard !address.contains(" ") else { return PairAnswer(ok: false, message: "That is not a board's address.", machine: nil) }
+        let data = engine(["pair"] + (address.isEmpty ? [] : [address]), dataFolder: folder, timeout: 660) { line in
+            if line.hasPrefix("VITALAIZE_CODE"), let json = line.dropFirst(14).data(using: .utf8),
+               let code = try? JSONDecoder().decode(PairCode.self, from: json) {
+                onCode(code)
+            }
+        }
+        guard let data, let answer = try? JSONDecoder().decode(PairAnswer.self, from: data) else {
+            return PairAnswer(ok: false, message: "Pairing stopped before the hub answered.", machine: nil)
+        }
+        return answer
     }
 
     static func boardRunning(port: Int) -> Bool {
@@ -392,32 +586,13 @@ enum Setup {
         return false
     }
 
-    // MARK: Collector
+    // MARK: Hooks from before the streaming collector
 
-    /// The hub's upload script. A wrong address or key fails here, before
-    /// anything on this Mac changes.
-    static func fetchUploadScript(hub: String, key: String, name: String = "upload.sh") throws -> String {
-        let base = hub.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
-        let r = Shell.run("/usr/bin/curl", ["-sS", "-w", "\n%{http_code}", "--max-time", "15",
-                                           "-H", "Authorization: Bearer \(key)", "\(base)/ingest/\(name)"], timeout: 20)
-        let lines = r.output.components(separatedBy: "\n")
-        let code = lines.last ?? ""
-        let body = lines.dropLast().joined(separator: "\n")
-        switch code {
-        case "200": return body + "\n"
-        case "401": throw Failure.step("The hub turned down that key. Copy it again from the hub's settings page.")
-        // Only the Codex script is fetched after the Claude one worked, so
-        // there a 404 means a hub from before Codex uploads.
-        case "404" where name != "upload.sh": throw Failure.step("The hub is too old to take Codex sessions. Update it, then run this setup again.")
-        case "404": throw Failure.step("That board has its archive turned off, so it cannot take sessions.")
-        default: throw Failure.step("Could not reach a hub at \(base). Is the board running there?")
-        }
-    }
+    // The app no longer adds upload hooks: a collector is a login item now.
+    // What follows only takes out the hooks an earlier version added.
 
-    /// The Claude Code hooks the upload script runs from, with each one's
-    /// matcher. Stop and SessionEnd send the transcript; the rest tell the
-    /// hub the moment a session starts or stops waiting on you. The same
-    /// list is Wallboard.Archive.Ingest.hooks/0 on the board.
+    /// The Claude Code hooks an earlier version's upload script ran from.
+    /// The same list is Wallboard.Archive.Ingest.hooks/0 on the board.
     static let uploadHooks: [(event: String, matcher: String?)] = [
         ("Stop", nil),
         ("SessionEnd", nil),
@@ -427,46 +602,8 @@ enum Setup {
         ("UserPromptSubmit", nil),
     ]
 
-    /// Codex's upload script sends transcripts only, so it keeps two hooks.
+    /// Codex's upload script sent transcripts only, so it had two hooks.
     static let codexHooks: [(event: String, matcher: String?)] = [("Stop", nil), ("SessionEnd", nil)]
-
-    /// Saves the upload script in a Claude folder and adds its hooks to
-    /// that folder's settings.json, after backing it up. For ~/.codex the
-    /// file is hooks.json, which has the same shape, with codexHooks.
-    static func hookUp(folder: String, script: String, file: String = "settings.json",
-                       wanted: [(event: String, matcher: String?)] = uploadHooks) throws {
-        let dir = URL(fileURLWithPath: folder)
-        let scriptURL = dir.appendingPathComponent("wallboard-upload.sh")
-        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
-
-        let settingsURL = dir.appendingPathComponent(file)
-        var settings: [String: Any] = [:]
-        if let data = try? Data(contentsOf: settingsURL), !data.isEmpty {
-            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw Failure.step("\(settingsURL.path) is not a settings object, so it was left alone.")
-            }
-            settings = obj
-            let backup = dir.appendingPathComponent("\(file).before-wallboard")
-            if !fm.fileExists(atPath: backup.path) { try data.write(to: backup) }
-        }
-
-        var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        let hook: [String: Any] = ["type": "command", "command": scriptURL.path, "async": true, "timeout": 120]
-        for (event, matcher) in wanted {
-            var list = hooks[event] as? [[String: Any]] ?? []
-            let has = list.contains { m in ((m["hooks"] as? [[String: Any]]) ?? []).contains { ($0["command"] as? String) == scriptURL.path } }
-            if !has {
-                var entry: [String: Any] = ["hooks": [hook]]
-                if let matcher = matcher { entry["matcher"] = matcher }
-                list.append(entry)
-            }
-            hooks[event] = list
-        }
-        settings["hooks"] = hooks
-        let out = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        try out.write(to: settingsURL, options: .atomic)
-    }
 
     /// Takes the hooks back out; everything else in the file stays.
     static func unhook(folder: String, file: String = "settings.json",

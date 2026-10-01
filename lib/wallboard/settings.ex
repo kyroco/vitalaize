@@ -12,9 +12,16 @@ defmodule Wallboard.Settings do
   Anything the file leaves out falls back to the defaults below, so a friend
   only writes the parts that differ.
 
-  On top of the file come the values saved from the settings page, kept in
-  the board's database (see `editable/0`). The file stays the base: a value
-  saved on the page wins until it is cleared there.
+  On top of the file come the saved settings: what the VitalAIze app and
+  `vitalaize setup` write (see `Wallboard.Setup`). They share one file,
+  settings.json, so either can change what the other saved. It sits beside
+  settings.exs (see `saved_path/0`) and holds only the values in
+  `editable/0` that differ from what is under them. The file stays the
+  base: settings.exs alone, with no settings.json, loads as it always did.
+
+  Boards from before settings.json kept the values saved on the settings
+  page in their database. Those still load, between the file and
+  settings.json, so a board updated in place keeps them.
   """
 
   require Logger
@@ -294,47 +301,138 @@ defmodule Wallboard.Settings do
 
   def get(key), do: Map.fetch!(get(), key)
 
-  @doc "Reads the settings file, merges it over the defaults and caches it."
+  @doc """
+  Reads the settings file and the saved settings, lays them over the
+  defaults and caches the result.
+  """
   def load! do
-    settings =
+    saved = read_saved!()
+
+    file =
       case path() do
         nil ->
-          Logger.warning("No settings file found, using defaults. See settings.example.exs.")
+          if saved == %{},
+            do:
+              Logger.warning("No settings file found, using defaults. See settings.example.exs.")
+
           @defaults
 
         path ->
-          {value, _binding} = Code.eval_file(path)
-
-          unless is_map(value) do
-            raise ArgumentError, "#{path} must evaluate to a map, like settings.example.exs"
-          end
-
           Logger.info("Settings loaded from #{path}")
-          merge(@defaults, value)
+          file!(path)
       end
 
-    settings = env_role(settings)
-
-    # A collector has no database, so no values saved from a settings page.
-    settings =
-      if role(settings) == :collector,
-        do: normalize(settings),
-        else: settings |> apply_overrides(saved_overrides(settings)) |> normalize()
-
+    settings = file |> layers(saved) |> normalize()
     :persistent_term.put(@key, settings)
     settings
   end
 
-  @doc "The settings from the defaults and the file alone, without the page's values."
+  defp file!(path) do
+    {value, _binding} = Code.eval_file(path)
+
+    unless is_map(value) do
+      raise ArgumentError, "#{path} must evaluate to a map, like settings.example.exs"
+    end
+
+    merge(@defaults, value)
+  end
+
+  # The file, then what an older board's settings page saved in the
+  # database, then the saved settings. A collector has no database, and the
+  # role is known only once the saved settings are on, so it is worked out
+  # first. WALLBOARD_ROLE wins over all of them.
+  defp layers(file, saved) do
+    probe = file |> apply_overrides(saved) |> env_role()
+
+    if role(probe) == :collector,
+      do: probe,
+      else:
+        file
+        |> apply_overrides(saved_overrides(probe))
+        |> apply_overrides(saved)
+        |> env_role()
+  end
+
+  @doc "The settings from the defaults and the file alone, with nothing saved on top."
   def base do
     case path() do
-      nil ->
-        @defaults |> env_role() |> normalize()
-
-      path ->
-        {value, _} = Code.eval_file(path)
-        @defaults |> merge(value) |> env_role() |> normalize()
+      nil -> @defaults |> env_role() |> normalize()
+      path -> path |> file!() |> env_role() |> normalize()
     end
+  end
+
+  @doc """
+  The settings as they would be with no settings.json: the defaults, the
+  file and what an older settings page saved. The saved settings hold only
+  what differs from this.
+  """
+  def under_saved do
+    file = if path = path(), do: file!(path), else: @defaults
+    # The role decides whether there is a database to read, and it may be
+    # one the saved settings chose. The role itself is the file's.
+    with_saved_role = layers(file, Map.take(read_saved!(), [:role]))
+    with_saved_role |> Map.put(:role, env_role(file).role) |> normalize()
+  end
+
+  @doc """
+  Where the saved settings live: the path in WALLBOARD_SAVED_SETTINGS, or
+  settings.json in the folder the settings file is looked for in (the
+  folder of WALLBOARD_SETTINGS when that is set, else the release folder,
+  else the current folder).
+  """
+  def saved_path do
+    env = fn name ->
+      case System.get_env(name) do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+    end
+
+    cond do
+      path = env.("WALLBOARD_SAVED_SETTINGS") -> Path.expand(path)
+      path = env.("WALLBOARD_SETTINGS") -> path |> Path.expand() |> Path.dirname() |> saved_in()
+      root = env.("RELEASE_ROOT") -> saved_in(root)
+      true -> saved_in(File.cwd!())
+    end
+  end
+
+  defp saved_in(dir), do: Path.join(dir, "settings.json")
+
+  # The saved settings as a map with atom keys, empty when there is no
+  # file. A file that cannot be read stops the load: starting without it
+  # could start the wrong role.
+  defp read_saved! do
+    path = saved_path()
+
+    case File.read(path) do
+      {:ok, text} ->
+        case Jason.decode(text) do
+          {:ok, %{} = map} -> atomize(map)
+          _ -> raise ArgumentError, "#{path} is not a JSON object. Fix it, or delete it."
+        end
+
+      {:error, :enoent} ->
+        %{}
+
+      {:error, reason} ->
+        raise ArgumentError, "#{path} cannot be read: #{:file.format_error(reason)}"
+    end
+  end
+
+  @doc """
+  Writes the saved settings (what `check/2` returned against
+  `under_saved/0`) and reloads. Only this user can read the file: it may
+  hold the board password and alert keys.
+  """
+  def save!(overrides) do
+    path = saved_path()
+    File.mkdir_p!(Path.dirname(path))
+    tmp = "#{path}.#{System.unique_integer([:positive])}.tmp"
+    File.write!(tmp, "")
+    File.chmod!(tmp, 0o600)
+    File.write!(tmp, Jason.encode_to_iodata!(overrides, pretty: true))
+    File.rename!(tmp, path)
+    load!()
   end
 
   @doc """
@@ -369,14 +467,21 @@ defmodule Wallboard.Settings do
   """
   def editable do
     [
+      {"This machine",
+       [
+         {[:role], "What this machine does", {:choice, ["both", "hub", "collector"]}, true,
+          "both runs the board and saves this machine's own sessions. hub runs the board " <>
+            "only. collector runs no board: it watches this machine for a hub"}
+       ]},
       {"Board",
        [
          {[:brand, :name], "Board name", :string, false, nil},
+         {[:port], "Board port", :port, true, nil},
          {[:rotate_seconds], "Seconds between pages", :integer, false,
           "0 stops the pages turning"},
          {[:timezone], "Time zone", :string, false, "Like America/New_York"},
          {[:token], "Board password", :secret, true,
-          "Optional. With one, other devices need ?token= once, and can change settings"},
+          "Optional. With one, other devices need ?token= once"},
          {[:updates, :check], "Tell me when a new version is out", :boolean, false,
           "Checks GitHub once a day"}
        ]},
@@ -401,6 +506,19 @@ defmodule Wallboard.Settings do
          {[:alerts, :pushover_user], "Pushover user key", :secret, false, nil},
          {[:alerts, :pushover_token], "Pushover app token", :secret, false,
           "Both Pushover fields are needed"}
+       ]},
+      {"New Relic",
+       [
+         {[:new_relic, :account_id], "Account number", :string, false, nil},
+         {[:new_relic, :api_key_ref], "Where the API key is in 1Password", :string, true,
+          "An op:// address. Read once, when the board starts"},
+         {[:new_relic, :region], "Region", {:choice, ["us", "eu"]}, false, nil}
+       ]},
+      {"Collectors on other machines",
+       [
+         {[:link, :enabled], "Take collectors", :boolean, true,
+          "Other machines stream their sessions here once you approve them in the mailbox"},
+         {[:link, :port], "Port they stream to", :port, true, "Its own port, not the board's"}
        ]},
       {"Claude",
        [
@@ -437,9 +555,80 @@ defmodule Wallboard.Settings do
           false, nil},
          {[:archive, :hub_url], "Address other Macs use", :string, false,
           "Empty uses this Mac's network address"}
+       ]},
+      {"Collector",
+       [
+         {[:collector, :claude_dirs], "Claude folders to watch", :folders, false,
+          "One per line. Empty finds ~/.claude and every ~/.claude-something"},
+         {[:collector, :codex_dirs], "Codex folders to watch", :folders, false,
+          "One per line. Empty finds ~/.codex"}
        ]}
     ]
   end
+
+  @doc """
+  The part of `editable/0` a machine in this role uses. A collector has
+  its own few settings and none of the board's; a board has no use for a
+  collector's.
+  """
+  def editable(role) do
+    Enum.filter(editable(), fn {section, _} ->
+      section == "This machine" or section == "Collector" == (role == :collector)
+    end)
+  end
+
+  @doc """
+  Which part of a machine a setting belongs to: `:machine` (its role),
+  `:collector` (which sessions on this machine are watched) or `:hub`
+  (the board and everything it shows).
+  """
+  def part([:role]), do: :machine
+  def part([:collector | _]), do: :collector
+  def part([:claude, :config_dirs]), do: :collector
+  def part([:codex, :dirs]), do: :collector
+  def part([:codex, :enabled]), do: :collector
+  def part([:archive, :collect_local]), do: :collector
+  def part(_), do: :hub
+
+  @kept "••••••••"
+
+  @doc """
+  The settings as text, keyed by path ("alerts.phone"), the way a form
+  shows them. A secret that is set (a webhook address, a key, the board
+  password) comes out as dots, never as itself.
+  """
+  def shown(settings) do
+    for {_, fs} <- editable(), {path, _, type, _, _} <- fs, into: %{} do
+      value = current(settings, path, type)
+      text = if type == :secret and value != nil, do: @kept, else: to_text(type, value)
+      {Enum.join(path, "."), text}
+    end
+  end
+
+  @doc """
+  Turns a secret that came back as dots into the value it stands for now.
+  `shown` is the settings the form was drawn from: only a secret that was
+  set there went out as dots, so dots typed into an empty field are kept
+  as typed, and dots from a form drawn before the secret changed elsewhere
+  follow the newest value.
+  """
+  def unmask(values, shown, current) do
+    for {_, fs} <- editable(), {path, _, :secret, _, _} <- fs, reduce: values do
+      acc ->
+        key = Enum.join(path, ".")
+
+        if Map.get(acc, key) == @kept and get_in(shown, path) != nil,
+          do: Map.put(acc, key, to_text(:secret, get_in(current, path))),
+          else: acc
+    end
+  end
+
+  defp to_text(_, nil), do: ""
+
+  defp to_text(type, list) when type in [:lines, :repos, :folders],
+    do: Enum.join(List.wrap(list), "\n")
+
+  defp to_text(_, v), do: to_string(v)
 
   @doc """
   Types include :boolean (a checkbox). Checks the page's values (strings, keyed by path) against the base and
@@ -468,8 +657,17 @@ defmodule Wallboard.Settings do
     end
   end
 
+  @doc "Checks one field's text by itself: `:ok`, or `{:error, message}`."
+  def check_one({path, _label, type, _restart, _help}, raw) do
+    with {:ok, _} <- parse(type, raw, path), do: :ok
+  end
+
+  @doc "What `shown/1` puts in place of a secret that is set."
+  def kept, do: @kept
+
   @doc "A field's value as the settings page shows it: the repositories by name."
   def current(settings, [:github, :repos], :repos), do: repo_names(settings)
+  def current(%{role: _} = settings, [:role], _type), do: settings |> role() |> Atom.to_string()
   def current(settings, path, _type), do: get_in(settings, path)
 
   defp parse(:boolean, raw, _path), do: {:ok, raw in ["true", "on"]}
@@ -487,6 +685,21 @@ defmodule Wallboard.Settings do
     case Integer.parse(String.trim(raw)) do
       {n, ""} when n >= 0 -> {:ok, n}
       _ -> {:error, "must be a whole number"}
+    end
+  end
+
+  defp parse(:port, raw, _path) do
+    case Integer.parse(String.trim(raw)) do
+      {n, ""} when n >= 1 and n <= 65_535 -> {:ok, n}
+      _ -> {:error, "must be a port number, 1 to 65535"}
+    end
+  end
+
+  # nil, not an empty list: with none named, the collector finds them.
+  defp parse(:folders, raw, path) do
+    case parse(:lines, raw, path) do
+      {:ok, []} -> {:ok, nil}
+      other -> other
     end
   end
 
@@ -534,14 +747,9 @@ defmodule Wallboard.Settings do
   defp put_path(map, [k], v), do: Map.put(map, k, v)
   defp put_path(map, [k | rest], v), do: Map.put(map, k, put_path(Map.get(map, k, %{}), rest, v))
 
-  @doc "Saves the page's values in the database and reloads the settings."
-  def save_overrides(overrides) do
-    Wallboard.Store.put_meta("settings_overrides", Jason.encode!(overrides))
-    load!()
-  end
-
-  # The page's saved values, read straight from the database file: the
-  # settings are loaded before the database process starts.
+  # What an older board's settings page saved, read straight from the
+  # database file: the settings are loaded before the database process
+  # starts. Nothing writes these any more.
   defp saved_overrides(settings) do
     path = settings |> get_in([:archive, :path]) |> db_path()
 

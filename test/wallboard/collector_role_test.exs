@@ -74,7 +74,8 @@ defmodule Wallboard.CollectorRoleTest do
 
   test "the collector role starts the watcher and its outbox, and nothing of the hub's", c do
     children = Wallboard.Application.children(settings("collector", c.dir))
-    assert ids(children) == [Wallboard.TaskSupervisor, Outbox, Watcher]
+    # Settings.Watch takes up what the app or `vitalaize setup` saves.
+    assert ids(children) == [Wallboard.TaskSupervisor, Settings.Watch, Outbox, Watcher]
     assert ids(children) -- @hub_only == ids(children)
   end
 

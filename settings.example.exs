@@ -1,6 +1,10 @@
 # Wallboard settings. Copy this file to settings.exs and change what you need.
 # Anything you delete falls back to the default shown here.
 #
+# You do not need this file: the Mac app and `bin/vitalaize setup` ask for
+# the common settings and save them in settings.json beside it. What they
+# save wins over this file, so set a value in one place or the other.
+#
 # This is one Elixir map. Text goes in "double quotes", lists in [square
 # brackets], and every line inside the map ends with a comma.
 
