@@ -224,6 +224,58 @@ defmodule Wallboard.RepoPromptsTest do
       assert asked(c) == []
       assert RepoPrompts.name?("acme/billing-api")
       assert RepoPrompts.name?("kyroco/.github")
+      assert RepoPrompts.name?("mona_octo/repo")
+
+      # A name with a line end after it is not the name before it.
+      streamed("air", "s1", "acme/shop\n")
+      streamed("air", "s2", "acme/..\n")
+      settled()
+      assert Mailbox.items() == []
+      assert asked(c) == []
+      refute RepoPrompts.name?("acme/shop\n")
+      refute Settings.repo_name?("acme/shop\n")
+      assert {:error, :not_a_repo} = Settings.track_repo("acme/..")
+    end
+
+    test "a repo that found no room asks once there is room, without its session saying more",
+         c do
+      start_hub(c)
+      for n <- 1..5, do: streamed("air", "s#{n}", "acme/r#{n}")
+      settled()
+      streamed("air", "s6", "acme/r6")
+      settled()
+      assert length(Mailbox.items()) == 5
+      refute "acme/r6" in asked(c)
+
+      assert :ok = Mailbox.act("repo:acme/r1", "ignore")
+      settled()
+      assert "repo:acme/r6" in Enum.map(Mailbox.items(), & &1.id)
+      assert length(Mailbox.items()) == 5
+    end
+
+    test "a renamed repo the board follows under its new name raises nothing", c do
+      start_hub(c)
+      answer(c, "acme/shop-old", {:visible, "acme/shop"})
+      streamed("air", "s1", "acme/shop-old")
+      settled()
+      assert Mailbox.items() == []
+
+      # And is not put to GitHub again each time it is seen.
+      streamed("air", "s2", "acme/shop-old")
+      settled()
+      assert asked(c) == ["acme/shop-old"]
+
+      # One the board does not follow is asked about, and tracked, by its name now.
+      answer(c, "acme/api-old", {:visible, "acme/api"})
+      streamed("air", "s3", "acme/api-old")
+      settled()
+      assert [%{id: id}] = Mailbox.items()
+      assert panel() =~ "<b>acme/api</b>"
+      assert :ok = Mailbox.act(id, "track")
+      assert Settings.repo_names(Settings.get()) == ["acme/shop", "acme/api"]
+      streamed("air", "s4", "acme/api-old")
+      settled()
+      assert Mailbox.items() == []
     end
 
     test "one machine cannot fill the mailbox", c do
@@ -292,14 +344,55 @@ defmodule Wallboard.RepoPromptsTest do
       assert {:error, :not_a_repo} = Settings.track_repo("not a repo")
     end
 
-    test "a repo added in settings by hand drops its item", c do
+    test "a repo added in settings by hand drops its item, and open boards hear of it", c do
       start_hub(c)
       streamed("air", "s1", "acme/billing-api")
       settled()
       assert [_] = Mailbox.items()
+      assert_receive {:mailbox, :changed}
 
       assert :ok = Settings.track_repo("acme/billing-api")
       assert Mailbox.items() == []
+      RepoPrompts.refresh()
+      assert_receive {:mailbox, :changed}
+    end
+
+    test "a settings page drawn before the Track keeps the repo when it saves", c do
+      start_hub(c)
+      shown = Settings.get()
+      assert :ok = Settings.track_repo("acme/billing-api")
+      now = Settings.get()
+
+      # The page sends its box as it was drawn.
+      sent = %{"github.repos" => "acme/shop", "github.branch" => "main"}
+      kept = SettingsLive.keep_tracked(sent, shown, now)
+      assert kept["github.repos"] == "acme/shop\nacme/billing-api"
+      assert kept["github.branch"] == "main"
+
+      # A page drawn after it, with the repo taken out by hand, stays as sent.
+      assert SettingsLive.keep_tracked(sent, now, now) == sent
+      # And a repo is never put in twice.
+      twice = %{"github.repos" => "acme/shop\nACME/Billing-API"}
+      assert SettingsLive.keep_tracked(twice, shown, now) == twice
+    end
+
+    test "saved settings that cannot be read are left alone", c do
+      start_hub(c)
+      Store.put_meta("settings_overrides", "not json")
+      assert {:error, :unreadable} = Settings.track_repo("acme/billing-api")
+      assert Store.get_meta("settings_overrides") == "not json"
+    end
+
+    test "on a board with no repos set, the example name is not kept", c do
+      File.write!(
+        System.get_env("WALLBOARD_SETTINGS"),
+        "%{archive: %{path: #{inspect(Path.join(c.dir, "wallboard.db"))}}}"
+      )
+
+      Settings.load!()
+      start_hub(c)
+      assert :ok = Settings.track_repo("acme/billing-api")
+      assert Settings.repo_names(Settings.get()) == ["acme/billing-api"]
     end
   end
 
@@ -418,10 +511,14 @@ defmodule Wallboard.RepoPromptsTest do
       assert RepoPrompts.sight({:error, "gh exited with 1: gh: Not Found (HTTP 404)"}) ==
                :hidden
 
-      assert RepoPrompts.sight({:error, "gh exited with 1: gh: Bad credentials (HTTP 401)"}) ==
-               :hidden
+      assert RepoPrompts.sight(
+               {:error,
+                "gh exited with 1: gh: Resource protected by organization SAML enforcement (HTTP 403)"}
+             ) == :hidden
 
+      # A login GitHub no longer takes says nothing about the repo.
       for reason <- [
+            "gh exited with 1: gh: Bad credentials (HTTP 401)",
             "gh is not installed or not on the PATH",
             "gh took longer than 30s",
             "gh exited with 1: gh: API rate limit exceeded (HTTP 403)",

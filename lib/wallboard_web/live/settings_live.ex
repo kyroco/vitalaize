@@ -147,15 +147,62 @@ defmodule WallboardWeb.SettingsLive do
 
   def handle_info(_, socket), do: {:noreply, socket}
 
-  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket),
-    do:
-      assign(socket,
-        linked: linked(settings),
-        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
-        ignored_repos: Wallboard.RepoPrompts.ignored()
-      )
+  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket) do
+    socket
+    |> assign(
+      linked: linked(settings),
+      linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+      ignored_repos: Wallboard.RepoPrompts.ignored()
+    )
+    |> tracked_since()
+  end
 
   defp relist(socket), do: socket
+
+  # A repo tracked from the mailbox while this page is open goes into its
+  # Repositories box, so the page shows it and a Save keeps it.
+  defp tracked_since(%{assigns: %{values: values, settings: shown}} = socket) do
+    now = Settings.get()
+
+    case added(shown, now) do
+      [] ->
+        socket
+
+      names ->
+        box = Enum.join([String.trim_trailing(values["github.repos"] || "") | names], "\n")
+
+        assign(socket,
+          values: Map.put(values, "github.repos", String.trim_leading(box, "\n")),
+          settings: put_in(shown, [:github, :repos], Settings.repo_names(now))
+        )
+    end
+  end
+
+  defp tracked_since(socket), do: socket
+
+  # The repos the board follows now that it did not when `shown` was read.
+  defp added(shown, now) do
+    had = shown |> Settings.repo_names() |> Enum.map(&String.downcase/1)
+    Enum.reject(Settings.repo_names(now), &(String.downcase(&1) in had))
+  end
+
+  @doc """
+  The form's values with any repo tracked since the page was drawn (`shown`)
+  put back at the end of the Repositories box: the box is sent whole, and a
+  page drawn before a Track in the mailbox would otherwise undo it.
+  """
+  def keep_tracked(values, shown, now) do
+    case added(shown, now) do
+      [] ->
+        values
+
+      names ->
+        typed = Map.get(values, "github.repos", "")
+        has = typed |> String.split(~r/[\s,]+/, trim: true) |> Enum.map(&String.downcase/1)
+        missing = Enum.reject(names, &(String.downcase(&1) in has))
+        Map.put(values, "github.repos", Enum.join([typed | missing], "\n"))
+    end
+  end
 
   # Every change on this page is the owner's to make, and that is asked
   # again each time: the board password may have changed since the page
@@ -177,10 +224,13 @@ defmodule WallboardWeb.SettingsLive do
 
   defp event("save", %{"s" => values}, socket) do
     before = Settings.get()
+    values = keep_tracked(values, socket.assigns.settings, before)
 
     case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
       {:ok, overrides} ->
         after_ = Settings.save_overrides(overrides)
+        # A repo added here by hand takes its ask out of the mailbox now.
+        Wallboard.RepoPrompts.refresh()
 
         restart? =
           socket.assigns.restart? or
