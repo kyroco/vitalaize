@@ -78,15 +78,6 @@ jobs:
       - name: Tests
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: mix test --warnings-as-errors
-      # TEMPORARY, for VIT-60 only, and removed before the merge: the two
-      # tests that failed at random on Linux, and the new one, three times.
-      - name: VIT-60 proof, each test three times
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'Linux' }}
-        run: |
-          for run in 1 2 3; do
-            echo "Run $run of 3"
-            mix test test/wallboard/collector_outbox_test.exs:253 test/wallboard/stream_test.exs:884 test/wallboard/stream_test.exs:905
-          done
 
   # Sobelow reads the Elixir code for security problems, since GitHub's own
   # scanner (CodeQL) cannot read Elixir. The check fails on anything at
