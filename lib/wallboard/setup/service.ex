@@ -65,6 +65,16 @@ defmodule Wallboard.Setup.Service do
     end
   end
 
+  @doc """
+  False when systemd could not be asked at all (no user session to reach
+  it through, say), in which case `state/1` answers `:none` without
+  knowing. True everywhere else.
+  """
+  def asked?(opts \\ []) do
+    kind(opts) != :systemd or
+      match?({_, 0}, run(opts, "systemctl", ["--user", "show", @unit, "-p", "Environment"]))
+  end
+
   @doc "Asks the service to stop and start again. `:ok` or `{:error, why}`."
   def restart(opts \\ []) do
     case kind(opts) do
@@ -91,14 +101,23 @@ defmodule Wallboard.Setup.Service do
   systemd.sh, which also starts it. Linux only; a Mac's login item is the
   VitalAIze app's to install.
   """
-  def install(opts \\ []) do
+  def install(opts \\ []), do: systemd_script(opts, "on")
+
+  @doc """
+  Stops the systemd user service and takes it out of what starts at
+  login, with the release's own systemd.sh. Linux only; a Mac's login item
+  is the VitalAIze app's to remove.
+  """
+  def uninstall(opts \\ []), do: systemd_script(opts, "off")
+
+  defp systemd_script(opts, word) do
     script =
       Path.join(Keyword.get(opts, :root) || System.get_env("RELEASE_ROOT") || ".", "systemd.sh")
 
     cond do
       kind(opts) != :systemd -> {:error, "this needs systemd"}
       opts[:run] == nil and not File.regular?(script) -> {:error, "#{script} is missing"}
-      true -> done(run(opts, script, ["on"]))
+      true -> done(run(opts, script, [word]))
     end
   end
 

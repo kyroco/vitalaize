@@ -6,6 +6,13 @@
 #                          settings that go with that, and, for a collector,
 #                          pairing with its hub by code. It saves, and
 #                          restarts VitalAIze only when a change needs it.
+#                          It also takes out the upload hooks VitalAIze
+#                          0.2.0 added to Claude and Codex on this machine.
+#
+#   bin/vitalaize remove   take VitalAIze off this machine: stop it, take it
+#                          out of what starts at login, and take out its
+#                          certificate for its hub and any old upload hooks.
+#                          Settings and saved sessions stay.
 #
 # setup writes settings.json beside settings.exs, the same file the Mac app
 # writes, so either can change what the other saved. It reads plain lines,
@@ -15,13 +22,13 @@ set -e
 SELF=$(cd "$(dirname "$0")" && pwd -P)
 
 usage() {
-  echo "Usage: vitalaize setup" >&2
+  echo "Usage: vitalaize setup, or vitalaize remove" >&2
   exit 1
 }
 
 case "${1:-}" in
-  setup)
-    shift
+  setup|remove)
+    [ "$1" = setup ] && shift
     # Inside the Mac app the settings are not beside the program: they are
     # in the data folder the app remembers.
     if [ -z "${WALLBOARD_SETTINGS:-}" ] && [ "$(uname)" = Darwin ]; then

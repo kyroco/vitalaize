@@ -18,14 +18,11 @@ defmodule WallboardWeb.Router do
     plug :put_root_layout, html: {WallboardWeb.Layouts, :root}
   end
 
-  # Other Macs sending Claude sessions. No cookies or forms here: each
-  # request carries the ingest key itself.
+  # Where the upload hooks of VitalAIze 0.2.0 sent sessions. Nothing is
+  # taken here any more: every call is refused, and nothing is kept of it.
+  # For one release; the one after 0.3.0 takes this out.
   scope "/ingest", WallboardWeb do
-    post "/transcript", IngestController, :transcript
-    post "/status", IngestController, :status
-    get "/install.sh", IngestController, :install
-    get "/upload.sh", IngestController, :upload
-    get "/codex-upload.sh", IngestController, :codex_upload
+    match :*, "/*rest", OldCollectorController, :refuse
   end
 
   # A machine with no certificate yet asks for one here (see
