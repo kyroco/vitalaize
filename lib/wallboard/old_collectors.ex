@@ -100,9 +100,15 @@ defmodule Wallboard.OldCollectors do
     {:ok, state}
   end
 
-  # Never print the old key in a crash report.
+  # Never print the old key in a crash report: it is in the state, and in
+  # the message a call brings.
   @impl true
-  def format_status(status), do: Map.put(status, :state, :hidden)
+  def format_status(status) do
+    status
+    |> Map.put(:state, :hidden)
+    |> Map.replace(:message, :not_shown)
+    |> Map.replace(:log, [])
+  end
 
   @impl true
   def handle_call({:seen, machine, key}, _from, state) do

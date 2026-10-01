@@ -261,12 +261,22 @@ defmodule Wallboard.Setup do
     there = Enum.filter(files, &File.regular?/1)
 
     # A hub keeps its own authority in a `link` folder too, beside its
-    # database. Should the settings put both in one place, it is left alone.
-    hubs_own? = Path.expand(dir) == Path.expand(Wallboard.Link.Authority.dir(settings))
+    # database. Should a hub's settings put both in one place, it is left
+    # alone: ca.pem there is the authority's, and every machine's approval
+    # rests on it.
+    hubs_own? =
+      settings.role != :collector and
+        Path.expand(dir) == Path.expand(Wallboard.Link.Authority.dir(settings))
 
     cond do
-      there == [] or hubs_own? or not OldHooks.allowed?(dir) ->
+      there == [] or not OldHooks.allowed?(dir) ->
         []
+
+      hubs_own? ->
+        [
+          "Left #{dir} as it is: this hub keeps its own certificates there too. " <>
+            "Delete key.pem, cert.pem and hub.json in it by hand."
+        ]
 
       Enum.all?(there, &(File.rm(&1) == :ok)) ->
         File.rmdir(dir)
@@ -323,21 +333,31 @@ defmodule Wallboard.Setup do
   end
 
   defp stop_service(opts) do
-    case {Service.kind(opts), Service.state(opts)} do
-      {_, :none} ->
+    case {Service.kind(opts), Service.asked?(opts), Service.state(opts)} do
+      # No answer is not "no service": it may be running all the same.
+      {:systemd, false, _} ->
+        {:error,
+         "Could not ask systemd whether VitalAIze runs here. Run vitalaize remove from " <>
+           "your own login session, not from another user's or a scheduled job."}
+
+      {_, _, :none} ->
         {:ok,
          "VitalAIze is not set up as a service here. If you started it by hand, stop it now."}
 
-      {:systemd, _} ->
-        case Service.uninstall(opts) do
-          :ok -> {:ok, "Stopped VitalAIze. It no longer starts when you log in."}
+      {:systemd, _, _} ->
+        with :ok <- Service.uninstall(opts),
+             false <- Service.state(opts) == :running do
+          {:ok, "Stopped VitalAIze. It no longer starts when you log in."}
+        else
           {:error, why} -> {:error, "Could not stop the service: #{why}"}
+          true -> {:error, "Could not stop the service: it still runs."}
         end
 
       _ ->
         {:error,
          "VitalAIze runs as a login item on this Mac. Open the VitalAIze app and choose " <>
-           "Remove VitalAIze there: it stops it first."}
+           "Remove VitalAIze there: it stops it first. If you built it from source and " <>
+           "have no app, run scripts/login-item.sh off, then this again."}
     end
   end
 

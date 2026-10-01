@@ -189,7 +189,14 @@ defmodule Wallboard.OldCollectorTest do
           {"Environment=WALLBOARD_SETTINGS=#{settings} RELEASE_DISTRIBUTION=none\n", 0}
 
         {"systemctl", ["--user", "is-active", _]} ->
-          {"active\n", 0}
+          if Process.get(:service_off), do: {"inactive\n", 3}, else: {"active\n", 0}
+
+        {"systemctl", ["--user", "is-enabled", _]} ->
+          if Process.get(:service_off), do: {"disabled\n", 1}, else: {"enabled\n", 0}
+
+        {"systemd.sh", ["off"]} ->
+          Process.put(:service_off, true)
+          {"", 0}
 
         _ ->
           {"", 0}
@@ -300,27 +307,108 @@ defmodule Wallboard.OldCollectorTest do
       assert File.read!(settings) == broken
       refute File.exists?(settings <> ".before-collector")
       # Its hooks still run the script, so the script stays too.
-      assert results == [%{file: settings, error: :not_json}]
-      assert File.exists?(Path.join(folders.claude, "wallboard-upload.sh"))
-      assert hd(OldHooks.report(results)) =~ "Take out the hooks that run wallboard-upload.sh"
+      script = Path.join(folders.claude, "wallboard-upload.sh")
+
+      assert results == [
+               %{file: settings, error: :not_json},
+               %{script: script, kept_for: settings}
+             ]
+
+      assert File.exists?(script)
+      assert [first, second] = OldHooks.report(results)
+      assert first =~ "Take out the hooks that run wallboard-upload.sh"
+      assert second =~ "Left the old upload script #{script} where it is"
     end
 
-    test "only a wallboard-upload.sh hook is VitalAIze's to take" do
-      assert OldHooks.ours?("/Users/r/.claude/wallboard-upload.sh")
-      assert OldHooks.ours?(~s("/Users/r/My Claude/wallboard-upload.sh"))
-      refute OldHooks.ours?("/Users/r/.codex/vitalaize/codex-hook.sh")
-      refute OldHooks.ours?("/Users/r/.claude/wallboard-upload.sh.mine")
-      refute OldHooks.ours?("wallboard-upload.sh --mine")
-      # Anything more on the line makes it its owner's command.
-      refute OldHooks.ours?("notify-me && sh /Users/r/.claude/wallboard-upload.sh")
-      refute OldHooks.ours?("/x/log.sh > /Users/r/.claude/wallboard-upload.sh")
-      refute OldHooks.ours?(~s("/Users/r/a" "/Users/r/.claude/wallboard-upload.sh"))
-      refute OldHooks.ours?(nil)
+    test "only the upload script in the file's own folder, alone on its line, is VitalAIze's" do
+      script = "/Users/r/.claude/wallboard-upload.sh"
+      ours? = &OldHooks.ours?(&1, script)
 
-      assert OldHooks.strip(@claude) == :unchanged
-      assert OldHooks.strip(@codex) == :unchanged
-      assert OldHooks.strip("[1, 2]") == :unchanged
-      assert OldHooks.strip("{ nope") == {:error, :not_json}
+      # What the two old installers wrote: the path, bare.
+      assert ours?.(script)
+      assert ours?.(" " <> script <> " ")
+      assert ours?.(~s("#{script}"))
+
+      assert OldHooks.ours?(
+               "/Users/r/My $ Claude's/wallboard-upload.sh",
+               "/Users/r/My $ Claude's/wallboard-upload.sh"
+             )
+
+      # Anything more on the line makes it its owner's command.
+      refute ours?.("/bin/sh " <> script)
+      refute ours?.("notify-me && sh " <> script)
+      refute ours?.("/Users/r/bin/mine.sh --then " <> script)
+      refute ours?.("/x/log.sh > " <> script)
+      refute ours?.(script <> " >/dev/null 2>&1")
+      refute ours?.(script <> " &")
+      refute ours?.(~s("/Users/r/a" "#{script}"))
+      # So does a script of that name somewhere else, or another name.
+      refute ours?.("/opt/other-tool/wallboard-upload.sh")
+      refute ours?.("wallboard-upload.sh")
+      refute ours?.(script <> ".mine")
+      refute ours?.("/Users/r/.codex/vitalaize/codex-hook.sh")
+      refute ours?.(nil)
+
+      assert OldHooks.strip(@claude, script) == :unchanged
+      assert OldHooks.strip(@codex, script) == :unchanged
+      assert OldHooks.strip("[1, 2]", script) == :unchanged
+      assert OldHooks.strip("{ nope", script) == {:error, :not_json}
+    end
+
+    test "a hook that runs the owner's own command is not taken, and the report says so",
+         %{home: home} do
+      claude = Path.join(home, ".claude")
+      File.mkdir_p!(claude)
+      settings = Path.join(claude, "settings.json")
+      script = Path.join(claude, "wallboard-upload.sh")
+      File.write!(script, "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n")
+
+      text =
+        ~s({"model": "x", "hooks": {"Stop": [{"hooks": [{"command": "/Users/r/bin/notify.sh --quiet #{script}"}]}]}}\n)
+
+      File.write!(settings, text)
+
+      results = OldHooks.retire(%{claude: [claude], codex: []})
+      assert results == [%{script: script, kept_for: settings}]
+      assert File.read!(settings) == text
+      assert File.exists?(script)
+    end
+
+    test "a script stays while a hooks file in another folder still runs it", %{home: home} do
+      one = Path.join(home, ".claude")
+      two = Path.join(home, ".claude-two")
+      for folder <- [one, two], do: File.mkdir_p!(folder)
+      script = Path.join(two, "wallboard-upload.sh")
+      File.write!(script, "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n")
+      settings = Path.join(one, "settings.json")
+
+      File.write!(
+        settings,
+        ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{script} 2>/dev/null"}]}]}}\n)
+      )
+
+      results = OldHooks.retire(%{claude: [one, two], codex: []})
+      assert results == [%{script: script, kept_for: settings}]
+      assert File.exists?(script)
+    end
+
+    test "a file that cannot be written is left with no copy beside it", %{home: home} do
+      folders = connected_machine(home)
+      settings = Path.join(folders.claude, "settings.json")
+      before = File.read!(settings)
+      File.chmod!(settings, 0o444)
+
+      for _ <- 1..2 do
+        assert [%{file: ^settings, error: _} | rest] =
+                 OldHooks.retire(%{claude: [folders.claude], codex: []})
+
+        # Its hooks still run the script, so the script stays.
+        assert Enum.any?(rest, &match?(%{kept_for: ^settings}, &1))
+      end
+
+      assert File.read!(settings) == before
+      assert Path.wildcard(settings <> ".*") == []
+      assert File.exists?(Path.join(folders.claude, "wallboard-upload.sh"))
     end
 
     test "a hook its owner changed stays, and so does the script it runs", %{home: home} do
@@ -336,40 +424,42 @@ defmodule Wallboard.OldCollectorTest do
       File.write!(settings, text)
 
       results = OldHooks.retire(%{claude: [claude], codex: []})
-      assert results == [%{file: settings, error: :other_hook}]
+      assert results == [%{script: script, kept_for: settings}]
       assert File.read!(settings) == text
       assert File.exists?(script)
-      assert hd(OldHooks.report(results)) =~ "Take that hook out by hand"
+      assert hd(OldHooks.report(results)) =~ "Take the hook that runs it out of that file by hand"
     end
 
     test "odd but valid files: null values are kept, a name given twice is left alone" do
       ours = upload_hook("/h/.claude")
+      strip = &OldHooks.strip(&1, "/h/.claude/wallboard-upload.sh")
 
       nulls = ~s({"hooks":{"Stop":[null,{"hooks":[#{ours}]}],"PreToolUse":null,"X":false}})
-      assert {:ok, text, 1} = OldHooks.strip(nulls)
+      assert {:ok, text, 1} = strip.(nulls)
       assert text == ~s({"hooks":{"Stop":[null],"PreToolUse":null,"X":false}})
 
       # Which "hooks" counts depends on who reads the file.
       twice =
         ~s({"hooks":{"Stop":[{"hooks":[{"command":"a"}]}]},"hooks":{"Stop":[{"hooks":[#{ours}]}]}})
 
-      assert OldHooks.strip(twice) == {:error, :unsafe}
+      assert strip.(twice) == {:error, :unsafe}
     end
 
     test "a file written on one line, or by another tool, loses only those hooks" do
       ours = upload_hook("/h/.claude")
+      strip = &OldHooks.strip(&1, "/h/.claude/wallboard-upload.sh")
 
       one_line =
         ~s({"hooks":{"Stop":[{"hooks":[#{ours}]},{"hooks":[{"command":"a"}]},{"hooks":[#{ours}]}],"X":[]},"z":1})
 
-      assert {:ok, text, 2} = OldHooks.strip(one_line)
+      assert {:ok, text, 2} = strip.(one_line)
       assert text == ~s({"hooks":{"Stop":[{"hooks":[{"command":"a"}]}],"X":[]},"z":1})
 
       # Hooks that are all VitalAIze's, with tabs and Windows line ends.
       tabs =
         "{\r\n\t\"a\": [1, {\"b\": null}],\r\n\t\"hooks\": {\"Stop\": [{\"hooks\": [#{ours}]}]}\r\n}"
 
-      assert {:ok, text, 1} = OldHooks.strip(tabs)
+      assert {:ok, text, 1} = strip.(tabs)
       assert text == "{\r\n\t\"a\": [1, {\"b\": null}]\r\n}"
     end
 
@@ -488,6 +578,66 @@ defmodule Wallboard.OldCollectorTest do
       assert Enum.any?(Setup.remove(home: home, env: fn _ -> nil end), &(&1 =~ "Deleted"))
       refute File.exists?(Path.join(link, "cert.pem"))
       assert File.read!(Path.join(link, "notes.txt")) == "not pairing's"
+    end
+
+    test "vitalaize remove takes nothing when systemd cannot be asked", %{dir: dir, home: home} do
+      connected_machine(home)
+      settings_file(dir, ~s(role: "collector"))
+      link = Pairing.dir(Settings.load!())
+      File.mkdir_p!(link)
+      File.write!(Path.join(link, "cert.pem"), "x")
+
+      # Another user's shell, or a scheduled job: no way through to systemd,
+      # though the service may well be running.
+      no_bus = fn _program, _args -> {"Failed to connect to bus: No medium found", 1} end
+      term = io(["yes"])
+
+      assert :ok =
+               Setup.remove_here(
+                 io: term,
+                 os: {:unix, :linux},
+                 run: no_bus,
+                 home: home,
+                 env: fn _ -> nil end
+               )
+
+      assert output(term) =~ "Could not ask systemd whether VitalAIze runs here."
+      assert output(term) =~ "Nothing removed."
+      assert File.exists?(Path.join(link, "cert.pem"))
+    end
+
+    test "a collector that keeps its files beside a database still loses its certificate",
+         %{dir: dir, home: home} do
+      # The hub's own authority would live in <database folder>/link too.
+      File.write!(Path.join(dir, "settings.exs"), """
+      %{
+        role: "collector",
+        archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}},
+        collector: %{dir: #{inspect(dir)}},
+        claude: %{config_dirs: []},
+        codex: %{dirs: []}
+      }
+      """)
+
+      link = Path.join(dir, "link")
+      File.mkdir_p!(link)
+
+      for name <- ~w(key.pem cert.pem ca.pem hub.json),
+          do: File.write!(Path.join(link, name), "x")
+
+      opts = [home: home, env: fn _ -> nil end]
+      assert [line] = Setup.remove(opts)
+      assert line =~ "Deleted this machine's certificate"
+      refute File.exists?(link)
+
+      # On a hub with the same layout the folder is the authority's: it is
+      # left alone, and the person is told.
+      File.mkdir_p!(link)
+      for name <- ~w(key.pem ca.pem ca.key), do: File.write!(Path.join(link, name), "x")
+      System.put_env("WALLBOARD_ROLE", "both")
+      assert [line] = Setup.remove(opts)
+      assert line =~ "this hub keeps its own certificates there too"
+      assert File.exists?(Path.join(link, "ca.pem"))
     end
 
     test "works beside a settings file that does not load", %{dir: dir, home: home} do

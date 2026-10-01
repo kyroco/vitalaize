@@ -65,6 +65,16 @@ defmodule Wallboard.Setup.Service do
     end
   end
 
+  @doc """
+  False when systemd could not be asked at all (no user session to reach
+  it through, say), in which case `state/1` answers `:none` without
+  knowing. True everywhere else.
+  """
+  def asked?(opts \\ []) do
+    kind(opts) != :systemd or
+      match?({_, 0}, run(opts, "systemctl", ["--user", "show", @unit, "-p", "Environment"]))
+  end
+
   @doc "Asks the service to stop and start again. `:ok` or `{:error, why}`."
   def restart(opts \\ []) do
     case kind(opts) do
