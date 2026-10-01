@@ -96,11 +96,10 @@ grep -q 'RELEASE_DISTRIBUTION:-none' "$ROOT"/releases/*/env.sh ||
   failed "The download's releases/*/env.sh does not turn Erlang remote connections off."
 echo "The board started from $(basename "$1") and answered on port $PORT."
 
-# A machine still on the upload hooks of 0.2.0 calls the board the old way,
-# with the old shared key. The board must refuse it in words, and keep
-# nothing it sent.
+# A machine still on the upload hooks of 0.2.0 calls the board the old way.
+# The board must refuse it in words, and keep nothing it sent.
 code=$(curl -s --max-time 10 -o "$WORK/refusal.txt" -w '%{http_code}' -X POST \
-  -H "Authorization: Bearer the-old-shared-key" -H "Content-Type: application/gzip" \
+  -H "Content-Type: application/gzip" \
   --data-binary "not a transcript" \
   "http://127.0.0.1:$PORT/ingest/transcript?machine=old-box&account=.claude") || code=none
 [ "$code" = 410 ] || failed "An old upload call was answered $code, not refused with 410."

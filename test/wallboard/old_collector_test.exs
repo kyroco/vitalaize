@@ -368,9 +368,33 @@ defmodule Wallboard.OldCollectorTest do
       # The owner's hook is theirs, untouched. The script is VitalAIze's,
       # and it always goes.
       results = OldHooks.retire(%{claude: [claude], codex: []})
-      assert results == [%{script: script}]
+      assert results == [%{script: script}, %{file: settings, still: script}]
       assert File.read!(settings) == text
       refute File.exists?(script)
+
+      # The person is told the file still names a script that is gone.
+      assert [_, said] = OldHooks.report(results)
+      assert said =~ "#{settings} still mentions wallboard-upload.sh"
+      assert said =~ "the script #{script} is deleted"
+    end
+
+    test "a script that could not be deleted is said so, and never called deleted",
+         %{home: home} do
+      folders = connected_machine(home)
+      settings = Path.join(folders.claude, "settings.json")
+      script = Path.join(folders.claude, "wallboard-upload.sh")
+      File.write!(settings, "// my notes\n" <> File.read!(settings))
+      File.chmod!(folders.claude, 0o500)
+      on_exit(fn -> File.chmod(folders.claude, 0o700) end)
+
+      results = OldHooks.retire(%{claude: [folders.claude], codex: []})
+      assert [%{file: ^settings, error: :not_json}, %{script: ^script, error: _}] = results
+      assert File.exists?(script)
+
+      assert [first, second] = OldHooks.report(results)
+      assert first =~ "Remove the hooks that run wallboard-upload.sh from it by hand."
+      refute first =~ "deleted"
+      assert second == "Could not delete the old upload script #{script}. Delete it by hand."
     end
 
     test "a file that cannot be written is left with no copy beside it, and said so",
@@ -656,11 +680,10 @@ defmodule Wallboard.OldCollectorTest do
       %{port: port}
     end
 
-    # What the old upload script sends: the shared key, and a body.
-    defp old_call(port, path, body, key) do
+    # What the old upload script sends, less its key: nothing reads one.
+    defp old_call(port, path, body) do
       url = ~c"http://127.0.0.1:#{port}#{path}"
-      headers = if key, do: [{~c"authorization", ~c"Bearer #{key}"}], else: []
-      request = {url, headers, ~c"application/gzip", body}
+      request = {url, [], ~c"application/gzip", body}
 
       {:ok, {{_, status, _}, _, answer}} =
         :httpc.request(:post, request, [], body_format: :binary)
@@ -673,28 +696,19 @@ defmodule Wallboard.OldCollectorTest do
       assert refusal =~ "no longer takes uploads from the old collector"
       assert refusal =~ "vitalaize setup"
 
-      # A Claude upload, a Codex upload and a "waiting" message, with the
-      # key the hub once gave out, with a wrong one and with none.
-      for key <- ["the-old-shared-key", "a-guess", nil] do
-        assert {410, ^refusal} =
-                 old_call(
-                   c.port,
-                   "/ingest/transcript?machine=build-box&account=.claude",
-                   "x",
-                   key
-                 )
+      # A Claude upload, a Codex upload and a "waiting" message.
+      assert {410, ^refusal} =
+               old_call(c.port, "/ingest/transcript?machine=build-box&account=.claude", "x")
 
-        assert {410, ^refusal} =
-                 old_call(
-                   c.port,
-                   "/ingest/transcript?tool=codex&machine=build-box&account=.codex",
-                   "x",
-                   key
-                 )
+      assert {410, ^refusal} =
+               old_call(
+                 c.port,
+                 "/ingest/transcript?tool=codex&machine=build-box&account=.codex",
+                 "x"
+               )
 
-        assert {410, ^refusal} =
-                 old_call(c.port, "/ingest/status?machine=build-box&at=1", "{}", key)
-      end
+      assert {410, ^refusal} =
+               old_call(c.port, "/ingest/status?machine=build-box&at=1", "{}")
 
       # The script being fetched again, and any other address under it.
       for path <- ["/ingest/install.sh", "/ingest/upload.sh", "/ingest/x?machine=from-a-page"] do

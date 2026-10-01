@@ -28,7 +28,9 @@ defmodule Wallboard.Setup.OldHooks do
   and not kept. A hook this could not safely take out (its file was left
   alone, or its owner changed its command) then runs a script that is
   gone, and shows an error on each turn until its owner removes it. The
-  report names each file that was left alone and says so.
+  report names each file that was left alone, and each file that still
+  names the script once the script is gone, and says so. It says the
+  script is deleted only when it was.
   """
 
   alias Wallboard.Settings
@@ -104,7 +106,10 @@ defmodule Wallboard.Setup.OldHooks do
 
     * `%{file: path, hooks: count, backup: path}`: hooks taken out
     * `%{script: path}`: the upload script deleted
+    * `%{script: path, error: why}`: the upload script could not be deleted
     * `%{file: path, error: why}`: a file left as it was
+    * `%{file: path, still: script}`: a file that still names the script
+      after the script went, and that nothing else was said about
 
   A folder with nothing of VitalAIze's adds nothing to the list.
   """
@@ -117,10 +122,29 @@ defmodule Wallboard.Setup.OldHooks do
 
     scripts = folders |> Enum.map(fn {dir, _} -> Path.join(dir, @script) end) |> Enum.uniq()
 
-    Enum.flat_map(folders, fn {dir, file} ->
-      file(Path.join(dir, file), Path.join(dir, @script))
-    end) ++ Enum.flat_map(scripts, &script/1)
+    files =
+      Enum.flat_map(folders, fn {dir, file} ->
+        file(Path.join(dir, file), Path.join(dir, @script))
+      end)
+
+    results = files ++ Enum.flat_map(scripts, &script/1)
+    results ++ Enum.flat_map(folders, &still(&1, results))
   end
+
+  # A hooks file that still names the script after the script went, and
+  # that nothing has been said about yet. Only a sentence: it decides
+  # nothing.
+  defp still({dir, file}, results) do
+    path = Path.join(dir, file)
+    script = Path.join(dir, @script)
+    said? = Enum.any?(results, &match?(%{file: ^path, error: _}, &1))
+
+    if deleted?(results, script) and not said? and mentions?(path),
+      do: [%{file: path, still: script}],
+      else: []
+  end
+
+  defp deleted?(results, script), do: %{script: script} in results
 
   # Tests name the one place they may change files (config/test.exs), so no
   # test can reach a real Claude or Codex folder, or a real certificate.
@@ -234,9 +258,11 @@ defmodule Wallboard.Setup.OldHooks do
   # address. It always goes, whatever became of the hooks that ran it.
   defp script(path) do
     with {:ok, text} <- File.read(path),
-         true <- String.contains?(text, "/ingest/"),
-         :ok <- File.rm(path) do
-      [%{script: path}]
+         true <- String.contains?(text, "/ingest/") do
+      case File.rm(path) do
+        :ok -> [%{script: path}]
+        {:error, reason} -> [%{script: path, error: reason}]
+      end
     else
       _ -> []
     end
@@ -561,19 +587,38 @@ defmodule Wallboard.Setup.OldHooks do
           "Took #{n} old VitalAIze upload #{if n == 1, do: "hook", else: "hooks"} out of " <>
             "#{file}. Every other hook is as it was, and the file from before is #{backup}."
 
+        %{script: script, error: _} ->
+          "Could not delete the old upload script #{script}. Delete it by hand."
+
         %{script: script} ->
           "Deleted the old upload script #{script}."
 
+        %{file: file, still: script} ->
+          "#{file} still mentions #{@script}, in something VitalAIze did not write " <>
+            "and so left alone. If that is a hook, remove it by hand: the script " <>
+            "#{script} is deleted, so the hook shows an error on each turn until you do."
+
         %{file: file, error: :changed} ->
           "#{file} was saved by something else just then, so it was left as it is. " <>
-            "Run this again to take the old upload hooks out of it. Until then they " <>
-            "show an error on each turn, since the script they run is deleted."
+            "Run this again to take the old upload hooks out of it." <>
+            if(gone?(results, file),
+              do:
+                " Until then they show an error on each turn, since the script " <>
+                  "they run is deleted.",
+              else: ""
+            )
 
         %{file: file, error: _} ->
           "Could not take the old upload hooks out of #{file}, so it is as it was. " <>
-            "Remove the hooks that run #{@script} from it by hand: that script is " <>
-            "deleted, so they show an error on each turn until you do."
+            "Remove the hooks that run #{@script} from it by hand" <>
+            if(gone?(results, file),
+              do: ": that script is deleted, so they show an error on each turn until you do.",
+              else: "."
+            )
       end
     end
   end
+
+  # The script beside this hooks file was deleted in this run.
+  defp gone?(results, file), do: deleted?(results, Path.join(Path.dirname(file), @script))
 end
