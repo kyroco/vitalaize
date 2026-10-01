@@ -791,7 +791,7 @@ defmodule WallboardWeb.BoardLive do
   # With one repository the tiles read as they always did. With more, each
   # adds up every repository and names the ones that matter.
   defp main_tile([%{s: %{main: nil}} = one], _t),
-    do: %{value: "Unknown", sub: no_main_run([one])}
+    do: %{value: "Unknown", sub: no_main_run(one)}
 
   defp main_tile([one], _t), do: main_tile(one.s && one.s.main)
 
@@ -816,16 +816,23 @@ defmodule WallboardWeb.BoardLive do
         %{value: value, tone: :ok, sub: "last ", at: latest}
 
       {[], unknown} ->
-        %{value: value, sub: "#{names(unknown)}: #{no_main_run(unknown)}"}
+        %{value: value, sub: main_unknown_note(unknown)}
     end
   end
 
   # Why main's state is not known. A repository with a gate workflow waits
   # for a gate run; one without waits for a run a push to main started.
-  defp no_main_run(repos) do
-    if Enum.all?(repos, &match?(%{s: %{main_from: :runs}}, &1)),
-      do: "no push to main ran today",
-      else: "no gate run today"
+  defp no_main_run(%{s: %{main_from: :runs}}), do: "no push to main ran today"
+  defp no_main_run(_repo), do: "no gate run today"
+
+  @doc false
+  # The status line's note for the repositories whose main is not known,
+  # each named under its own reason.
+  def main_unknown_note(repos) do
+    repos
+    |> Enum.group_by(&no_main_run/1)
+    |> Enum.sort()
+    |> Enum.map_join("; ", fn {why, group} -> "#{names(group)}: #{why}" end)
   end
 
   defp main_tile(nil), do: %{value: "Unknown", sub: "no gate run today"}

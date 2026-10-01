@@ -759,6 +759,20 @@ defmodule Wallboard.ReposTest do
       assert names(GitHub.totals(red).red) == ~w(boosters)
     end
 
+    test "the status line never says a repo with no gate is waiting for a gate run" do
+      note = fn runs -> runs |> two_repos() |> WallboardWeb.BoardLive.main_unknown_note() end
+
+      # Neither has a run today: each is named under its own reason.
+      assert note.([{"acme/rockets", []}, {"acme/boosters", []}]) ==
+               "rockets: no gate run today; boosters: no push to main ran today"
+
+      # Only the one with no gate.
+      [_, boosters] = two_repos([{"acme/rockets", []}, {"acme/boosters", []}])
+
+      assert WallboardWeb.BoardLive.main_unknown_note([boosters]) ==
+               "boosters: no push to main ran today"
+    end
+
     test "an old settings file with one lanes list loads, and the first repo's chart is as it was" do
       {_file, settings} = load("one_repo.exs")
 
