@@ -253,18 +253,31 @@ defmodule Wallboard.Setup do
     _ -> Settings.normalize(Settings.defaults())
   end
 
+  # Only the four files pairing saved go, never whatever else a folder of
+  # that name may hold; the folder goes when that leaves it empty.
   defp forget_hub(settings) do
     dir = Pairing.dir(settings)
+    files = for name <- ~w(key.pem cert.pem ca.pem hub.json), do: Path.join(dir, name)
+    there = Enum.filter(files, &File.regular?/1)
 
-    if File.dir?(dir) and OldHooks.allowed?(dir) do
-      File.rm_rf(dir)
+    # A hub keeps its own authority in a `link` folder too, beside its
+    # database. Should the settings put both in one place, it is left alone.
+    hubs_own? = Path.expand(dir) == Path.expand(Wallboard.Link.Authority.dir(settings))
 
-      [
-        "Deleted this machine's certificate and its hub's address (#{dir}). " <>
-          "On the hub's board, open Settings and Disconnect this machine."
-      ]
-    else
-      []
+    cond do
+      there == [] or hubs_own? or not OldHooks.allowed?(dir) ->
+        []
+
+      Enum.all?(there, &(File.rm(&1) == :ok)) ->
+        File.rmdir(dir)
+
+        [
+          "Deleted this machine's certificate and its hub's address (#{dir}). " <>
+            "On the hub's board, open Settings and Disconnect this machine."
+        ]
+
+      true ->
+        ["Could not delete this machine's certificate in #{dir}. Delete that folder by hand."]
     end
   end
 
@@ -287,31 +300,45 @@ defmodule Wallboard.Setup do
     """)
 
     if yes?(gets(io, "Remove VitalAIze from this machine? (yes or no) [no]: ")) do
-      case {Service.kind(opts), Service.state(opts)} do
-        {_, :none} ->
-          :ok
+      # The certificate is not taken from under a collector that still runs.
+      case stop_service(opts) do
+        {:ok, line} ->
+          say(io, line)
+          Enum.each(remove(opts), &say(io, &1))
 
-        {:systemd, _} ->
-          case Service.uninstall(opts) do
-            :ok -> say(io, "Stopped VitalAIze. It no longer starts when you log in.")
-            {:error, why} -> say(io, "Could not stop the service: #{why}")
-          end
+          say(io, """
+          Done. Your settings are still in #{Path.dirname(Settings.saved_path())}.
+          Delete that folder, and the folder VitalAIze was unpacked in, to remove the rest.
+          """)
 
-        _ ->
-          say(io, "VitalAIze still runs as a login item. Open the VitalAIze app to remove that.")
+        {:error, line} ->
+          say(io, line)
+          say(io, "Nothing removed.")
       end
-
-      Enum.each(remove(opts), &say(io, &1))
-
-      say(io, """
-      Done. Your settings are still in #{Path.dirname(Settings.saved_path())}.
-      Delete that folder, and the folder VitalAIze was unpacked in, to remove the rest.
-      """)
     else
       say(io, "Nothing removed.")
     end
 
     :ok
+  end
+
+  defp stop_service(opts) do
+    case {Service.kind(opts), Service.state(opts)} do
+      {_, :none} ->
+        {:ok,
+         "VitalAIze is not set up as a service here. If you started it by hand, stop it now."}
+
+      {:systemd, _} ->
+        case Service.uninstall(opts) do
+          :ok -> {:ok, "Stopped VitalAIze. It no longer starts when you log in."}
+          {:error, why} -> {:error, "Could not stop the service: #{why}"}
+        end
+
+      _ ->
+        {:error,
+         "VitalAIze runs as a login item on this Mac. Open the VitalAIze app and choose " <>
+           "Remove VitalAIze there: it stops it first."}
+    end
   end
 
   # ---------------------------------------------------------------------------

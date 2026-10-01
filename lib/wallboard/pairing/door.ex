@@ -196,6 +196,8 @@ defmodule Wallboard.Pairing.Door do
             case sign(s.dir, r) do
               {:ok, %{cert_pem: cert}} ->
                 Logger.info("Pairing: #{r.name} has its certificate.")
+                # A mailbox item about this machine's old collector goes now.
+                changed()
                 {{:ok, {:approved, cert}}, put_in(s.requests[id], %{r | cert_pem: cert})}
 
               # The owner said yes and the hub cannot keep its word (its

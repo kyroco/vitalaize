@@ -299,6 +299,9 @@ defmodule Wallboard.OldCollectorTest do
 
       assert File.read!(settings) == broken
       refute File.exists?(settings <> ".before-collector")
+      # Its hooks still run the script, so the script stays too.
+      assert results == [%{file: settings, error: :not_json}]
+      assert File.exists?(Path.join(folders.claude, "wallboard-upload.sh"))
       assert hd(OldHooks.report(results)) =~ "Take out the hooks that run wallboard-upload.sh"
     end
 
@@ -308,12 +311,49 @@ defmodule Wallboard.OldCollectorTest do
       refute OldHooks.ours?("/Users/r/.codex/vitalaize/codex-hook.sh")
       refute OldHooks.ours?("/Users/r/.claude/wallboard-upload.sh.mine")
       refute OldHooks.ours?("wallboard-upload.sh --mine")
+      # Anything more on the line makes it its owner's command.
+      refute OldHooks.ours?("notify-me && sh /Users/r/.claude/wallboard-upload.sh")
+      refute OldHooks.ours?("/x/log.sh > /Users/r/.claude/wallboard-upload.sh")
+      refute OldHooks.ours?(~s("/Users/r/a" "/Users/r/.claude/wallboard-upload.sh"))
       refute OldHooks.ours?(nil)
 
       assert OldHooks.strip(@claude) == :unchanged
       assert OldHooks.strip(@codex) == :unchanged
       assert OldHooks.strip("[1, 2]") == :unchanged
       assert OldHooks.strip("{ nope") == {:error, :not_json}
+    end
+
+    test "a hook its owner changed stays, and so does the script it runs", %{home: home} do
+      claude = Path.join(home, ".claude")
+      File.mkdir_p!(claude)
+      settings = Path.join(claude, "settings.json")
+      script = Path.join(claude, "wallboard-upload.sh")
+      File.write!(script, "#!/bin/sh\ncurl http://hub:4747/ingest/transcript\n")
+
+      text =
+        ~s({"hooks": {"Stop": [{"hooks": [{"command": "#{script} >/dev/null 2>&1"}]}]}}\n)
+
+      File.write!(settings, text)
+
+      results = OldHooks.retire(%{claude: [claude], codex: []})
+      assert results == [%{file: settings, error: :other_hook}]
+      assert File.read!(settings) == text
+      assert File.exists?(script)
+      assert hd(OldHooks.report(results)) =~ "Take that hook out by hand"
+    end
+
+    test "odd but valid files: null values are kept, a name given twice is left alone" do
+      ours = upload_hook("/h/.claude")
+
+      nulls = ~s({"hooks":{"Stop":[null,{"hooks":[#{ours}]}],"PreToolUse":null,"X":false}})
+      assert {:ok, text, 1} = OldHooks.strip(nulls)
+      assert text == ~s({"hooks":{"Stop":[null],"PreToolUse":null,"X":false}})
+
+      # Which "hooks" counts depends on who reads the file.
+      twice =
+        ~s({"hooks":{"Stop":[{"hooks":[{"command":"a"}]}]},"hooks":{"Stop":[{"hooks":[#{ours}]}]}})
+
+      assert OldHooks.strip(twice) == {:error, :unsafe}
     end
 
     test "a file written on one line, or by another tool, loses only those hooks" do
@@ -412,6 +452,44 @@ defmodule Wallboard.OldCollectorTest do
       refute File.exists?(link)
     end
 
+    test "vitalaize remove takes nothing while it cannot stop VitalAIze", %{dir: dir, home: home} do
+      folders = connected_machine(home)
+      settings_file(dir, ~s(role: "collector"))
+      link = Pairing.dir(Settings.load!())
+      File.mkdir_p!(link)
+      File.write!(Path.join(link, "cert.pem"), "x")
+      File.write!(Path.join(link, "notes.txt"), "not pairing's")
+      before = File.read!(Path.join(folders.claude, "settings.json"))
+      settings = System.get_env("WALLBOARD_SETTINGS")
+
+      # A Mac whose login item runs: that is the app's to stop.
+      mac = fn program, args ->
+        case {Path.basename(program), args} do
+          {"id", ["-u"]} ->
+            {"501\n", 0}
+
+          {"launchctl", ["print", "gui/501/ai.kyroco.wallboard"]} ->
+            {"state = running\n\tWALLBOARD_SETTINGS => #{settings}\n", 0}
+
+          _ ->
+            {"", 1}
+        end
+      end
+
+      term = io(["yes"])
+      opts = [io: term, os: {:unix, :darwin}, run: mac, home: home, env: fn _ -> nil end]
+      assert :ok = Setup.remove_here(opts)
+      assert output(term) =~ "Open the VitalAIze app and choose Remove VitalAIze"
+      assert output(term) =~ "Nothing removed."
+      assert File.read!(Path.join(folders.claude, "settings.json")) == before
+      assert File.exists?(Path.join(link, "cert.pem"))
+
+      # Removing takes pairing's own files and leaves anything else there.
+      assert Enum.any?(Setup.remove(home: home, env: fn _ -> nil end), &(&1 =~ "Deleted"))
+      refute File.exists?(Path.join(link, "cert.pem"))
+      assert File.read!(Path.join(link, "notes.txt")) == "not pairing's"
+    end
+
     test "works beside a settings file that does not load", %{dir: dir, home: home} do
       folders = connected_machine(home)
       File.write!(Path.join(dir, "settings.exs"), "%{ this is not Elixir")
@@ -428,6 +506,8 @@ defmodule Wallboard.OldCollectorTest do
     setup %{dir: dir} do
       Settings.put(%{archive: %{path: Path.join(dir, "wallboard.db"), machine: "the-hub"}})
       start_supervised!({Store, path: Path.join(dir, "wallboard.db")})
+      # A hub that had old collectors: the key it gave them is in its database.
+      Store.put_meta("ingest_token", "the-old-shared-key")
       start_supervised!(OldCollectors)
 
       pid =
@@ -441,9 +521,9 @@ defmodule Wallboard.OldCollectorTest do
     end
 
     # What the old upload script sends: the shared key, and a body.
-    defp old_call(port, path, body \\ "a transcript") do
+    defp old_call(port, path, body \\ "a transcript", key \\ "the-old-shared-key") do
       url = ~c"http://127.0.0.1:#{port}#{path}"
-      headers = [{~c"authorization", ~c"Bearer the-old-shared-key"}]
+      headers = if key, do: [{~c"authorization", ~c"Bearer #{key}"}], else: []
       request = {url, headers, ~c"application/gzip", body}
 
       {:ok, {{_, status, _}, _, answer}} =
@@ -501,7 +581,9 @@ defmodule Wallboard.OldCollectorTest do
     end
 
     test "the item goes when that machine pairs", c do
-      old_call(c.port, "/ingest/transcript?machine=Build-Box")
+      # The old script and a certificate do not spell a machine's name the
+      # same way: capitals, ".local", and what stands in for a space.
+      old_call(c.port, "/ingest/transcript?machine=Build_Box.local")
       old_call(c.port, "/ingest/transcript?machine=papa-mac")
       assert [_, _] = old_items()
 
@@ -511,7 +593,7 @@ defmodule Wallboard.OldCollectorTest do
       assert Enum.map(old_items(), & &1.id) == ["old:papa-mac"]
 
       # Its hooks may run on for a moment: that brings no item back.
-      old_call(c.port, "/ingest/status?machine=Build-Box", "{}")
+      old_call(c.port, "/ingest/status?machine=Build_Box.local", "{}")
       assert Enum.map(old_items(), & &1.id) == ["old:papa-mac"]
     end
 
@@ -543,8 +625,39 @@ defmodule Wallboard.OldCollectorTest do
       assert {410, _} = old_call(c.port, "/ingest/transcript")
       assert old_items() == []
 
+      # Without the key this hub gave its old collectors, a call is refused
+      # the same and names nobody: a stranger on the network cannot write
+      # in the owner's mailbox, nor a web page opened there.
+      refusal = OldCollectorController.refusal()
+
+      for key <- [nil, "a-guess", "the-old-shared-key-and-more", ""] do
+        assert {410, ^refusal} =
+                 old_call(c.port, "/ingest/transcript?machine=stranger", "x", key)
+      end
+
+      assert {:ok, {{_, 410, _}, _, _}} =
+               :httpc.request(
+                 :get,
+                 {~c"http://127.0.0.1:#{c.port}/ingest/x?machine=from-a-web-page", []},
+                 [],
+                 []
+               )
+
+      assert old_items() == []
+
+      # Even real old machines cannot fill it: twenty at most wait.
       for n <- 1..30, do: old_call(c.port, "/ingest/status?machine=flood-#{n}", "{}")
       assert length(old_items()) == 20
+    end
+
+    test "a hub that never had old collectors lists nobody", c do
+      stop_supervised!(OldCollectors)
+      Store.put_meta("ingest_token", nil)
+      start_supervised!(OldCollectors)
+
+      assert {410, _} = old_call(c.port, "/ingest/transcript?machine=build-box")
+      assert {410, _} = old_call(c.port, "/ingest/transcript?machine=build-box", "x", "")
+      assert old_items() == []
     end
   end
 end

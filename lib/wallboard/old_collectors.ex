@@ -17,13 +17,21 @@ defmodule Wallboard.OldCollectors do
   This is for one release. The release after 0.3.0 takes this module, its
   mailbox item and the refusal out.
 
-  ## Limits
+  ## Who is listed
 
-  An old call carries no key any more, so anyone on the network can make
-  one. What is kept is therefore small: a name of letters, digits, dots,
-  dashes and underscores, at most 64 of them; at most 20 machines
-  waiting in the mailbox; and at most 200 names in all, the dismissed ones
-  that were first seen longest ago going first. A name past the limit is
+  Every call to the old address is refused, whoever makes it. Only a call
+  from a real old machine is listed: one that carries the key this hub
+  gave its old collectors, which is still in the database of a hub that
+  had any (`ingest_token`). The key opens nothing now. It is never made,
+  shown or changed again, and is only compared, so that a stranger on the
+  network, or a web page opened on it, cannot put names of their choosing
+  in the owner's mailbox or crowd a real machine out. A hub that never had
+  old collectors has no key and lists nothing.
+
+  What is kept is small all the same: a name of letters, digits, dots,
+  dashes and underscores, at most 64 of them; at most 20 machines waiting
+  in the mailbox; and at most 200 names in all, the dismissed ones that
+  were first seen longest ago going first. A name past the limit is
   dropped without a word.
 
   The list is kept in the database, so it is still there after a restart.
@@ -42,11 +50,14 @@ defmodule Wallboard.OldCollectors do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
-  Notes that `machine` made an old upload call. `:ok` whatever came of it:
-  the caller refuses the call either way.
+  Notes that `machine` made an old upload call, if `key` is the one this
+  hub gave its old collectors. `:ok` whatever came of it: the caller
+  refuses the call either way.
   """
-  def seen(machine) do
-    if valid_name?(machine), do: GenServer.call(__MODULE__, {:seen, machine}, 5_000), else: :ok
+  def seen(machine, key) do
+    if valid_name?(machine) and is_binary(key),
+      do: GenServer.call(__MODULE__, {:seen, machine, key}, 5_000),
+      else: :ok
   catch
     :exit, _ -> :ok
   end
@@ -81,15 +92,24 @@ defmodule Wallboard.OldCollectors do
     state = %{
       # name => %{at: first seen, in seconds; dismissed: bool}
       machines: load(),
+      # The key old collectors send, or nil on a hub that never had any.
+      key: old_key(),
       paired: Keyword.get(opts, :paired, &paired/0)
     }
 
     {:ok, state}
   end
 
+  # Never print the old key in a crash report.
   @impl true
-  def handle_call({:seen, machine}, _from, state) do
+  def format_status(status), do: Map.put(status, :state, :hidden)
+
+  @impl true
+  def handle_call({:seen, machine, key}, _from, state) do
     cond do
+      not (is_binary(state.key) and Plug.Crypto.secure_compare(key, state.key)) ->
+        {:reply, :ok, state}
+
       Map.has_key?(state.machines, machine) ->
         {:reply, :ok, state}
 
@@ -153,17 +173,37 @@ defmodule Wallboard.OldCollectors do
     |> Enum.reduce(machines, fn {machine, _}, acc -> Map.delete(acc, machine) end)
   end
 
-  # The old script named a machine by `hostname -s`; a certificate carries
-  # nearly the same name (`Wallboard.Pairing.machine_name/0`). Capitals
-  # aside, they are the same machine.
-  defp paired?(machine, names), do: String.downcase(machine) in names
+  # The old script named a machine by `hostname -s`, with anything but
+  # letters, digits, dots, dashes and underscores turned into a dash. A
+  # certificate carries nearly the same name
+  # (`Wallboard.Pairing.machine_name/0`), which may keep a space or drop a
+  # ".local". So the two are compared by their letters and digits alone.
+  defp paired?(machine, names), do: plain(machine) in names
 
-  # The names that hold a working certificate, in small letters.
+  @doc false
+  def plain(name) do
+    name
+    |> String.downcase()
+    |> String.replace_suffix(".local", "")
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+  end
+
+  # The names that hold a working certificate, made plain.
   defp paired do
     dir = Authority.dir(Settings.get())
-    for %{machine: name, revoked_at: nil} <- Authority.machines(dir), do: String.downcase(name)
+    for %{machine: name, revoked_at: nil} <- Authority.machines(dir), do: plain(name)
   rescue
     _ -> []
+  end
+
+  defp old_key do
+    case Store.get_meta("ingest_token") do
+      key when is_binary(key) and key != "" -> key
+      _ -> nil
+    end
+  catch
+    :exit, _ -> nil
   end
 
   defp load do
