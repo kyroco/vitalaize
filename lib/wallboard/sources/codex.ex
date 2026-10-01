@@ -570,6 +570,14 @@ defmodule Wallboard.Sources.Codex do
   # A copy's file is written within a second of the time Codex notes for
   # the import (measured: 0 or 1 second on 44 files).
   @import_slack 5
+  # A copy is written at the import, not before it. The minute allows for a
+  # large import, whose time Codex may note at its end.
+  @import_before 60
+  # Robert's list of 49 imports is 24 KB. A list beyond this is not read.
+  @imports_max 5_000_000
+
+  @doc "Where a Codex folder keeps its list of the chats it copied in."
+  def imports_file(dir), do: Path.join(dir, @imports)
 
   @doc """
   The chats the Codex app copied in from Claude sessions this machine
@@ -581,12 +589,13 @@ defmodule Wallboard.Sources.Codex do
   under one of `claude_dirs`' `projects` folders is a Claude session that
   is saved from its own transcript, with its real tokens and cost.
   """
-  def imports_file(dir), do: Path.join(dir, @imports)
-
   def claude_copies(codex_dirs, claude_dirs) do
     roots = Enum.map(claude_dirs, &(Path.join(Path.expand(&1), "projects") <> "/"))
 
     for dir <- codex_dirs,
+        # Only a plain file of a sane size: a pipe would never finish.
+        {:ok, %{type: :regular, size: size}} when size <= @imports_max <-
+          [File.stat(imports_file(dir))],
         {:ok, text} <- [File.read(imports_file(dir))],
         {:ok, %{"records" => records}} when is_list(records) <- [Jason.decode(text)],
         %{"imported_thread_id" => id, "source_path" => source, "imported_at" => at} <- records,
@@ -606,11 +615,18 @@ defmodule Wallboard.Sources.Codex do
   since. Such a file is not saved or sent: the Claude session it was copied
   from already is. One that someone carried on in Codex has changed, and is
   a Codex session from then on.
+
+  The file's change time has to sit at the import, a minute before it at
+  most and a few seconds after. So a list that names a session at work, or
+  gives a time far ahead, hides nothing: that session's file keeps changing.
   """
   def claude_copy?(copies, thread_id, mtime) do
     case copies do
-      %{^thread_id => imported_at} -> mtime <= imported_at + @import_slack
-      _ -> false
+      %{^thread_id => imported_at} ->
+        mtime <= imported_at + @import_slack and mtime >= imported_at - @import_before
+
+      _ ->
+        false
     end
   end
 

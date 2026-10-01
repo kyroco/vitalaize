@@ -88,7 +88,8 @@ defmodule Wallboard.Collector.Filter do
 
     * the session title
     * the first and last prompt, clipped the way the readers clip them
-      (300 characters for Claude, 500 for Codex). The last prompt is the
+      (300 characters for Claude, 500 for Codex), including what the
+      person typed in a Codex file of the older shape. The last prompt is the
       latest one so far, so over a live session each prompt leaves once,
       clipped, while it is the latest
     * the folder and the git branch

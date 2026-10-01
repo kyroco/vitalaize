@@ -303,6 +303,8 @@ defmodule Wallboard.CodexCopyTest do
       assert copies == %{@one => at}
       assert Codex.claude_copy?(copies, @one, at + 1)
       refute Codex.claude_copy?(copies, @one, at + 900)
+      # A list that gives a time far ahead hides nothing.
+      refute Codex.claude_copy?(%{@one => at + 86_400 * 365}, @one, at)
 
       path = Path.join(c.codex, "external_agent_session_imports.json")
       File.write!(path, String.replace(File.read!(path), "#{at}", "#{at * 1000}"))
