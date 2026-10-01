@@ -23,6 +23,8 @@ defmodule Wallboard.Application do
   defp archive_children(%{archive: %{enabled: true} = a} = settings) do
     [
       {Wallboard.Store, path: a.path},
+      # Asks in the mailbox about work in a repo the Git tab does not follow.
+      Wallboard.RepoPrompts,
       Wallboard.Archive.StatusRecorder,
       Wallboard.Remote
     ] ++

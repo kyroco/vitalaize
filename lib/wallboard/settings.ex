@@ -540,6 +540,52 @@ defmodule Wallboard.Settings do
     load!()
   end
 
+  @doc """
+  Adds a repository to the end of the list the board follows, as saving the
+  settings page with one more line would, and reloads the settings. `:ok`,
+  also when the board follows it already; `{:error, reason}` when the name
+  is not owner/name or the database did not answer.
+  """
+  def track_repo(name) do
+    # The example name a board with no repositories set starts with is not
+    # one to keep in front of a real one.
+    names = repo_names(get()) -- [@defaults.github.repo]
+
+    cond do
+      not repo_name?(name) or Enum.any?(String.split(name, "/"), &(&1 in [".", ".."])) ->
+        {:error, :not_a_repo}
+
+      Enum.any?(names, &(String.downcase(&1) == String.downcase(name))) ->
+        :ok
+
+      true ->
+        with {:ok, overrides} <- stored_overrides() do
+          save_overrides(put_path(overrides, [:github, :repos], names ++ [name]))
+          :ok
+        end
+    end
+  end
+
+  # The page's saved values as the running database holds them. Values that
+  # cannot be read are an error, never "none": saving over them would lose
+  # them for good.
+  defp stored_overrides do
+    case Wallboard.Store.get_meta("settings_overrides") do
+      nil ->
+        {:ok, %{}}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, %{} = map} -> {:ok, atomize(map)}
+          _ -> {:error, :unreadable}
+        end
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
+
   # The page's saved values, read straight from the database file: the
   # settings are loaded before the database process starts.
   defp saved_overrides(settings) do
@@ -668,7 +714,7 @@ defmodule Wallboard.Settings do
   def repo_names(settings), do: settings |> github_repos() |> Enum.map(& &1.repo)
 
   @doc "True for an owner/name repository name."
-  def repo_name?(name), do: is_binary(name) and name =~ ~r{^[\w.-]+/[\w.-]+$}
+  def repo_name?(name), do: is_binary(name) and name =~ ~r{\A[\w.-]+/[\w.-]+\z}
 
   defp has_path?(map, [k]), do: is_map(map) and Map.has_key?(map, k)
   defp has_path?(map, [k | rest]), do: is_map(map) and has_path?(Map.get(map, k), rest)

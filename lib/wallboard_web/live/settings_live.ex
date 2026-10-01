@@ -58,6 +58,7 @@ defmodule WallboardWeb.SettingsLive do
       machines: machines(settings),
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+      ignored_repos: Wallboard.RepoPrompts.ignored(),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
   end
@@ -146,14 +147,62 @@ defmodule WallboardWeb.SettingsLive do
 
   def handle_info(_, socket), do: {:noreply, socket}
 
-  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket),
-    do:
-      assign(socket,
-        linked: linked(settings),
-        linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings)
-      )
+  defp relist(%{assigns: %{allowed?: true, settings: settings}} = socket) do
+    socket
+    |> assign(
+      linked: linked(settings),
+      linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
+      ignored_repos: Wallboard.RepoPrompts.ignored()
+    )
+    |> tracked_since()
+  end
 
   defp relist(socket), do: socket
+
+  # A repo tracked from the mailbox while this page is open goes into its
+  # Repositories box, so the page shows it. What the page was drawn from
+  # (`settings`) stays as it was: a browser does not always take the new
+  # box (it leaves a box someone is typing in alone), and Save puts the
+  # repo back from that difference either way.
+  defp tracked_since(%{assigns: %{values: values, settings: shown}} = socket),
+    do: assign(socket, values: keep_tracked(values, shown, Settings.get()))
+
+  defp tracked_since(socket), do: socket
+
+  # The repos the board follows now that it did not when `shown` was read.
+  defp added(shown, now) do
+    had = shown |> Settings.repo_names() |> Enum.map(&String.downcase/1)
+    Enum.reject(Settings.repo_names(now), &(String.downcase(&1) in had))
+  end
+
+  @doc """
+  The form's values with any repo tracked since the page was drawn (`shown`)
+  put back at the end of the Repositories box: the box is sent whole, and a
+  page drawn before a Track in the mailbox would otherwise undo it. The
+  example name a board with no repos starts with leaves the box then, as
+  it left the list.
+  """
+  def keep_tracked(values, shown, now) do
+    case added(shown, now) do
+      [] ->
+        values
+
+      names ->
+        example = String.downcase(Settings.defaults().github.repo)
+        following = now |> Settings.repo_names() |> Enum.map(&String.downcase/1)
+
+        lines =
+          values
+          |> Map.get("github.repos", "")
+          |> to_string()
+          |> String.split(~r/[\s,]+/, trim: true)
+          |> Enum.reject(&(String.downcase(&1) == example and example not in following))
+
+        has = Enum.map(lines, &String.downcase/1)
+        missing = Enum.reject(names, &(String.downcase(&1) in has))
+        Map.put(values, "github.repos", Enum.join(lines ++ missing, "\n"))
+    end
+  end
 
   # Every change on this page is the owner's to make, and that is asked
   # again each time: the board password may have changed since the page
@@ -175,10 +224,13 @@ defmodule WallboardWeb.SettingsLive do
 
   defp event("save", %{"s" => values}, socket) do
     before = Settings.get()
+    values = keep_tracked(values, socket.assigns.settings, before)
 
     case Settings.check(unmask(values, socket.assigns.settings, before), Settings.base()) do
       {:ok, overrides} ->
         after_ = Settings.save_overrides(overrides)
+        # A repo added here by hand takes its ask out of the mailbox now.
+        Wallboard.RepoPrompts.refresh()
 
         restart? =
           socket.assigns.restart? or
@@ -253,6 +305,17 @@ defmodule WallboardWeb.SettingsLive do
 
         {:noreply, socket |> relist() |> assign(confirm_disconnect: nil, notice: notice)}
     end
+  end
+
+  # Undoes an Ignore from the mailbox: work in that repo asks again.
+  defp event("ask_again", %{"repo" => repo}, socket) do
+    notice =
+      case Wallboard.RepoPrompts.ask_again(repo) do
+        :ok -> "The mailbox will ask about #{repo} the next time someone works in it."
+        _ -> "That did not work just now. Try again in a moment."
+      end
+
+    {:noreply, assign(socket, ignored_repos: Wallboard.RepoPrompts.ignored(), notice: notice)}
   end
 
   defp event("refresh_archive", _params, socket) do
@@ -353,6 +416,18 @@ defmodule WallboardWeb.SettingsLive do
               {@errors[Enum.join(path, ".")]}
             </span>
           </label>
+          <div :if={section == "GitHub" and @ignored_repos != []} class="settings-field">
+            <span class="settings-label">Ignored repositories</span>
+            <div :for={repo <- @ignored_repos} class="row ignored-repo">
+              <span>{repo}</span>
+              <button type="button" class="link-button" phx-click="ask_again" phx-value-repo={repo}>
+                Ask again
+              </button>
+            </div>
+            <span class="stat-note">
+              You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
+            </span>
+          </div>
         </section>
         <div class="row">
           <button type="submit" class="settings-save">Save</button>
