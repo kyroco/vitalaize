@@ -200,9 +200,9 @@ defmodule Wallboard.Store do
     )
     """,
     # Where a saved session came from: "stream" (a collector's stream),
-    # "upload" (a transcript another machine sent) or empty (this machine's
-    # own files). Uploads saved before this column are known by their place
-    # in the inbox folder.
+    # "upload" (a transcript another machine sent, before 0.3.0; those rows
+    # are kept) or empty (this machine's own files). Uploads saved before
+    # this column are known by their place in the inbox folder.
     "ALTER TABLE sessions ADD COLUMN source TEXT",
     "UPDATE sessions SET source = 'upload' WHERE transcript LIKE '%/inbox/%'",
     "CREATE INDEX sessions_session ON sessions (session_id)",
@@ -364,13 +364,6 @@ defmodule Wallboard.Store do
         _ -> %{m | folders: []}
       end
     end)
-  end
-
-  @doc "True when a collector's stream has saved this session, under any machine."
-  def streamed?(session_id) do
-    query("SELECT 1 AS n FROM sessions WHERE session_id = ?1 AND source = 'stream' LIMIT 1", [
-      session_id
-    ]) != []
   end
 
   @doc "One session's saved events from a machine, in the order they were first saved."

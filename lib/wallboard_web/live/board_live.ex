@@ -97,7 +97,6 @@ defmodule WallboardWeb.BoardLive do
       |> assign(settings: settings, now: now(), product: @product, tabs: tabs(settings))
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
-      |> assign(remote: Wallboard.Remote.sessions())
       |> assign(stream: Wallboard.Link.Sessions.cards())
       |> assign(github: github.facts, github_meta: github.meta)
       |> assign(nr: nr.facts, nr_meta: nr.meta)
@@ -142,10 +141,6 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_info({:source, :codex, facts, _meta}, socket),
     do: {:noreply, socket |> assign(codex: facts) |> derive_sessions()}
-
-  # A collector's session started or stopped waiting on you.
-  def handle_info({:remote, sessions}, socket),
-    do: {:noreply, socket |> assign(remote: sessions) |> derive_sessions()}
 
   # Sessions that collectors stream from other machines.
   def handle_info({:stream, cards}, socket),
@@ -351,18 +346,10 @@ defmodule WallboardWeb.BoardLive do
     claude = (socket.assigns.claude && socket.assigns.claude.sessions) || []
     codex = (socket.assigns[:codex] && socket.assigns.codex.sessions) || []
     # A session shows once: this machine's own check comes first, then a
-    # collector's stream, which gives a full card. A machine that only
-    # uploads shows its sessions while they wait on you.
+    # collector's stream.
     local_ids = MapSet.new(claude ++ codex, & &1.session_id)
     stream = Enum.reject(socket.assigns[:stream] || [], &MapSet.member?(local_ids, &1.session_id))
-    # A stale card gives way to a wait the upload hooks report: its stream
-    # is cut off and knows nothing of it.
-    fresh = MapSet.new(Enum.reject(stream, & &1.stale), & &1.session_id)
-    shown = MapSet.union(local_ids, fresh)
-    remote = Enum.reject(socket.assigns[:remote] || [], &MapSet.member?(shown, &1.session_id))
-    waiting = MapSet.new(remote, & &1.session_id)
-    stream = Enum.reject(stream, &MapSet.member?(waiting, &1.session_id))
-    sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex ++ stream ++ remote
+    sessions = Enum.map(claude, &Map.put(&1, :tool, :claude)) ++ codex ++ stream
     long = settings.claude.long_running_minutes
 
     sessions = Enum.map(sessions, &Map.put(&1, :long?, Claude.long_running?(&1, now, long)))

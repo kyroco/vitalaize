@@ -39,6 +39,20 @@ for key in ("otherRepos", "importedRepos", "settingsRead"):
     record["choices"].pop(key, None)
 json.dump(record, open(sys.argv[1], "w"), indent=2)
 PY
+  # 0.2.0's upload hook in Claude's settings, beside a hook of the
+  # person's own, and the script the hook runs.
+  cat >"$H/.claude/settings.json" <<EOF
+{
+  "model": "opus",
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "/usr/local/bin/my-own-hook"}]},
+      {"hooks": [{"type": "command", "command": "$H/.claude/wallboard-upload.sh"}]}
+    ]
+  }
+}
+EOF
+  printf '#!/bin/sh\ncurl -s "http://hub:4747/ingest/transcript"\n' >"$H/.claude/wallboard-upload.sh"
   sqlite3 "$DATA/wallboard.db" "create table uitest_marker(x); insert into uitest_marker values('history');"
   # What 0.2.0's own settings page saved, which it kept in the database.
   sqlite3 "$DATA/wallboard.db" "insert or replace into meta(key, value) values('settings_overrides', '{\"brand\":{\"name\":\"Acme Page\"}}');"
@@ -66,4 +80,10 @@ PY
   check "Reconfigure wrote the settings file in the new form" grep -q 'role: "both"' "$DATA/settings.exs"
   check "the name typed in Reconfigure wins over the one 0.2.0's page saved" setting_is brand.name "Acme Wizard"
   check "the 0.2.0 settings file is in the backup folder" ls "$DATA"/backups/*/settings.exs
+  check "Reconfigure took 0.2.0's upload hook out of Claude's settings" not grep -q wallboard-upload "$H/.claude/settings.json"
+  check "the person's own hook is still in Claude's settings" grep -q my-own-hook "$H/.claude/settings.json"
+  check "Claude's settings from before are kept beside the file" grep -q wallboard-upload "$H/.claude/settings.json.before-collector"
+  check "0.2.0's upload script is gone" test ! -e "$H/.claude/wallboard-upload.sh"
 }
+
+not() { ! "$@"; }

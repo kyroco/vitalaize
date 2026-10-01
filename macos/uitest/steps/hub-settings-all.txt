@@ -33,7 +33,6 @@ type "Dev profile (restarts)" "acme-dev-read"
 type "Prod profile (restarts)" "acme-prod-read"
 type "Days to save on first start" "7"
 type "Save a session after it is quiet for (seconds)" "60"
-type "Address other Macs use" "http://acme-hub.local:{PORT2}"
 
 # Three that would reach outside the run if they were saved: a phone number
 # could be sent a text, the New Relic page reads 1Password when the board

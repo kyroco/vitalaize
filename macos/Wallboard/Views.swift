@@ -545,7 +545,9 @@ struct StatusView: View {
                 GroupBox {
                     HStack {
                         Circle().fill(state.running ? Color.green : Color.red).frame(width: 10, height: 10)
-                        Text(state.running ? "The board is running at http://localhost:\(c.port)" : "The board is not answering")
+                        // verbatim: a Text made from a literal writes a number the
+                        // way the Mac's region does, and a port is not "4,747".
+                        Text(verbatim: state.running ? "The board is running at http://localhost:\(c.port)" : "The board is not answering")
                         Spacer()
                         Button("Check again") { state.refreshStatus() }
                     }
@@ -613,7 +615,7 @@ struct StatusView: View {
         .sheet(isPresented: $confirmRemove) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Remove VitalAIze from this Mac?").font(.headline)
-                Text("This stops VitalAIze on this Mac and takes away its login item. Upload hooks an earlier version added to Claude or Codex are taken out too. Your Claude settings otherwise stay as they are.")
+                Text("This stops VitalAIze on this Mac and takes away its login item and its certificate for its hub. Upload hooks an earlier version added to Claude or Codex are taken out too, with a copy of each file kept beside it. Your Claude and Codex settings otherwise stay as they are.")
                     .foregroundStyle(.secondary)
                 Toggle("Also delete the database and settings in \(Setup.dataFolder ?? "")", isOn: $deleteData)
                 HStack {
