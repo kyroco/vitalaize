@@ -13,6 +13,12 @@ defmodule Wallboard.Sources.Claude do
 
   A session needs you when its status is "waiting" or its state is "blocked".
 
+  A row with no `pid` has no process behind it, so it is not a live session
+  and is left out. A background job stopped with `claude stop` can stay in
+  the list for hours as such a row, still saying `state: "working"`. Every
+  session with a process has a `pid`, whether busy, idle or in a terminal
+  (checked against Claude Code 2.1.285).
+
   The words for why it is waiting come from the background job's own file,
   <config dir>/jobs/<id>/state.json, whose `detail` holds the question it
   asked. That file is undocumented, so it is optional: when it is missing or
@@ -67,7 +73,7 @@ defmodule Wallboard.Sources.Claude do
           {:ok, out} ->
             with {:ok, agents} <- parse_agents(out) do
               account = if multi?, do: account_label(dir), else: nil
-              {:ok, Enum.map(agents, &enrich(&1, dir, account))}
+              {:ok, agents |> live() |> Enum.map(&enrich(&1, dir, account))}
             end
 
           {:error, reason} ->
@@ -134,6 +140,13 @@ defmodule Wallboard.Sources.Claude do
         {:error, "claude agents --json returned something that is not JSON"}
     end
   end
+
+  @doc """
+  The agents that have a process. A row with no pid is a job that ended or
+  was stopped, whatever its state says, so the board and a collector, which
+  both read the list through `fetch/1`, never show or count it.
+  """
+  def live(agents), do: Enum.filter(agents, & &1.pid)
 
   defp agent(raw) do
     %{

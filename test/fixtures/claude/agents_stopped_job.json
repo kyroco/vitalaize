@@ -1,0 +1,42 @@
+[
+  {
+    "id": "5c1d0a77",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790807282148,
+    "sessionId": "5c1d0a77-3b1e-4a52-9d0c-6e2f8a4b7c11",
+    "name": "shop-2060",
+    "state": "working"
+  },
+  {
+    "pid": 41210,
+    "id": "9e84b3f2",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790856423540,
+    "sessionId": "9e84b3f2-6a0d-4c7e-8f15-2d3b9a7c4e60",
+    "name": "shop-2061",
+    "status": "busy",
+    "state": "working"
+  },
+  {
+    "pid": 41388,
+    "id": "c70f2a19",
+    "cwd": "/Users/dev/projects/shop",
+    "kind": "background",
+    "startedAt": 1790798070010,
+    "sessionId": "c70f2a19-8d44-4b3a-a6e2-51f0c9d7b382",
+    "name": "planner",
+    "status": "idle",
+    "state": "working"
+  },
+  {
+    "pid": 41502,
+    "cwd": "/Users/dev/projects/wallboard",
+    "kind": "interactive",
+    "startedAt": 1790873301528,
+    "sessionId": "1b6e9d04-f2a7-4e58-b3c1-7a0d5e8f2c93",
+    "name": "fixing-prod",
+    "status": "busy"
+  }
+]

@@ -32,6 +32,12 @@ field Claude Code 2.1.284 sets for a waiting session (`state: "blocked"`, or
 session was not allowed to read the key, so its parsing test uses the reply
 shape from New Relic's NerdGraph documentation and says so.
 
+`claude/agents_stopped_job.json` is not a capture. It is written by hand in
+the shape `claude agents --json` printed on Claude Code 2.1.285, with made-up
+sessions: a background job stopped with `claude stop` that is still listed as
+`state: "working"` with no `pid` and no `status`, beside a busy and an idle
+background session and a session in a terminal, which all have a `pid`.
+
 `github/workflows.json` is not a capture either. It is written by hand in the
 shape `gh api repos/<owner>/<name>/actions/workflows` answers in, per GitHub's
 REST documentation, with made-up workflows: two files and one of GitHub's own
