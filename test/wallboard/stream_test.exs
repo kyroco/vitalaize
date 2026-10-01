@@ -736,8 +736,7 @@ defmodule Wallboard.StreamTest do
 
     test "a new wait that follows an old one in the same batch still alerts, once", c do
       start_hub(c)
-      # As if its stream were open: a cut-off machine's wait is left to
-      # its hooks, and looked at again when it is back.
+      # As if its stream were open.
       Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       at = &DateTime.add(now, &1)
