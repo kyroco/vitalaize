@@ -1,0 +1,14 @@
+# Remove when no copy of the login item and the setup record can be kept:
+# it stops before removing anything, says so, and the board goes on running.
+
+wait 40 "The board is running"
+press "Remove VitalAIze…"
+wait 5 "Remove VitalAIze from this Mac?"
+press "Remove"
+wait 60 "That did not work"
+expect "Could not keep a copy of"
+expect "Nothing was removed."
+expect "The board that was set up before is still running at http://localhost:{PORT}."
+snap a05-remove-failed
+click "Back"
+wait 20 "The board is running"

@@ -45,7 +45,8 @@ defmodule Wallboard.Pairing.Door do
   @doc """
   Step 1: a machine asks to pair. `from` is its network address. Returns
   `{:ok, %{id, commit, ca_pem, link_port, expires_in}}` or `{:error, reason}`
-  with `:bad_name`, `:bad_key`, `:bad_request` or `:busy`. `commit` is the
+  with `:bad_name`, `:name_taken` (the name is the hub's own), `:bad_key`,
+  `:bad_request` or `:busy`. `commit` is the
   fingerprint of the hub's random number; the number itself comes from
   `confirm/3`, so nobody learns a request's code before the owner sees it.
   """
@@ -112,7 +113,7 @@ defmodule Wallboard.Pairing.Door do
          {:ok, name, key_pem, key_bytes, commit} <- read_start(params),
          # The hub's own name is taken: two rows with one name in the list
          # of machines would be one too many.
-         true <- not same_name?(name, s.hub_name) || {:error, :bad_name},
+         true <- not same_name?(name, s.hub_name) || {:error, :name_taken},
          :ok <- room(s, from, name) do
       id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
 

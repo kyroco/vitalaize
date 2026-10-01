@@ -1,0 +1,52 @@
+# The first screen of a Mac that runs the board, and its Settings.
+
+wait 40 "The board is running"
+expect "Hub and collector"
+absent "Mended"
+absent "Restarting"
+snap 08-status
+click "Check again"
+wait 10 "The board is running"
+click "Open the board"
+opened "http://127.0.0.1:{PORT}/"
+click "Show the log"
+opened "board.log"
+click "Restart the board"
+wait 5 "Restarting the board…"
+disabled "Restart the board"
+snap 09-restarting
+wait 90 "The board restarted and is answering."
+wait 20 "The board is running"
+enabled "Restart the board"
+snap 09-restarted
+
+# Settings
+click "Settings"
+wait 40 "Board name"
+snap 10-settings
+click "Save"
+wait 5 "Nothing changed."
+type "Board name" "Acme Two"
+type "Seconds between pages" "45"
+click "Save"
+wait 40 "Saved in"
+snap 10-settings-saved
+type "Board port (restarts)" "abc"
+click "Save"
+wait 40 "Nothing was saved"
+expect "Board port:"
+snap 10-settings-refused
+type "Board port (restarts)" "{PORT2}"
+toggle "Korium numbers"
+pick "Send as" "SMS"
+click "Save"
+wait 60 "Saved in"
+expect "Restarted the board to take up: Board port"
+wait 90 "The board is answering at http://localhost:{PORT2}."
+snap 10-settings-restarted
+scroll bottom
+snap 10-settings-bottom
+click "Back"
+wait 20 "The board is running"
+absent "Restarting the board"
+snap 10-status-after-settings

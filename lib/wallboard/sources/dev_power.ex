@@ -21,9 +21,18 @@ defmodule Wallboard.Sources.DevPower do
   # Poller hooks (see Wallboard.Poller)
 
   def poll(settings, _prev, memory, _now) do
-    case fetch(settings.dev_power) do
-      {:ok, facts} -> {:ok, facts, memory}
-      {:error, reason} -> {:error, reason, memory}
+    dp = settings.dev_power
+
+    # A profile alone is not enough to ask AWS anything.
+    if dp.database in [nil, ""] or dp.cluster in [nil, ""] do
+      {:error,
+       "Dev needs its database and cluster named in settings.exs (dev_power: database and cluster)",
+       memory}
+    else
+      case fetch(dp) do
+        {:ok, facts} -> {:ok, facts, memory}
+        {:error, reason} -> {:error, reason, memory}
+      end
     end
   end
 

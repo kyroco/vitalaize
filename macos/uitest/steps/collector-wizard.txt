@@ -1,0 +1,52 @@
+# A fresh Mac set up as a collector, and paired with a hub by code.
+
+# Step 1
+wait 90 "What this Mac does"
+click "Collector only"
+wait 5 "Step 1 of 4"
+click "Continue"
+
+# Step 2: Claude folders only; a collector keeps no board files
+wait "Claude folders to include"
+expect "Step 2 of 4"
+absent "Where the board keeps its files"
+snap c02-folders
+click "Continue"
+
+# Step 3: the hub
+wait "Hubs on your network"
+expect "Step 3 of 4"
+disabled "Continue"
+snap c03-hub
+# The hub is found on the network; clicking its row fills in its address.
+wait 30 ":{HUBPORT}"
+click ":{HUBPORT}"
+value "Hub address" ":{HUBPORT}"
+enabled "Continue"
+type "Hub address" ""
+disabled "Continue"
+type "Hub address" "{HUB}"
+enabled "Continue"
+click "Back"
+wait "Claude folders to include"
+click "Continue"
+wait "Hubs on your network"
+value "Hub address" "{HUB}"
+click "Continue"
+
+# Step 4: review
+wait "This Mac"
+expect "Step 4 of 4"
+expect "Collector only"
+expect "{HUB}"
+snap c04-review
+click "Start the collector and pair"
+
+# The code, until the hub's owner approves it
+wait 90 "Waiting for the hub to approve…"
+expect "Open the mailbox on the board and approve this code."
+snap c05-code
+wait 120 "The collector is running"
+wait 60 "Connected to the hub at"
+absent "That did not work"
+snap c06-status

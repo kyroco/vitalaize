@@ -1,0 +1,13 @@
+# The new app opened over an install from before the rename. Nothing is
+# clicked: the app sees what is wrong by itself and mends it.
+
+wait 10 "Kyroco VitalAIze"
+wait 150 "Mended. Your settings and database are where they were."
+expect "which is gone."
+expect "Settings beyond the ones this setup asks about were not carried over."
+expect "Writing the settings file again from your setup answers"
+expect "Setting the login item to start VitalAIze from this app"
+expect "The files as they were are in"
+expect "The log is at"
+wait 40 "The board is running"
+snap a01-mended

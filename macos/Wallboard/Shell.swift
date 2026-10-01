@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Runs command-line tools for the app. Everything the installer does to the
@@ -123,6 +124,24 @@ enum Shell {
         group.wait()
         return Result(status: process.terminationStatus,
                       output: String(decoding: all, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Opens a page or a file for the person, in their browser or its own
+    /// app. A test build puts its own in place, so a test run opens nothing.
+    static var opener: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    static func open(_ url: URL) { opener(url) }
+
+    /// Asks the person for a folder; nil when they cancel. A test build
+    /// answers in the panel's place.
+    static var folderPicker: (_ start: String, _ message: String) -> String? = { start, message in
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.showsHiddenFiles = true
+        panel.message = message
+        panel.directoryURL = URL(fileURLWithPath: start)
+        return panel.runModal() == .OK ? panel.url?.path : nil
     }
 
     /// Runs a tool found on the search path.

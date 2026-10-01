@@ -1,0 +1,60 @@
+# Every setting on the Settings screen of a Mac that runs the board is
+# changed and saved in one go. (Board name, Board port, Seconds between
+# pages and Send as are changed in hub-status.)
+
+wait 40 "The board is running"
+click "Settings"
+wait 40 "Board name"
+type "Time zone" "America/Chicago"
+type "Board password (restarts)" "acme-secret"
+toggle "Tell me when a new version is out"
+toggle "Korium numbers"
+type "Slack webhook" "https://localhost:9/acme-hook"
+type "ntfy topic" "acme-topic-x1"
+type "ntfy server" "http://localhost:9"
+type "Pushover user key" "acmeuser1"
+type "Pushover app token" "acmetoken1"
+type "Account number" "7654321"
+type "Where the API key is in 1Password (restarts)" "op://Private/Acme/key"
+pick "Region" "eu"
+toggle "Take collectors (restarts)"
+type "Port they stream to (restarts)" "4761"
+type "Claude folders" "{HOME}/.claude"
+type "Long-running after (minutes)" "50"
+toggle "Codex sessions"
+type "Codex folders" "{HOME}/.codex"
+type "Keep an idle session on Live for (minutes)" "90"
+type "Repositories" "acme/rockets"
+type "Main branch" "trunk"
+type "Gate workflow file" "gate.yml"
+type "Dev deploy workflow file" "dev.yml"
+type "Prod deploy workflow file" "prod.yml"
+type "Dev profile (restarts)" "acme-dev-read"
+type "Prod profile (restarts)" "acme-prod-read"
+type "Days to save on first start" "7"
+type "Save a session after it is quiet for (seconds)" "60"
+type "Address other Macs use" "http://acme-hub.local:{PORT2}"
+
+# Three that would reach outside the run if they were saved: a phone number
+# could be sent a text, the New Relic page reads 1Password when the board
+# starts, and turning off this Mac's own sessions changes what it does.
+# Each is changed and put back before the save.
+type "Phone number (Messages)" "+15550100"
+type "Phone number (Messages)" ""
+toggle "New Relic page (restarts)"
+toggle "New Relic page (restarts)"
+toggle "Save this Mac's Claude sessions (restarts)"
+toggle "Save this Mac's Claude sessions (restarts)"
+
+click "Save"
+wait 60 "Saved in"
+absent "Nothing was saved"
+expect "The settings as they were before this save are in"
+expect "Restarted the board to take up"
+wait 90 "The board is answering at http://localhost:{PORT2}."
+scroll bottom
+snap 16-settings-all
+click "Back"
+wait 20 "The board is running"
+expect "This board has a password."
+snap 16-status-password

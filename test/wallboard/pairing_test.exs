@@ -606,8 +606,11 @@ defmodule Wallboard.PairingTest do
 
       for name <- ["Papa", "papa"] do
         {params, _} = start_params(name)
-        assert {:error, :bad_name} = Door.start({10, 0, 0, 1}, params)
+        assert {:error, :name_taken} = Door.start({10, 0, 0, 1}, params)
       end
+
+      # Said as what it is, not as a name with the wrong letters in it.
+      assert Pairing.why(:name_taken) =~ "same name as this machine"
 
       assert {:ok, _} = open({10, 0, 0, 1}, "Papa-2")
     end
@@ -781,7 +784,7 @@ defmodule Wallboard.PairingTest do
     assert Mailbox.items() == []
     assert {:error, _} = Mailbox.act("machine:x", "approve")
     assert {:error, :not_a_hub} = Task.await(ask(port, dir, "air"), 5_000)
-    assert Pairing.why(:not_a_hub) =~ "link"
+    assert Pairing.why(:not_a_hub) =~ "turn on Take collectors"
   end
 
   describe "the mailbox" do
