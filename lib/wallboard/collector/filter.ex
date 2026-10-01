@@ -174,6 +174,7 @@ defmodule Wallboard.Collector.Filter do
       position: 0,
       rest: "",
       started: false,
+      helper: ctx[:subagent] == true,
       repo: {nil, ""},
       tools: MapSet.new(),
       changes: %Proto.Changes{},
@@ -253,8 +254,10 @@ defmodule Wallboard.Collector.Filter do
   defp line(text, s) do
     old = s.tally
     new = s.reader.read_lines(old, text)
-    s = %{s | tally: new}
-    helper? = s.ctx[:subagent] == true or new[:parent_id] != nil
+    # Once a file has named a parent thread it stays a helper's, even if a
+    # later line of it says otherwise.
+    helper? = s.helper or new[:parent_id] != nil
+    s = %{s | tally: new, helper: helper?}
 
     {started, s} = started(s, helper?)
     {tools, s} = tools(old, new, s)
@@ -273,6 +276,8 @@ defmodule Wallboard.Collector.Filter do
     end
   rescue
     _ -> {[], s}
+  catch
+    _, _ -> {[], s}
   end
 
   # First in a session's own file, whatever its first line holds, so the
@@ -290,11 +295,18 @@ defmodule Wallboard.Collector.Filter do
 
   # The readers note which request a line added or changed. A reply written
   # as several lines changes only its time; that is not sent again.
+  # Replies with no id at all share one place in the reader, so each one
+  # that differs, if only by its time, is a request of its own.
   defp request(old, new, s, helper?) do
     id = new.last_request
 
     with {:ok, req} <- Map.fetch(new.requests, id),
-         true <- Map.delete(req, :at) != Map.delete(old.requests[id] || %{}, :at) do
+         before = old.requests[id] || %{},
+         true <-
+           if(is_nil(id),
+             do: req != before,
+             else: Map.delete(req, :at) != Map.delete(before, :at)
+           ) do
       req = %{
         req
         | input: count(req.input),
@@ -306,7 +318,7 @@ defmodule Wallboard.Collector.Filter do
 
       [
         request: %Proto.Request{
-          request_id: request_id(id),
+          request_id: request_id(id, s.position),
           model: model(req.model),
           effort: effort(req.effort),
           input_tokens: req.input,
@@ -425,6 +437,8 @@ defmodule Wallboard.Collector.Filter do
           repo_name(find.(cwd))
         rescue
           _ -> ""
+        catch
+          _, _ -> ""
         end
       else
         ""
@@ -523,8 +537,8 @@ defmodule Wallboard.Collector.Filter do
 
   # Allowed free text. Line breaks become spaces, characters that do not
   # show are taken out (control and formatting characters, the invisible
-  # "tag" letters and variation marks, which could carry hidden text of any
-  # size), and what is left is cut by counting characters one by one.
+  # "tag" letters, blank fillers and variation marks, which could carry
+  # hidden text), and what is left is cut by counting characters one by one.
   defp text(s, limit \\ @text_limit)
 
   defp text(s, limit) when is_binary(s) do
@@ -532,7 +546,10 @@ defmodule Wallboard.Collector.Filter do
       points =
         s
         |> String.replace(~r/\s+/u, " ")
-        |> String.replace(~r/[\p{C}\x{FE00}-\x{FE0F}\x{E0100}-\x{E01EF}]/u, "")
+        |> String.replace(
+          ~r/[\p{C}\x{034F}\x{115F}\x{1160}\x{180B}-\x{180F}\x{3164}\x{FFA0}\x{FE00}-\x{FE0F}\x{E0100}-\x{E01EF}]/u,
+          ""
+        )
         |> String.trim()
         |> String.codepoints()
 
@@ -567,10 +584,12 @@ defmodule Wallboard.Collector.Filter do
   defp shaped(_, _), do: ""
 
   # An id of another shape still has to tell its request from the others,
-  # so it leaves as a hash of itself.
-  defp request_id(id) do
+  # so it leaves as a hash of itself. A reply with no id at all is told
+  # apart by where its line is.
+  defp request_id(id, position) do
     case id(id) do
       "" ->
+        id = if is_nil(id), do: {nil, position}, else: id
         hash = :crypto.hash(:sha256, :erlang.term_to_binary(id))
         "h-" <> binary_part(Base.encode16(hash, case: :lower), 0, 16)
 

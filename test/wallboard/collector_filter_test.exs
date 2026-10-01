@@ -299,6 +299,33 @@ defmodule Wallboard.CollectorFilterTest do
       assert Enum.all?(items(events, :request), & &1.subagent)
       refute wire(events) =~ "cart total"
     end
+
+    test "a helper's file stays a helper's when a later header names no parent" do
+      header = fn source ->
+        %{type: "session_meta", payload: %{id: @codex_id, cwd: "/Users/r/shop", source: source}}
+      end
+
+      said = fn text ->
+        item = %{type: "UserMessage", content: [%{type: "text", text: text}]}
+        %{type: "event_msg", payload: %{type: "item_completed", item: item}}
+      end
+
+      # Seen in a real Codex helper file: the parent's own header copied in
+      # as the second line.
+      text =
+        [
+          header.(%{subagent: %{thread_spawn: %{parent_thread_id: "parent-thread"}}}),
+          said.("PLANTED helper prompt one"),
+          header.("vscode"),
+          said.("PLANTED helper prompt two")
+        ]
+        |> Enum.map_join(&(Jason.encode!(&1) <> "\n"))
+
+      events = events(codex_ctx(), text)
+      assert events != [] and Enum.all?(events, & &1.subagent)
+      assert items(events, :summary) == [] and items(events, :started) == []
+      refute wire(events) =~ "PLANTED"
+    end
   end
 
   describe "values shaped like names" do
@@ -359,6 +386,12 @@ defmodule Wallboard.CollectorFilterTest do
         end
 
       assert length(Enum.uniq(ids)) == 3
+
+      # Two replies with no id are two requests, not one replacing the other.
+      later = String.replace(none, "13:00:05", "13:00:09")
+      two = events(claude_ctx(), none <> "\n" <> later <> "\n") |> items(:request)
+      assert [%Proto.Request{request_id: a}, %Proto.Request{request_id: b}] = two
+      assert a != b
       # The same id always gives the same hash.
       assert [%Proto.Request{request_id: "h-" <> again}] =
                items(events(claude_ctx(), odd), :request)
@@ -453,7 +486,10 @@ defmodule Wallboard.CollectorFilterTest do
 
     test "control characters are taken out and long text is cut by size" do
       title =
-        "Fix" <> <<0>> <> " the\e[31m login\n" <> <<0x202E::utf8>> <> "loop" <> <<0x200B::utf8>>
+        "Fix" <>
+          <<0>> <>
+          " the\e[31m login\n" <>
+          <<0x202E::utf8>> <> "loop" <> <<0x200B::utf8, 0x3164::utf8, 0x034F::utf8>>
 
       long = String.duplicate("é", 5000)
 
@@ -481,6 +517,8 @@ defmodule Wallboard.CollectorFilterTest do
         line = reply(%{"cwd" => cwd})
         # claude_ctx's lookup knows one folder and raises on any other.
         assert last(events(claude_ctx(), line), :summary).repo == ""
+        thrower = %{claude_ctx() | repo: fn _ -> throw(:no) end}
+        assert last(events(thrower, line), :summary).repo == ""
         assert last(events(Map.delete(claude_ctx(), :repo), line), :summary).repo == ""
       end
     end
