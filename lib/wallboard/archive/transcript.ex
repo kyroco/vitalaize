@@ -479,7 +479,8 @@ defmodule Wallboard.Archive.Transcript do
       source_size: ctx.size,
       source_mtime: ctx.mtime,
       captured_at: ctx.now,
-      deleted_at: nil
+      deleted_at: nil,
+      source: ctx[:source]
     }
 
     {session, requests}

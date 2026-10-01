@@ -390,6 +390,75 @@ defmodule Wallboard.CollectorWatcherTest do
     end
   end
 
+  describe "going back to the hub's place" do
+    test "a file the hub has less of is read again from the hub's place, in order", c do
+      all = lines("collector/claude_session.jsonl")
+      path = claude_path(c, @claude_id <> ".jsonl")
+      add(path, all)
+      w = start(c)
+      whole = filtered(claude_ctx(), all, c)
+      assert from_files(look(w)) == whole
+      before = Outbox.stats(w.outbox).seq
+      key = {@claude_id, @claude_id <> ".jsonl"}
+
+      # The hub has all of it: nothing to do.
+      hub = %{key => List.last(whole).position}
+      assert Watcher.rewind(w.watcher, hub) == {:ok, [], before}
+      assert look(w) == []
+
+      # The hub has only the first five lines that told something.
+      at = Enum.at(whole, 4).position
+      assert {:ok, [file], ^before} = Watcher.rewind(w.watcher, %{key => at})
+      assert file == @claude_id <> ".jsonl"
+      # The rest is in the outbox again, after everything made before.
+      again = w.outbox |> Outbox.read(before, 1_000) |> Enum.map(&elem(&1, 1))
+      assert again == Enum.drop(whole, 5)
+      assert look(w) == []
+
+      # The hub knows nothing of a file that changed lately: all of it again.
+      seq = Outbox.stats(w.outbox).seq
+      assert {:ok, [^file], ^seq} = Watcher.rewind(w.watcher, %{})
+      assert w.outbox |> Outbox.read(seq, 1_000) |> Enum.map(&elem(&1, 1)) == whole
+
+      # It holds across a restart: the place saved is the one gone back to.
+      stop()
+      w = start(c)
+      assert look(w) == []
+    end
+
+    test "a file the hub no longer names, and that is old, is left alone", c do
+      path = claude_path(c, @claude_id <> ".jsonl")
+      add(path, lines("collector/claude_session.jsonl"))
+      w = start(c)
+      assert look(w) != []
+      days = Wallboard.Link.limits().resume_days + 1
+      File.touch!(path, System.os_time(:second) - days * 86_400)
+      assert look(w) == []
+
+      seq = Outbox.stats(w.outbox).seq
+      assert Watcher.rewind(w.watcher, %{}) == {:ok, [], seq}
+      assert look(w) == []
+    end
+
+    test "an outbox that cannot save the new place changes nothing", c do
+      path = claude_path(c, @claude_id <> ".jsonl")
+      add(path, lines("collector/claude_session.jsonl"))
+      w = start(c)
+      sent = look(w)
+      assert sent != []
+      dir = Path.join(c.settings.collector.dir, "outbox")
+      File.chmod!(dir, 0o500)
+      on_exit(fn -> File.chmod(dir, 0o700) end)
+
+      assert Watcher.rewind(w.watcher, %{}) == :retry
+
+      File.chmod!(dir, 0o700)
+      seq = Outbox.stats(w.outbox).seq
+      assert {:ok, [_], ^seq} = Watcher.rewind(w.watcher, %{})
+      assert w.outbox |> Outbox.read(seq, 1_000) |> Enum.map(&elem(&1, 1)) == from_files(sent)
+    end
+  end
+
   describe "what is read, and when" do
     test "an old session is left alone until it changes, then goes out whole", c do
       all = lines("collector/claude_session.jsonl")

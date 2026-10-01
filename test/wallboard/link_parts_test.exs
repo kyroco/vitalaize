@@ -201,6 +201,33 @@ defmodule Wallboard.LinkPartsTest do
       assert seqs(again) == [1, 2, 3, 4, 5, 6]
     end
 
+    test "forgets the files its reader is about to send again, and takes them again", %{dir: dir} do
+      path = Path.join(dir, "link.buffer")
+
+      buffer =
+        path
+        |> Buffer.open()
+        |> Buffer.push(
+          [status("s1", 1)] ++
+            Enum.map(1..3, &event/1) ++
+            Enum.map(1..2, &event(&1, session: "s2", file: "s2.jsonl")) ++ [ended("s1", 9)]
+        )
+
+      left = Buffer.forget_files(buffer, ["s1.jsonl"])
+      # Only that file's lines go: not another file's, not a status or an end.
+      assert Enum.map(events(left), &{&1.file, &1.position}) ==
+               [{"", 0}, {"s2.jsonl", 10}, {"s2.jsonl", 20}, {"", 0}]
+
+      # It is so after a restart too, and numbers carry on.
+      Buffer.close(left)
+      again = Buffer.open(path)
+      assert length(events(again)) == 4
+      again = Buffer.push(again, event(1))
+      assert List.last(seqs(again)) == 8
+      assert Buffer.forget_files(again, ["nothing.jsonl"]) == again
+      Buffer.close(again)
+    end
+
     test "forgets what the hub confirmed, and what the hub already has", %{dir: dir} do
       path = Path.join(dir, "link.buffer")
 

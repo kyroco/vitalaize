@@ -198,7 +198,16 @@ defmodule Wallboard.Store do
       folders TEXT,
       seen_at INTEGER
     )
-    """
+    """,
+    # Where a saved session came from: "stream" (a collector's stream),
+    # "upload" (a transcript another machine sent) or empty (this machine's
+    # own files). Uploads saved before this column are known by their place
+    # in the inbox folder.
+    "ALTER TABLE sessions ADD COLUMN source TEXT",
+    "UPDATE sessions SET source = 'upload' WHERE transcript LIKE '%/inbox/%'",
+    "CREATE INDEX sessions_session ON sessions (session_id)",
+    # For finding the sessions heard from lately when the hub starts.
+    "CREATE INDEX collector_events_received ON collector_events (received_at)"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -208,7 +217,8 @@ defmodule Wallboard.Store do
     turns turn_ms api_ms tool_ms compactions api_errors retries aborted tool_calls tool_errors
     denials lines_added lines_removed files_touched subagents subagent_cost korium_searches
     korium_search_hits korium_saves korium_save_errors code_searches code_search_hits
-    korium_index korium_other detail source_size source_mtime captured_at deleted_at tool)a
+    korium_index korium_other detail source_size source_mtime captured_at deleted_at tool
+    source)a
 
   @run_columns ~w(repo run_id attempt workflow name event branch head_sha status conclusion
     created_at started_at updated_at duration_s pr url)a
@@ -228,6 +238,10 @@ defmodule Wallboard.Store do
   Saves one session and its requests, replacing what was saved for it
   before. `session` has the keys in @session_columns (missing ones are
   saved empty); `detail` may be a map, saved as JSON.
+
+  A session whose `source` is "stream" also removes the copies of it that
+  were uploaded as transcripts, under any machine name, so a session that
+  arrives both ways is counted once.
   """
   def put_session(session, requests \\ []),
     do: GenServer.call(__MODULE__, {:put_session, session, requests}, 30_000)
@@ -290,6 +304,12 @@ defmodule Wallboard.Store do
   none, and on the disk before this returns. `events` are maps with
   `session_id`, `file`, `position`, `at`, `kind` ("file", "status" or
   "end") and `event` (the encoded message).
+
+  Once they are saved, the same step says so on the `"link"` topic, as
+  `{:link, :events, machine, events}`. The saving and the saying happen
+  here, in the database's own process, so whoever asked for the save can
+  stop at any moment without leaving events saved and unannounced. Events
+  saved a second time are announced a second time.
   """
   def put_collector_events(machine, events, now),
     do: GenServer.call(__MODULE__, {:put_collector_events, machine, events, now}, 30_000)
@@ -344,6 +364,29 @@ defmodule Wallboard.Store do
         _ -> %{m | folders: []}
       end
     end)
+  end
+
+  @doc "True when a collector's stream has saved this session, under any machine."
+  def streamed?(session_id) do
+    query("SELECT 1 AS n FROM sessions WHERE session_id = ?1 AND source = 'stream' LIMIT 1", [
+      session_id
+    ]) != []
+  end
+
+  @doc "One session's saved events from a machine, in the order they were first saved."
+  def collector_events(machine, session_id) do
+    query(
+      "SELECT session_id, file, position, at, kind, received_at, event FROM collector_events WHERE machine = ?1 AND session_id = ?2 ORDER BY rowid",
+      [machine, session_id]
+    )
+  end
+
+  @doc "The sessions a collector sent anything for since `since`: `%{machine, session_id}`."
+  def collector_sessions(since) do
+    query(
+      "SELECT DISTINCT machine, session_id FROM collector_events WHERE received_at >= ?1",
+      [since]
+    )
   end
 
   @doc """
@@ -425,6 +468,7 @@ defmodule Wallboard.Store do
 
     result =
       transaction(c, fn ->
+        if session[:source] == "stream", do: drop_uploaded(c, session)
         insert(c, "sessions", @session_columns, [session])
 
         run(c, "DELETE FROM requests WHERE machine = ?1 AND session_id = ?2", [
@@ -531,6 +575,7 @@ defmodule Wallboard.Store do
 
     :ok = Sqlite3.execute(c, "PRAGMA synchronous = NORMAL")
     :ok = Sqlite3.execute(c, "PRAGMA fullfsync = OFF")
+    if result == :ok, do: announce({:link, :events, machine, events})
     {:reply, result, state}
   end
 
@@ -589,6 +634,26 @@ defmodule Wallboard.Store do
         Logger.error("Database write failed: " <> Exception.message(e))
         {:error, Exception.message(e)}
     end
+  end
+
+  # Nobody listening (a `mix` task, say) is no reason to fail a save.
+  defp announce(message) do
+    Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", message)
+  rescue
+    _ -> :ok
+  end
+
+  # The uploaded copies of a session the stream now saves.
+  defp drop_uploaded(c, %{machine: machine, session_id: id}) do
+    twins = "session_id = ?1 AND source = 'upload' AND machine != ?2"
+
+    run(
+      c,
+      "DELETE FROM requests WHERE session_id = ?1 AND machine IN (SELECT machine FROM sessions WHERE #{twins})",
+      [id, machine]
+    )
+
+    run(c, "DELETE FROM sessions WHERE #{twins}", [id, machine])
   end
 
   defp insert(_c, _table, _cols, []), do: :ok

@@ -128,6 +128,9 @@ button { font: inherit; }
 /* A card says its state with its badge alone: green while it works, orange
    when it needs an answer. The app icon says which tool it is. */
 .session-card.needs { background: color-mix(in srgb, var(--warn) 12%, transparent); border: 2px solid var(--warn-deep); padding: 13px 17px; }
+/* Its machine is not connected: the card is how things stood when the hub last heard. */
+.session-card.stale { border-style: dashed; }
+.session-card.stale > :not(.stale-note) { opacity: .55; }
 .sc-name { font-size: 16px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .sc-id, .acct { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .acct { border: 1px solid var(--border-strong); border-radius: 9999px; padding: 1px 8px; }

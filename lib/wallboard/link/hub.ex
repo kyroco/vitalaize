@@ -13,7 +13,10 @@ defmodule Wallboard.Link.Hub do
     * `{:link, :up, machine}` and `{:link, :down, machine}`
     * `{:link, :hello, machine, info}`
     * `{:link, :events, machine, rows}` after rows are saved, each with
-      `session_id`, `file`, `position`, `at` and the encoded `event`
+      `session_id`, `file`, `position`, `at` and the encoded `event`. The
+      database sends this one itself, in the same step as the save, so a
+      stream that is cut off right after its save cannot leave rows
+      saved and unannounced.
   """
 
   use GenServer
@@ -155,10 +158,6 @@ defmodule Wallboard.Link.Hub do
 
   @doc false
   def put_bucket(machine, bucket), do: :ets.insert(@buckets, {machine, bucket})
-
-  @doc false
-  def stored(machine, rows),
-    do: Phoenix.PubSub.broadcast(Wallboard.PubSub, @topic, {:link, :events, machine, rows})
 
   # ---------------------------------------------------------------------------
 

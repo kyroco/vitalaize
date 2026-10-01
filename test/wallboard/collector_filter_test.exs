@@ -144,7 +144,9 @@ defmodule Wallboard.CollectorFilterTest do
                  "Bash",
                  "Edit",
                  "Write",
-                 "mcp__claude_ai_korium__agent_search"
+                 "mcp__claude_ai_korium__agent_search",
+                 # The tool whose name is a sentence, counted with no name.
+                 "other"
                ])
     end
 
@@ -176,7 +178,13 @@ defmodule Wallboard.CollectorFilterTest do
       tools = for t <- items(events, :tool), into: %{}, do: {t.name, {t.calls, t.errors}}
       assert tools["Bash"] == {1, 1}
       assert tools["Edit"] == {1, 0}
-      assert map_size(tools) == 4
+      # The tool whose name is not one is counted, under no name of its own.
+      assert tools["other"] == {1, 0}
+      assert map_size(tools) == 5
+
+      # So the calls add up to what the hub's reader counts.
+      assert tools |> Map.values() |> Enum.map(&elem(&1, 0)) |> Enum.sum() ==
+               tally.tools |> Map.values() |> Enum.map(& &1.calls) |> Enum.sum()
 
       counts = last(events, :counts)
       assert {counts.prompts, counts.turns, counts.turn_ms} == {2, 2, 15_000}
@@ -356,7 +364,7 @@ defmodule Wallboard.CollectorFilterTest do
 
         events = events(claude_ctx(), line)
         assert [%Proto.Request{model: "", effort: ""}] = items(events, :request)
-        assert items(events, :tool) == []
+        assert items(events, :tool) == [%Proto.ToolTally{name: "other", calls: 1, errors: 0}]
 
         assert %Proto.Summary{model: "", effort: "", version: "", entrypoint: ""} =
                  last(events, :summary)
@@ -406,8 +414,25 @@ defmodule Wallboard.CollectorFilterTest do
           reply(%{"requestId" => "req_#{n}"}, %{"content" => [tool]})
         end)
 
-      names = events(claude_ctx(), text) |> items(:tool) |> Enum.map(& &1.name) |> Enum.uniq()
-      assert length(names) == 200
+      tools = events(claude_ctx(), text) |> items(:tool)
+      names = tools |> Enum.map(& &1.name) |> Enum.uniq()
+      assert length(names -- ["other"]) == 200
+      # The rest are counted together, so no call is lost.
+      assert %Proto.ToolTally{calls: 50} =
+               tools |> Enum.filter(&(&1.name == "other")) |> List.last()
+    end
+
+    test "a tool really called other is counted with the unnamed ones" do
+      text =
+        Enum.map_join(["other", "not a name", "Bash"], fn name ->
+          tool = %{"type" => "tool_use", "id" => "t-" <> name, "name" => name, "input" => %{}}
+          reply(%{"requestId" => "req_" <> String.first(name)}, %{"content" => [tool]})
+        end)
+
+      tools = events(claude_ctx(), text) |> items(:tool)
+      last = fn name -> tools |> Enum.filter(&(&1.name == name)) |> List.last() end
+      assert %Proto.ToolTally{calls: 2} = last.("other")
+      assert %Proto.ToolTally{calls: 1} = last.("Bash")
     end
 
     test "only a pull request link on github.com leaves, with its own number and repo" do
