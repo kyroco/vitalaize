@@ -186,26 +186,40 @@ defmodule Wallboard.Collector.Outbox do
   defp answer(:checkpoint, state), do: {:reply, state.checkpoint, state}
   defp answer(:room?, state), do: {:reply, bytes(state) < state.max_bytes, state}
 
+  # A file that cannot be read is never stepped over: its events would be
+  # missed, and an ack of the later ones would then remove them unsent.
   defp answer({:read, seq, limit}, state) do
-    events =
-      state.segments
-      |> Enum.filter(fn {first, count, _} -> first + count - 1 > seq end)
-      |> Stream.flat_map(fn {first, _, _} ->
-        case File.read(path(state.dir, first)) do
-          {:ok, bin} ->
-            {records, _} = records(bin)
-            records |> Enum.with_index(first) |> Enum.map(fn {body, n} -> {n, body} end)
+    wanted = Enum.filter(state.segments, fn {first, count, _} -> first + count - 1 > seq end)
 
-          _ ->
-            []
+    read =
+      Enum.reduce_while(wanted, [], fn {first, _, _}, acc ->
+        with true <- length(acc) < limit,
+             {:ok, bin} <- File.read(path(state.dir, first)) do
+          {records, _} = records(bin)
+
+          found =
+            for {body, n} <- Enum.with_index(records, first),
+                # Never past the saved point, whatever a file holds.
+                n > seq and n <= state.seq,
+                do: {n, body}
+
+          {:cont, acc ++ found}
+        else
+          false -> {:halt, acc}
+          {:error, _} -> {:halt, :unreadable}
         end
       end)
-      # Never past the saved point, whatever a file holds.
-      |> Stream.filter(fn {n, _} -> n > seq and n <= state.seq end)
-      |> Enum.take(limit)
-      |> Enum.map(fn {n, body} -> {n, Proto.Event.decode(body)} end)
 
-    {:reply, events, state}
+    case read do
+      :unreadable ->
+        {:reply, [], broken(state)}
+
+      events ->
+        events =
+          events |> Enum.take(limit) |> Enum.map(fn {n, b} -> {n, Proto.Event.decode(b)} end)
+
+        {:reply, events, state}
+    end
   end
 
   defp answer({:ack, seq}, state) when is_integer(seq) do
@@ -284,20 +298,32 @@ defmodule Wallboard.Collector.Outbox do
   end
 
   defp load(dir) do
-    with {:ok, text} <- File.read(Path.join(dir, "state")),
-         {:ok, %{"seq" => seq, "acked" => acked, "checkpoint" => checkpoint}} <-
-           Jason.decode(text),
-         true <- is_integer(seq) and is_integer(acked) and acked >= 0 and acked <= seq,
-         true <- is_nil(checkpoint) or is_binary(checkpoint) do
-      %{seq: seq, acked: acked, checkpoint: checkpoint}
-    else
-      {:error, :enoent} ->
-        if Enum.any?(File.ls!(dir), &(&1 =~ ~r/\Aevents-\d{20}\.log\z/)),
-          do: :damaged,
-          else: %{seq: 0, acked: 0, checkpoint: nil}
+    case File.read(Path.join(dir, "state")) do
+      {:ok, text} ->
+        with {:ok, %{"seq" => seq, "acked" => acked, "checkpoint" => checkpoint}} <-
+               Jason.decode(text),
+             true <- is_integer(seq) and is_integer(acked) and acked >= 0 and acked <= seq,
+             true <- is_nil(checkpoint) or is_binary(checkpoint) do
+          %{seq: seq, acked: acked, checkpoint: checkpoint}
+        else
+          _ -> :damaged
+        end
 
-      _ ->
-        :damaged
+      # No saved point. Beside no event file, or only the very first one,
+      # nothing was ever saved: the collector stopped during its first
+      # append, and those events are made again. Beside any other event
+      # file the saved point was lost, and the numbers must carry on.
+      {:error, :enoent} ->
+        names = Enum.filter(File.ls!(dir), &(&1 =~ ~r/\Aevents-\d{20}\.log\z/))
+
+        if names -- [Path.basename(path(dir, 1))] == [],
+          do: %{seq: 0, acked: 0, checkpoint: nil},
+          else: :damaged
+
+      # There, but it cannot be read. It may be whole, so it is left alone
+      # and the outbox stays broken until it can be read.
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "read file", path: Path.join(dir, "state")
     end
   end
 
@@ -306,8 +332,8 @@ defmodule Wallboard.Collector.Outbox do
   # caller's place is gone, so it starts over and some events come twice,
   # which the hub takes in its stride.
   defp rebuild(state) do
-    Logger.warning("Collector: the outbox's saved point could not be read. Rebuilding it.")
     state = recover(%{state | seq: :all})
+    Logger.warning("Collector: the outbox's saved point was damaged. It was rebuilt.")
 
     {seq, acked} =
       case {List.first(state.segments), List.last(state.segments)} do

@@ -366,7 +366,7 @@ defmodule Wallboard.Collector.Watcher do
 
       _seq ->
         state = %{state | pending: [], unsaved?: false}
-        if Outbox.room?(state.outbox), do: state, else: %{state | full?: true}
+        if room?(state), do: state, else: %{state | full?: true}
     end
   end
 
@@ -387,6 +387,12 @@ defmodule Wallboard.Collector.Watcher do
     Outbox.checkpoint(state.outbox)
   catch
     :exit, _ -> {:error, :outbox_stopped}
+  end
+
+  defp room?(state) do
+    Outbox.room?(state.outbox)
+  catch
+    :exit, _ -> false
   end
 
   # An outbox that stopped mid-append is one that could not write. The exit
@@ -418,7 +424,7 @@ defmodule Wallboard.Collector.Watcher do
       |> notes(settings, now)
 
     state =
-      if Outbox.room?(state.outbox) do
+      if room?(state) do
         state =
           state.seen
           |> Map.keys()
@@ -808,7 +814,7 @@ defmodule Wallboard.Collector.Watcher do
 
   defp statuses(state, claude) do
     # A full outbox waits. The statuses then are sent when there is room.
-    if Outbox.room?(state.outbox) do
+    if room?(state) do
       settings = state.settings.()
       now = state.now.()
 
