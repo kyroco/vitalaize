@@ -252,7 +252,6 @@ Pictures: [top](mac-app-checks/pictures/fresh-hub/10-settings.jpg),
 | Long-running after, Keep an idle session on Live for, Days to save on first start, Save a session after it is quiet for | Typed, saved | In use |
 | Main branch, Gate workflow file, Dev deploy workflow file, Prod deploy workflow file | Typed, saved | In use |
 | Dev profile, Prod profile | Typed, saved | In use. With no database or cluster named in `settings.exs`, the board says that is what is missing |
-| Address other Macs use | Typed, saved | In use |
 | Back | Clicked | The first screen, with no "Restarting" left on it |
 
 ### 13. Settings on a collector
