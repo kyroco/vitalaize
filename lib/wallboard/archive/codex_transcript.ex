@@ -146,7 +146,12 @@ defmodule Wallboard.Archive.CodexTranscript do
       output: int(u["output_tokens"])
     }
 
-    %{t | requests: Map.put(t.requests, id, req), peak_context: max(t.peak_context, input)}
+    %{
+      t
+      | requests: Map.put(t.requests, id, req),
+        last_request: id,
+        peak_context: max(t.peak_context, input)
+    }
   end
 
   defp entry_body("compacted", _p, _at, t), do: t
