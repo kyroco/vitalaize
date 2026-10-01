@@ -17,6 +17,9 @@ enum Entry {
     static func main() {
         let args = CommandLine.arguments
         if args.count > 1, let code = CLI.run(Array(args.dropFirst())) { exit(code) }
+        #if UITEST
+        UITest.arm()
+        #endif
         WallboardApp.main()
     }
 }
@@ -123,6 +126,10 @@ final class AppState: ObservableObject {
     @Published var failure: String?
     @Published var running = false
     @Published var workflows: [String] = []
+    /// Look up on the wizard's GitHub step: whether it is asking now, and
+    /// what it found or why it found nothing.
+    @Published var lookingUp = false
+    @Published var lookupNote: Note?
     @Published var awsProfiles: [String] = []
     @Published var tools: [(String, Bool)] = []
 
@@ -153,6 +160,9 @@ final class AppState: ObservableObject {
     let finder = HubFinderHolder.shared
 
     init() {
+        #if UITEST
+        UITest.state = self
+        #endif
         if let record = Setup.installed() {
             let checked = Setup.checkedImport(record.choices)
             choices = checked.choices
@@ -254,11 +264,23 @@ final class AppState: ObservableObject {
 
     /// Looks up the workflows again after the repository changes.
     func reloadWorkflows() {
-        let repo = choices.repo
+        let repo = choices.repo.trimmingCharacters(in: .whitespaces)
+        guard repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil else {
+            lookupNote = Note(ok: false, text: repo.isEmpty
+                ? "Type the repository as owner/name in the box, then press Look up."
+                : "\"\(repo)\" is not a repository name. Write it as owner/name, like kyroco/vitalaize.")
+            return
+        }
+        choices.repo = repo
+        lookingUp = true
+        lookupNote = nil
         DispatchQueue.global().async {
-            let flows = Detect.workflows(repo: repo)
-            let branch = Detect.defaultBranch(repo: repo)
+            let found = Detect.lookUp(repo: repo)
+            let flows = found.workflows
+            let branch = found.branch
             DispatchQueue.main.async {
+                self.lookingUp = false
+                self.lookupNote = found.note
                 self.workflows = flows
                 let g = Detect.guessWorkflows(flows)
                 if self.choices.gateWorkflow.isEmpty || !flows.contains(self.choices.gateWorkflow) { self.choices.gateWorkflow = g.gate }
@@ -400,6 +422,6 @@ final class AppState: ObservableObject {
     }
 
     func open(_ path: String) {
-        if let url = URL(string: "http://localhost:\(choices.port)\(path)") { NSWorkspace.shared.open(url) }
+        if let url = URL(string: "http://localhost:\(choices.port)\(path)") { Shell.open(url) }
     }
 }

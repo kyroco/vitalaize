@@ -220,6 +220,7 @@ struct FoldersPage: View {
 struct GitHubPage: View {
     @EnvironmentObject var state: AppState
     @State private var newRepo = ""
+    @State private var addNote: Note?
 
     private var others: [String] { state.choices.otherRepos ?? [] }
 
@@ -228,8 +229,20 @@ struct GitHubPage: View {
             .foregroundStyle(.secondary)
         Form {
             HStack {
-                TextField("Repository (owner/name)", text: $state.choices.repo)
+                TextField("Repository", text: $state.choices.repo, prompt: Text("owner/name"))
+                    .onSubmit { state.reloadWorkflows() }
                 Button("Look up") { state.reloadWorkflows() }
+                    .disabled(state.lookingUp)
+            }
+            if state.lookingUp {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Asking GitHub about \(state.choices.repo)…").foregroundStyle(.secondary)
+                }
+            } else if let note = state.lookupNote {
+                Label(note.text, systemImage: note.ok ? "checkmark.circle" : "exclamationmark.triangle")
+                    .foregroundStyle(note.ok ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             TextField("Main branch", text: $state.choices.branch)
             workflowPicker("Gate workflow (checks each change)", $state.choices.gateWorkflow)
@@ -240,20 +253,21 @@ struct GitHubPage: View {
                     HStack {
                         Text(repo)
                         Spacer()
-                        Button("Remove") { state.choices.otherRepos = others.filter { $0 != repo } }
+                        Button("Remove") {
+                            state.choices.otherRepos = others.filter { $0 != repo }
+                            addNote = Note(ok: true, text: "Removed \(repo).")
+                        }
                     }
                 }
                 HStack {
-                    TextField("Add another (owner/name)", text: $newRepo)
-                    Button("Add") {
-                        let repo = newRepo.trimmingCharacters(in: .whitespaces)
-                        // owner/name, the only form the board accepts.
-                        let ok = repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
-                        if ok && repo != state.choices.repo && !others.contains(repo) {
-                            state.choices.otherRepos = others + [repo]
-                        }
-                        newRepo = ""
-                    }
+                    TextField("Add another", text: $newRepo, prompt: Text("owner/name"))
+                        .onSubmit(add)
+                    Button("Add", action: add)
+                }
+                if let note = addNote {
+                    Label(note.text, systemImage: note.ok ? "checkmark.circle" : "exclamationmark.triangle")
+                        .foregroundStyle(note.ok ? Color.secondary : Color.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
                 Text("Other repositories")
@@ -263,9 +277,27 @@ struct GitHubPage: View {
             }
         }
         .formStyle(.grouped)
-        if state.workflows.isEmpty {
-            Text("No workflows found. Check the repository name, and that gh is signed in (gh auth login).")
-                .font(.caption).foregroundStyle(.secondary)
+        .textFieldStyle(.roundedBorder)
+    }
+
+    /// Adds the typed repository to the list, or says why it was not added.
+    /// What was typed stays in the field when it is refused, to be fixed.
+    private func add() {
+        let repo = newRepo.trimmingCharacters(in: .whitespaces)
+        // owner/name, the only form the board accepts.
+        let ok = repo.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        if repo.isEmpty {
+            addNote = Note(ok: false, text: "Type a repository as owner/name in the box, then press Add.")
+        } else if !ok {
+            addNote = Note(ok: false, text: "\"\(repo)\" is not a repository name. Write it as owner/name, like kyroco/vitalaize. Nothing was added.")
+        } else if repo == state.choices.repo.trimmingCharacters(in: .whitespaces) {
+            addNote = Note(ok: false, text: "\(repo) is already the first repository above. Nothing was added.")
+        } else if others.contains(repo) {
+            addNote = Note(ok: false, text: "\(repo) is already in the list. Nothing was added.")
+        } else {
+            state.choices.otherRepos = others + [repo]
+            addNote = Note(ok: true, text: "Added \(repo).")
+            newRepo = ""
         }
     }
 
@@ -309,13 +341,13 @@ struct FeaturesPage: View {
                 Toggle("Show the New Relic page", isOn: $state.choices.newRelic)
                 if state.choices.newRelic {
                     TextField("Account ID", text: $state.choices.newRelicAccount)
-                    TextField("1Password reference for the API key (op://…)", text: $state.choices.newRelicKeyRef)
+                    TextField("1Password reference for the API key", text: $state.choices.newRelicKeyRef, prompt: Text("op://…"))
                     Text("The key is read from 1Password when the board starts and is never written to a file.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Texts when a session needs you") {
-                TextField("Phone number (empty for no texts)", text: $state.choices.phone)
+                TextField("Phone number", text: $state.choices.phone, prompt: Text("empty for no texts"))
                 Picker("Send as", selection: $state.choices.textVia) {
                     Text("iMessage").tag("iMessage")
                     Text("SMS").tag("SMS")
@@ -323,6 +355,7 @@ struct FeaturesPage: View {
             }
         }
         .formStyle(.grouped)
+        .textFieldStyle(.roundedBorder)
     }
 
     private func profilePicker(_ title: String, _ value: Binding<String>) -> some View {
@@ -364,6 +397,7 @@ struct HubPage: View {
             TextField("Hub address", text: $state.choices.hubURL, prompt: Text("http://192.168.1.20:4747"))
         }
         .formStyle(.grouped)
+        .textFieldStyle(.roundedBorder)
         Text("The hub must take collectors: on the hub, turn on Collectors on other machines in its settings.")
             .font(.caption).foregroundStyle(.secondary)
     }
@@ -440,7 +474,7 @@ struct WorkingView: View {
             if state.failure != nil {
                 HStack {
                     Button("Back to the setup") { state.failure = nil; state.screen = .wizard }
-                    Button("Open the log") { NSWorkspace.shared.open(Setup.logFile) }
+                    Button("Open the log") { Shell.open(Setup.logFile) }
                 }
             }
         }
@@ -482,7 +516,7 @@ struct StatusView: View {
                     Button("Settings") { state.openSettings() }
                     Button("Restart the board") { state.checkStart(restart: true) }
                         .disabled(state.mending)
-                    Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
+                    Button("Show the log") { Shell.open(Setup.logFile) }
                 }
                 Text("Other machines connect by running this app there (or vitalaize setup on Linux) and picking Collector only. Each shows a code; approve it in the mailbox on the board.")
                     .foregroundStyle(.secondary)
@@ -511,7 +545,7 @@ struct StatusView: View {
                     Button("Settings") { state.openSettings() }
                     Button("Restart the collector") { state.checkStart(restart: true) }
                         .disabled(state.mending)
-                    Button("Show the log") { NSWorkspace.shared.open(Setup.logFile) }
+                    Button("Show the log") { Shell.open(Setup.logFile) }
                 }
             }
 
@@ -634,6 +668,7 @@ struct PairSheet: View {
                     .buttonStyle(.plain)
                 }
                 TextField("Hub address", text: $address, prompt: Text("http://192.168.1.20:4747"))
+                    .textFieldStyle(.roundedBorder)
                 if let message = state.pairMessage { Text(message).foregroundStyle(.secondary) }
             }
             HStack {
@@ -686,6 +721,7 @@ struct SettingsView: View {
                     }
                 }
                 .formStyle(.grouped)
+                .textFieldStyle(.roundedBorder)
             } else {
                 Spacer()
                 Text(state.busy ? "Reading the settings…" : "The settings could not be read.")
@@ -759,14 +795,14 @@ struct SettingRow: View {
 // MARK: - Helpers
 
 func pickFolder(start: String, message: String) -> String? {
-    let panel = NSOpenPanel()
-    panel.canChooseDirectories = true
-    panel.canChooseFiles = false
-    panel.canCreateDirectories = true
-    panel.showsHiddenFiles = true
-    panel.message = message
-    panel.directoryURL = URL(fileURLWithPath: start)
-    return panel.runModal() == .OK ? panel.url?.path : nil
+    Shell.folderPicker(start, message)
+}
+
+/// One line said under a control after it was used: what it did, or why
+/// it did nothing.
+struct Note: Equatable {
+    var ok: Bool
+    var text: String
 }
 
 extension String {
