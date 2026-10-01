@@ -200,7 +200,7 @@ defmodule Wallboard.Link.Client do
 
   def handle_info({:link_message, ref, %Proto.FromHub{} = message}, %{conn: %{ref: ref}} = s) do
     s = %{s | heard: now()}
-    {:noreply, hub(message.body, ack(s, message.id))}
+    {:noreply, hub(message.body, ack(s, message))}
   end
 
   def handle_info({:link_down, ref, reason}, %{conn: %{ref: ref}} = s),
@@ -292,6 +292,11 @@ defmodule Wallboard.Link.Client do
   defp release(s), do: s
 
   # Every hub message with an id is answered, so the hub knows it arrived.
+  # Not "disconnected": the hub may have closed the stream already, and an
+  # answer that fails would be taken for a lost stream first.
+  defp ack(s, %Proto.FromHub{body: {:disconnected, _}}), do: s
+  defp ack(s, %Proto.FromHub{id: id}), do: ack(s, id)
+
   defp ack(%{conn: %{stream: stream}} = s, id) when id > 0 and stream != nil,
     do: transmit(s, %Proto.FromCollector{body: {:ack, %Proto.Ack{id: id}}})
 

@@ -888,6 +888,9 @@ defmodule Wallboard.StreamTest do
     dir = c.collector.collector.dir
     link = fn -> match?({:ok, %{state: "up"}}, Sender.link_state(dir)) end
     wait_until(link)
+    # The collector says "up" once its hello is sent, which is before the
+    # hub has listed it. This test is about a machine the hub has listed.
+    wait_until(fn -> Map.has_key?(Hub.connected(), "papa") end)
 
     {:ok, _} = Hub.revoke("papa")
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
@@ -897,6 +900,34 @@ defmodule Wallboard.StreamTest do
     pair(c)
     wait_until(link)
     assert Process.alive?(w.sender)
+  end
+
+  test "a collector removed just as it connects is told so, and stops trying", c do
+    start_hub(c)
+    pair(c)
+    # The hub's list of machines is held still, so the stream is past the
+    # handshake and waiting to be listed when the machine is removed.
+    hub = Process.whereis(Hub)
+    :sys.suspend(hub)
+    w = start_collector(c)
+
+    wait_until(fn ->
+      {:messages, waiting} = Process.info(hub, :messages)
+      Enum.any?(waiting, &match?({:"$gen_call", _, {:attach, _, _, _}}, &1))
+    end)
+
+    {:ok, _} = Authority.revoke(c.link, "papa")
+    :sys.resume(hub)
+
+    dir = c.collector.collector.dir
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
+    assert Process.alive?(w.sender)
+
+    # Longer than its longest wait between tries: it has stopped for good.
+    client = :sys.get_state(w.sender).client
+    Process.sleep(500)
+    assert %{phase: :removed} = Wallboard.Link.Client.status(client)
+    assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
   end
 
   test "a collector that is not paired sends nothing, and starts once it is", c do

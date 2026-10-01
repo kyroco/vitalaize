@@ -39,7 +39,8 @@ defmodule Wallboard.Collector.Watcher do
   what may leave, and each event carries its session, its file and the byte
   after its line. A status goes out when it changes: working, waiting (with
   the kind of wait) or idle. A session's end goes out when a Claude session
-  leaves `claude agents`, when a Codex session quits or has been quiet for
+  leaves `claude agents` or is listed there with nothing saying it runs
+  (see `Wallboard.Sources.Claude.live/1`), when a Codex session quits or has been quiet for
   `codex.idle_minutes` (as it leaves the board's Live tab), and when a
   session's folder is no longer watched.
 

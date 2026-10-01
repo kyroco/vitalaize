@@ -55,8 +55,13 @@ defmodule Wallboard.Link.Server do
           at: now
         })
 
+      # Revoked between the handshake and here, so no stream was listed
+      # for whoever revoked it to tell.
+      {:error, :revoked} ->
+        removed(stream, counter)
+
       {:error, _} ->
-        raise GRPC.RPCError, status: :unauthenticated, message: "this machine is not approved"
+        refuse(:unauthenticated, "this machine is not approved")
     end
   end
 
@@ -109,8 +114,7 @@ defmodule Wallboard.Link.Server do
 
         # Revoked: told so, and it stops for good.
         {:error, :revoked} ->
-          send_to(s.stream, s.counter, {:disconnected, %Proto.Disconnected{}})
-          refuse(:unauthenticated, "this machine is no longer approved")
+          removed(s.stream, s.counter)
 
         # Not on the list at all. The stream ends, and the handshake decides
         # when it tries again.
@@ -260,6 +264,13 @@ defmodule Wallboard.Link.Server do
 
   defp kind(%Proto.Event{items: items}) do
     if Enum.any?(items, &match?(%Proto.Item{body: {:ended, _}}, &1)), do: "end", else: "status"
+  end
+
+  # A machine whose certificate is revoked is told so before its stream is
+  # refused, so it stops instead of trying again for ever.
+  defp removed(stream, counter) do
+    send_to(stream, counter, {:disconnected, %Proto.Disconnected{}})
+    refuse(:unauthenticated, "this machine is no longer approved")
   end
 
   defp refuse(status, message), do: raise(GRPC.RPCError, status: status, message: message)

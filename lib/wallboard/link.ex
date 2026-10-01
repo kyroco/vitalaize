@@ -32,7 +32,9 @@ defmodule Wallboard.Link do
   The port speaks TLS 1.3 and nothing else, and a connection without a
   certificate from this hub's authority never gets past the handshake. A
   revoked certificate is refused the same way, and revoking a machine
-  while it is connected sends it `Disconnected` and closes its stream.
+  while it is connected sends it `Disconnected` and closes its stream. A
+  machine revoked after its handshake and before the hub has listed its
+  stream is told `Disconnected` too, when the stream is refused.
 
   The collector trusts only its hub's authority, and only a certificate
   made for a hub, so another machine's certificate cannot stand in for it.
