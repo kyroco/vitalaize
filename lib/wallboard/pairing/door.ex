@@ -10,18 +10,22 @@ defmodule Wallboard.Pairing.Door do
 
     * `:opening`: asked, and not yet shown; it still owes its random number
     * `:pending`: in the mailbox, waiting for Approve or Refuse
-    * `:approved`: signed; the collector fetches its certificate
+    * `:approved`: the owner said yes; the certificate is made when the
+      collector comes for it
     * `:refused`: the collector is told so
 
   Whatever its state, a request is forgotten ten minutes after it was
   made (an approved one, ten minutes after Approve, so the collector has
-  time to fetch its certificate). A waiting collector asks for the answer
-  every two seconds; a request nobody has asked about for a minute is
-  taken out of the mailbox, since the machine has gone, and Approve is
-  refused for one that has been quiet for fifteen seconds, so a
-  certificate is never made for a machine that is no longer there to take
-  it. A hub that restarts forgets every request, and the collector asks
-  again.
+  time to come for its certificate). A waiting collector asks for the
+  answer every two seconds; a request its machine has not asked about for
+  a minute is taken out of the mailbox, since the machine has gone.
+
+  Approve itself signs nothing. The certificate is made, and an older one
+  of the same machine revoked, at the moment the machine that asked comes
+  for the answer. So a machine that gave up before Approve loses nothing:
+  no certificate is made that nobody takes, and the one it holds keeps
+  working. A hub that restarts forgets every request, and the collector
+  asks again.
 
   Every change is announced on the mailbox's topic (`Wallboard.Mailbox`).
   """
@@ -62,10 +66,9 @@ defmodule Wallboard.Pairing.Door do
   def pending, do: call(:pending, [])
 
   @doc """
-  Approves a request: signs the machine's key. `:ok`, `{:error, :gone}` when
-  it ran out or was already decided, `{:error, :left}` when the machine has
-  stopped waiting for the answer, or `{:error, :unavailable}` when the
-  certificate could not be made just now (the request stays).
+  Approves a request. `:ok`, or `{:error, :gone}` when it ran out or was
+  already decided. The machine's key is signed when the machine next asks
+  for the answer (see the module doc).
   """
   def approve(id), do: call({:approve, id}, {:error, :unavailable})
 
@@ -180,10 +183,38 @@ defmodule Wallboard.Pairing.Door do
     {reply, s} =
       with :ok <- spend(s, from, :call) do
         case s.requests[id] do
-          %{state: :approved, cert_pem: cert} -> {{:ok, {:approved, cert}}, s}
-          %{state: :refused} -> {{:ok, :refused}, s}
-          %{state: :pending} = r -> {{:ok, :waiting}, put_in(s.requests[id], %{r | asked: now()})}
-          _ -> {{:error, :gone}, s}
+          %{state: :approved, cert_pem: cert} when is_binary(cert) ->
+            {{:ok, {:approved, cert}}, s}
+
+          # Approved, and the machine that asked is here for it: now the
+          # certificate is made. Anyone else who knows the id is told to
+          # wait, and changes nothing.
+          %{state: :approved, from: ^from} = r ->
+            case sign(s.dir, r) do
+              {:ok, %{cert_pem: cert}} ->
+                Logger.info("Pairing: #{r.name} has its certificate.")
+                {{:ok, {:approved, cert}}, put_in(s.requests[id], %{r | cert_pem: cert})}
+
+              {:error, reason} ->
+                Logger.warning("Pairing: no certificate for #{r.name} yet: #{inspect(reason)}")
+                {{:ok, :waiting}, s}
+            end
+
+          %{state: :approved} ->
+            {{:ok, :waiting}, s}
+
+          %{state: :refused} ->
+            {{:ok, :refused}, s}
+
+          # Only the machine that asked keeps its request alive.
+          %{state: :pending, from: ^from} = r ->
+            {{:ok, :waiting}, put_in(s.requests[id], %{r | asked: now()})}
+
+          %{state: :pending} ->
+            {{:ok, :waiting}, s}
+
+          _ ->
+            {{:error, :gone}, s}
         end
       else
         error -> {error, s}
@@ -210,29 +241,12 @@ defmodule Wallboard.Pairing.Door do
 
     case s.requests[id] do
       %{state: :pending} = r ->
-        if now() - r.asked > s.limits.quiet_ms do
-          # Nobody is there to take the certificate. Signing would still
-          # revoke the one the machine may hold now, for nothing.
-          Logger.info("Pairing: #{r.name} stopped waiting before it was approved.")
-          changed()
-          {:reply, {:error, :left}, %{s | requests: Map.delete(s.requests, id)}}
-        else
-          # A machine that pairs again gets a new certificate, and its old
-          # one stops working.
-          case sign(s.dir, r) do
-            {:ok, %{cert_pem: cert}} ->
-              Logger.info("Pairing: #{r.name} was approved.")
-              # Its ten minutes start again, so the answer is there to fetch
-              # however late Approve came.
-              s = put_in(s.requests[id], %{r | state: :approved, cert_pem: cert, made: now()})
-              changed()
-              {:reply, :ok, s}
-
-            {:error, reason} ->
-              Logger.warning("Pairing: no certificate for #{r.name}: #{inspect(reason)}")
-              {:reply, {:error, :unavailable}, s}
-          end
-        end
+        Logger.info("Pairing: #{r.name} was approved.")
+        # Its ten minutes start again, so the answer is there to fetch
+        # however late Approve came.
+        s = put_in(s.requests[id], %{r | state: :approved, made: now()})
+        changed()
+        {:reply, :ok, s}
 
       _ ->
         {:reply, {:error, :gone}, s}

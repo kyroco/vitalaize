@@ -55,9 +55,10 @@ defmodule Wallboard.Pairing do
   the answer, after a minute (so a pairing given up with Ctrl-C frees its
   place by itself). That minute is also what a wrong guess costs someone
   in the middle: a request with the wrong code sits in the mailbox for at
-  least a minute under that machine's name, so they get about ten blind
-  guesses, each one in a million, in the ten minutes a collector's code
-  lasts. Each address may start six requests a
+  least a minute under that machine's name, so in the ten minutes a
+  collector's code lasts they get about ten blind guesses under that name
+  (and as many again under each look-alike name they care to show the
+  owner), each one in a million. Each address may start six requests a
   minute and make 240 calls a minute; the door takes sixty new requests a
   minute in all. A request body over 4 KB is refused. The door takes these
   three calls and nothing else: no session data goes through it.
@@ -89,8 +90,6 @@ defmodule Wallboard.Pairing do
     # A request nobody has asked about for this long leaves the mailbox:
     # its machine has gone. A waiting collector asks every two seconds.
     gone_ms: 60_000,
-    # Approve is refused for a request that has been quiet this long.
-    quiet_ms: 15_000,
     # Requests the mailbox shows at once.
     max_pending: 5,
     # Requests still at step 2, on top of those.
@@ -430,7 +429,8 @@ defmodule Wallboard.Pairing do
     File.rm!(probe)
     :ok
   rescue
-    e in File.Error -> {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
+    e in [File.Error, File.RenameError] ->
+      {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
   end
 
   # A folder only this user can read. Each file is written beside its
@@ -453,7 +453,10 @@ defmodule Wallboard.Pairing do
 
     :ok
   rescue
-    e in File.Error -> {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
+    e in [File.Error, File.RenameError] ->
+      # Nothing half done stays behind, least of all a copy of the key.
+      for file <- Path.wildcard(Path.join(dir, ".*.tmp"), match_dot: true), do: File.rm(file)
+      {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
   end
 
   # ---------------------------------------------------------------------------
@@ -555,8 +558,17 @@ defmodule Wallboard.Pairing do
       true ->
         []
     end
-    # One hub with two network cards answers once per card. It is one hub.
-    |> Enum.uniq_by(&{&1.name, &1.port})
+    |> one_per_host()
+  end
+
+  @doc false
+  # One hub with two network cards answers once per card, under one host
+  # name: it is one hub. Two hosts under one announced name are two, and
+  # whoever asked is told so.
+  def one_per_host(hubs) do
+    hubs
+    |> Enum.uniq_by(&{&1.name, &1.port, &1[:as] || &1.host})
+    |> Enum.map(&Map.delete(&1, :as))
   end
 
   # `dns-sd` never stops by itself, so it runs under a small shell that
@@ -598,11 +610,11 @@ defmodule Wallboard.Pairing do
   # =;interface;protocol;name;type;domain;host;address;port;text
   def avahi(out) do
     for line <- String.split(out, "\n"),
-        ["=", _if, "IPv4", name, _type, _domain, _host, address, port | _] <-
+        ["=", _if, "IPv4", name, _type, _domain, host, address, port | _] <-
           [String.split(line, ";")],
         {port, ""} <- [Integer.parse(port)],
         uniq: true,
-        do: %{name: unescape(name), host: address, port: port}
+        do: %{name: unescape(name), host: address, port: port, as: printable(host)}
   end
 
   # avahi writes a space in a name as \032 (its decimal code). A name

@@ -313,6 +313,20 @@ defmodule Wallboard.PairingTest do
       assert {:ok, _} = Pairing.load(Path.join(dir, "air"))
     end
 
+    test "a save that fails at the very end is an answer, not a crash, and leaves no key behind",
+         %{dir: dir} do
+      port = start_hub(dir)
+      # Something sits where the key should go.
+      File.mkdir_p!(Path.join([dir, "air", "key.pem"]))
+      task = ask(port, dir, "air")
+      assert_receive {:code, "air", _}, 5_000
+      [%{id: id}] = Door.pending()
+      :ok = Door.approve(id)
+      assert {:error, {:folder, _}} = Task.await(task, 5_000)
+      assert Path.wildcard(Path.join([dir, "air", ".*"]), match_dot: true) == []
+      assert Pairing.load(Path.join(dir, "air")) == :error
+    end
+
     test "a collector that cannot save says so before it asks the hub anything", %{dir: dir} do
       port = start_hub(dir)
       File.write!(Path.join(dir, "a-file"), "")
@@ -622,36 +636,63 @@ defmodule Wallboard.PairingTest do
       assert [%{code: ^code}] = Door.pending()
     end
 
-    test "a request whose machine stopped asking leaves the mailbox, and is not approved",
-         %{dir: dir} do
+    test "a machine that gave up before Approve keeps the certificate it holds", %{dir: dir} do
       stop_supervised!(Door)
       link = Path.join(dir, "link")
+      start_supervised!({Door, dir: link, link_port: Hub.port(), limits: %{gone_ms: 400}})
 
-      start_supervised!(
-        {Door, dir: link, link_port: Hub.port(), limits: %{gone_ms: 400, quiet_ms: 100}}
-      )
-
-      # The machine holds a certificate already, and asks for another.
+      # The machine holds a certificate already, asks for another, and is
+      # stopped. The owner approves a moment later.
       {:ok, _} = Authority.issue(link, "air")
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
       {:ok, id} = open({10, 0, 0, 1}, "air")
       assert [%{id: ^id, replaces?: true}] = Door.pending()
-
-      # It asks, so it is still there...
-      assert {:ok, :waiting} = Door.status({10, 0, 0, 1}, id)
-      # ...then goes quiet. Approve now would revoke the certificate it
-      # holds and hand the new one to nobody.
-      Process.sleep(150)
-      assert {:error, :left} = Door.approve(id)
+      assert :ok = Door.approve(id)
       assert Door.pending() == []
+
+      # Approve made nothing and revoked nothing: nobody came for it.
       assert [%{revoked_at: nil}] = Authority.machines(link)
 
-      # Left alone, a quiet request goes by itself, and frees its place.
+      # Somebody else who knows the request's id cannot fetch it either,
+      # nor set the signing off.
+      assert {:ok, :waiting} = Door.status({10, 0, 0, 99}, id)
+      assert [%{revoked_at: nil}] = Authority.machines(link)
+
+      # The machine that asked, had it stayed, gets its certificate, and
+      # only then does the older one stop working.
+      assert {:ok, {:approved, cert}} = Door.status({10, 0, 0, 1}, id)
+      assert {:ok, {:approved, ^cert}} = Door.status({10, 0, 0, 99}, id)
+
+      assert [true, false] =
+               link
+               |> Authority.machines()
+               |> Enum.map(&(&1.revoked_at == nil))
+               |> Enum.sort(:desc)
+    end
+
+    test "a request whose machine stopped asking leaves the mailbox by itself", %{dir: dir} do
+      stop_supervised!(Door)
+
+      start_supervised!(
+        {Door, dir: Path.join(dir, "link"), link_port: Hub.port(), limits: %{gone_ms: 400}}
+      )
+
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
       {:ok, id} = open({10, 0, 0, 1}, "air")
       assert_receive {:mailbox, :changed}, 1_000
-      Process.sleep(450)
+
+      # While its machine asks, it stays. Someone else asking does not
+      # keep it there.
+      Process.sleep(250)
+      assert {:ok, :waiting} = Door.status({10, 0, 0, 1}, id)
+      Process.sleep(250)
+      assert [%{id: ^id}] = Door.pending()
+      assert {:ok, :waiting} = Door.status({10, 0, 0, 99}, id)
+      Process.sleep(250)
       assert Door.pending() == []
       assert {:error, :gone} = Door.status({10, 0, 0, 1}, id)
+      assert {:error, :gone} = Door.approve(id)
+      # Its place is free again.
       assert {:ok, _} = open({10, 0, 0, 1}, "air")
     end
 
@@ -1007,7 +1048,23 @@ defmodule Wallboard.PairingTest do
       =;eth0;IPv4;Wallboard\\032on\\032box;_wallboard._tcp;local;box.local;192.168.1.30;4747;"path=/"
       """
 
-      assert Pairing.avahi(out) == [%{name: "Wallboard on box", host: "192.168.1.30", port: 4747}]
+      found = Pairing.avahi(out)
+
+      assert Pairing.one_per_host(found) ==
+               [%{name: "Wallboard on box", host: "192.168.1.30", port: 4747}]
+
+      # A hub with two network cards is one hub; two hosts under one name
+      # are two, so the person is asked which.
+      second_card = %{name: "Wallboard on box", host: "10.0.0.30", port: 4747, as: "box.local"}
+      other_host = %{name: "Wallboard on box", host: "10.0.0.66", port: 4747, as: "evil.local"}
+      assert length(Pairing.one_per_host(found ++ [second_card])) == 1
+      assert length(Pairing.one_per_host(found ++ [other_host])) == 2
+
+      # A name is printed in a terminal: nothing but plain text gets there.
+      assert [%{name: "Wallboard[2J"}] =
+               Pairing.avahi(
+                 ~s(=;eth0;IPv4;Wallboard\\027[2J;_wallboard._tcp;local;b.local;10.0.0.1;4747;"")
+               )
     end
 
     test "this machine's own name is one a certificate can carry" do

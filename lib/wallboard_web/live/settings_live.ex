@@ -137,8 +137,9 @@ defmodule WallboardWeb.SettingsLive do
   def handle_info({:link, :hello, _machine, _info}, socket), do: {:noreply, relist(socket)}
   def handle_info({:mailbox, :changed}, socket), do: {:noreply, relist(socket)}
 
-  def handle_info({:forget_disconnect, machine}, socket) do
-    if socket.assigns.confirm_disconnect == machine,
+  # Only the latest question's own timer ends it.
+  def handle_info({:forget_disconnect, ref}, socket) do
+    if socket.assigns[:confirm_ref] == ref,
       do: {:noreply, assign(socket, confirm_disconnect: nil)},
       else: {:noreply, socket}
   end
@@ -239,8 +240,9 @@ defmodule WallboardWeb.SettingsLive do
   defp event("disconnect", %{"machine" => machine}, socket) do
     cond do
       socket.assigns.confirm_disconnect != machine ->
-        Process.send_after(self(), {:forget_disconnect, machine}, @confirm_ms)
-        {:noreply, assign(socket, confirm_disconnect: machine)}
+        ref = make_ref()
+        Process.send_after(self(), {:forget_disconnect, ref}, @confirm_ms)
+        {:noreply, assign(socket, confirm_disconnect: machine, confirm_ref: ref)}
 
       true ->
         notice =
