@@ -5,6 +5,27 @@
 # brackets], and every line inside the map ends with a comma.
 
 %{
+  # What this machine does:
+  #   "both"       runs the board and saves this machine's own sessions
+  #   "hub"        runs the board and saves only what other machines send
+  #   "collector"  runs no board and opens no port: it only watches this
+  #                machine's Claude and Codex sessions for a hub
+  role: "both",
+
+  # Only for the collector role. It finds ~/.claude, every ~/.claude-something
+  # and ~/.codex by itself; list folders here only to watch others instead.
+  collector: %{
+    claude_dirs: nil,
+    codex_dirs: nil,
+    # Where it keeps its place and the events not sent yet. nil: a
+    # "collector" folder beside the database's usual place (see archive).
+    dir: nil,
+    # The most the unsent events may take on disk, in megabytes.
+    outbox_mb: 64,
+    # On the first start, report sessions that changed in this many days.
+    backfill_days: 14
+  },
+
   # The web address is http://<this Mac's address>:<port>/
   port: 4747,
 

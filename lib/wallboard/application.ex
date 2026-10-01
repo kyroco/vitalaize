@@ -7,7 +7,7 @@ defmodule Wallboard.Application do
   def start(_type, _args) do
     children =
       if Application.get_env(:wallboard, :start_board, true) do
-        board_children()
+        children(Wallboard.Settings.load!())
       else
         [
           {Phoenix.PubSub, name: Wallboard.PubSub},
@@ -33,8 +33,25 @@ defmodule Wallboard.Application do
 
   defp archive_children(_), do: []
 
-  defp board_children do
-    settings = Wallboard.Settings.load!()
+  @doc """
+  What runs for these settings. In the collector role that is the watcher
+  and its outbox alone: no web server, no board, no GitHub, AWS or New
+  Relic checks and no database. Any other role runs the board.
+  """
+  def children(%{role: :collector} = settings), do: collector_children(settings)
+  def children(settings), do: board_children(settings)
+
+  defp collector_children(settings) do
+    [
+      {Task.Supervisor, name: Wallboard.TaskSupervisor},
+      {Wallboard.Collector.Outbox,
+       dir: Path.join(settings.collector.dir, "outbox"),
+       max_bytes: settings.collector.outbox_mb * 1_000_000},
+      Wallboard.Collector.Watcher
+    ]
+  end
+
+  defp board_children(settings) do
     configure_endpoint(settings)
     new_relic? = settings.new_relic.enabled
 
