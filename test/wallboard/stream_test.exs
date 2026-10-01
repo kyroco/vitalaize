@@ -855,6 +855,30 @@ defmodule Wallboard.StreamTest do
     end
   end
 
+  test "a status said again after a connect is in the session's history once", c do
+    start_hub(c)
+    # The collector sees the session before it is connected, so its first
+    # status is already made when the hub says where it is.
+    w = start_collector(c)
+    add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+    agents(c, [{@claude_id, %{"status" => "busy"}}])
+    look(w)
+
+    pair(c)
+    wait_until(fn -> card(@claude_id) != nil end)
+    # A later second, so a status said again carries a later time.
+    Process.sleep(1_100)
+    look(w)
+    drained(w)
+
+    :ok = Sessions.save()
+    history = Store.get_session("papa", @claude_id).events |> Enum.map(& &1.status)
+    assert history == ["working"]
+    # The hub still got it twice: that is how it would learn of it anew.
+    statuses = Enum.filter(Store.collector_events("papa", @claude_id), &(&1.kind == "status"))
+    assert length(statuses) == 2
+  end
+
   test "a collector that is not paired sends nothing, and starts once it is", c do
     start_hub(c)
     w = start_collector(c)

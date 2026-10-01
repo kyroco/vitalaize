@@ -173,10 +173,16 @@ defmodule Wallboard.Link.Sessions do
       |> Enum.reduce(state, fn {id, events}, state ->
         key = {machine, id}
         # A session not in memory is read from the database, which already
-        # holds these events.
-        entry = state.sessions[key] || %{s: read(machine, id)}
+        # holds these events; what it was before them is then not known,
+        # and is taken as nothing.
+        {entry, before} =
+          case state.sessions[key] do
+            nil -> {%{s: read(machine, id)}, Session.new(machine, id)}
+            entry -> {entry, entry.s}
+          end
+
         s = Enum.reduce(events, entry.s, &take(&2, &1))
-        record_statuses(s, events)
+        record_statuses(before, s, events)
         state = maybe_alert(state, key, s)
         put_in(state.sessions[key], %{s: s, dirty?: true, heard: now})
       end)
@@ -271,30 +277,42 @@ defmodule Wallboard.Link.Sessions do
     |> Enum.reduce(Session.new(machine, id), &take(&2, &1))
   end
 
-  # Each status a collector sent, and each end, as the archive words them.
-  # A row sent again lands on the one already there.
-  defp record_statuses(s, events) do
+  # Each change of status a collector sent, and each end, as the archive
+  # words them. `before` is the session as it stood ahead of these events.
+  # A collector says a status again, unchanged, each time it connects: that
+  # is no change, and adds nothing to the history. A row sent again lands
+  # on the one already there.
+  defp record_statuses(before, s, events) do
     name = Session.name(s)
 
-    for %Proto.Event{file: ""} = event <- events, %Proto.Item{body: body} <- event.items do
-      case body do
-        {:status, %Proto.Status{state: state}} ->
-          word =
-            case state do
-              :WAITING -> :needs
-              :WORKING -> :working
-              _ -> :idle
-            end
+    Enum.reduce(events, before, fn event, was ->
+      if event.file == "" do
+        for %Proto.Item{body: body} <- event.items do
+          case body do
+            {:status, %Proto.Status{state: state}} ->
+              word =
+                case state do
+                  :WAITING -> :needs
+                  :WORKING -> :working
+                  _ -> :idle
+                end
 
-          Store.put_status(s.machine, s.session_id, name, word, event.at)
+              if not (Session.live?(was) and Session.state(was) == word),
+                do: Store.put_status(s.machine, s.session_id, name, word, event.at)
 
-        {:ended, _} ->
-          Store.put_status(s.machine, s.session_id, name, :gone, event.at)
+            {:ended, _} ->
+              Store.put_status(s.machine, s.session_id, name, :gone, event.at)
 
-        _ ->
-          :ok
+            _ ->
+              :ok
+          end
+        end
       end
-    end
+
+      take(was, event)
+    end)
+
+    :ok
   end
 
   # One alert for each wait: asked for when a session waits and no alert
