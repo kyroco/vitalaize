@@ -1,0 +1,25 @@
+# Runs when a milestone is closed. For now it only prints the milestone's
+# title: the real deploy to dev is not written yet, and this file holds its
+# place.
+name: Deploy to dev
+
+on:
+  milestone:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Deploy to dev
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      # The title goes through an environment variable, so a milestone name
+      # with shell characters in it cannot run as a command.
+      - name: Say which milestone closed
+        env:
+          MILESTONE_TITLE: ${{ github.event.milestone.title }}
+        run: |
+          echo "Milestone closed: $MILESTONE_TITLE"
+          echo "deploy to dev goes here"
