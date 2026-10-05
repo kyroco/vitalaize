@@ -2525,8 +2525,9 @@ defmodule WallboardWeb.BoardLive do
 
   defp setup_body(error) do
     error <>
-      " Set new_relic.api_key_ref in settings.exs to your 1Password reference (for example \"op://Vault/Item/credential\"), " <>
-      "set new_relic.account_id and new_relic.checks, then restart the board."
+      " In the VitalAIze app's Settings or with vitalaize setup, type the New Relic API key, or where it is in " <>
+      "1Password (like \"op://Vault/Item/credential\"), and the account number. The checks go in new_relic.checks " <>
+      "in settings.exs."
   end
 
   defp latency(slots) do

@@ -83,7 +83,16 @@ home() {
   [ -d "$H" ] && chflags -R nouchg "$H" 2>/dev/null
   rm -rf "$H"
   mkdir -p "$H/.claude/projects" "$OUT"
+  # A keychain of its own, empty and never locked: a key typed in the app
+  # goes there, never into the keychain of whoever runs this.
+  KEYCHAIN="$H/uitest.keychain-db"
+  security create-keychain -p "" "$KEYCHAIN" && security unlock-keychain -p "" "$KEYCHAIN" &&
+    security set-keychain-settings "$KEYCHAIN" || {
+    echo "Could not make a throwaway keychain in $H." >&2
+    exit 2
+  }
   export CFFIXED_USER_HOME="$H" WALLBOARD_LABEL="$LABEL" VITALAIZE_DATA="$DATA" VITALAIZE_RELEASE="$BOARD"
+  export VITALAIZE_KEYCHAIN="$KEYCHAIN"
   # Every throwaway Mac is this one computer, so each needs a name of its
   # own: a hub refuses a collector that carries the hub's name.
   export VITALAIZE_MACHINE="uitest-$NAME"
@@ -101,7 +110,9 @@ use() {
   H="$WORK/homes/$NAME"
   LABEL="$LABEL_BASE.$NAME"
   DATA="$H/Library/Application Support/${3:-VitalAIze}"
+  KEYCHAIN="$H/uitest.keychain-db"
   export CFFIXED_USER_HOME="$H" WALLBOARD_LABEL="$LABEL" VITALAIZE_DATA="$DATA" VITALAIZE_RELEASE="$BOARD"
+  export VITALAIZE_KEYCHAIN="$KEYCHAIN"
   export VITALAIZE_MACHINE="uitest-$NAME"
 }
 
@@ -228,6 +239,11 @@ for section in doc["sections"]:
             print(field["value"])' "$1"
 }
 setting_is() { [ "$(setting "$1")" = "$2" ]; }
+# The key kept under NAME in this home's throwaway keychain.
+kept_key() { security find-generic-password -s VitalAIze -a "$1" -w "$KEYCHAIN" 2>/dev/null; }
+# True when TEXT is in no file of this home but its keychain, and in none
+# of the run's own pictures and lists of what each screen showed.
+nowhere_else() { ! grep -rqaF --exclude='*.keychain-db' -- "$1" "$H" "$OUT"; }
 
 # --- scenarios ----------------------------------------------------------------
 

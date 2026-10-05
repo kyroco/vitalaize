@@ -434,19 +434,21 @@ enum Setup {
     /// Gives back how pairing went when it asked a hub to pair: a collector
     /// is set up whether or not the hub said yes, so the caller has that to
     /// tell the person.
+    /// `newRelicKey` is a key typed in the wizard, empty for none: it is
+    /// never one of the choices, which are written to install.json.
     @discardableResult
-    static func install(_ c: Choices, onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws -> PairAnswer? {
+    static func install(_ c: Choices, newRelicKey: String = "", onCode: @escaping (PairCode?) -> Void = { _ in }, say: @escaping (String) -> Void) throws -> PairAnswer? {
         // A setup that stops after the settings were written says so: what
         // it says about the file it stopped on is not the whole of it.
         var saved = false
         do {
-            return try steps(c, saved: &saved, onCode: onCode, say: say)
+            return try steps(c, newRelicKey: newRelicKey, saved: &saved, onCode: onCode, say: say)
         } catch Failure.step(let message) where saved {
             throw Failure.step(message + " The settings from this setup were already saved, and the copies from before are in the backups folder.")
         }
     }
 
-    private static func steps(_ c: Choices, saved: inout Bool, onCode: @escaping (PairCode?) -> Void, say: @escaping (String) -> Void) throws -> PairAnswer? {
+    private static func steps(_ c: Choices, newRelicKey: String, saved: inout Bool, onCode: @escaping (PairCode?) -> Void, say: @escaping (String) -> Void) throws -> PairAnswer? {
         if let fault = awayFault() { throw Failure.step(fault + " Nothing was changed.") }
         // Kept from an earlier setup, so the hooks it added are still found
         // when this run could not take them out. The earlier record stays
@@ -491,6 +493,16 @@ enum Setup {
             try writeSettings(c, backups: backups)
             saved = true
             agree(c, say: say)
+            // Before the board starts, so it reads the key at its start.
+            let key = newRelicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if c.newRelic && !key.isEmpty {
+                say("Keeping the New Relic API key in your keychain")
+                let answer = save(["new_relic.api_key": key], dataFolder: c.dataFolder)
+                if !answer.ok {
+                    let why = (answer.errors?.values.sorted() ?? []) + (answer.lines ?? [])
+                    throw Failure.step("The New Relic API key was not kept. \(why.joined(separator: " ")) Go back and check it, or leave it empty and type it later in Settings.")
+                }
+            }
             retireOldHooks(dataFolder: c.dataFolder, say: say)
 
             if stopsOld {
@@ -888,16 +900,24 @@ enum Setup {
         try fm.createDirectory(atPath: data + "/tmp", withIntermediateDirectories: true)
         try fm.createDirectory(at: agentPlist.deletingLastPathComponent(), withIntermediateDirectories: true)
 
+        var environment = [
+            "WALLBOARD_SETTINGS": data + "/settings.exs",
+            "RELEASE_TMP": data + "/tmp",
+            "RELEASE_DISTRIBUTION": "none",
+            "PATH": Shell.pathValue,
+            "HOME": home.path
+        ]
+        #if UITEST
+        // The click-through run's throwaway keychain, so a key typed there
+        // never reaches the login keychain of whoever runs it.
+        if let keychain = ProcessInfo.processInfo.environment["VITALAIZE_KEYCHAIN"] {
+            environment["VITALAIZE_KEYCHAIN"] = keychain
+        }
+        #endif
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [release.appendingPathComponent("bin/wallboard").path, "start"],
-            "EnvironmentVariables": [
-                "WALLBOARD_SETTINGS": data + "/settings.exs",
-                "RELEASE_TMP": data + "/tmp",
-                "RELEASE_DISTRIBUTION": "none",
-                "PATH": Shell.pathValue,
-                "HOME": home.path
-            ],
+            "EnvironmentVariables": environment,
             "WorkingDirectory": data,
             "RunAtLoad": true,
             "KeepAlive": true,

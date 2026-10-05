@@ -145,6 +145,16 @@ final class AppState: ObservableObject {
     /// looked (a first setup does; Reconfigure does not).
     @Published var koriumFound: Bool?
 
+    /// The New Relic key typed in the wizard. Never one of the choices:
+    /// those are written to install.json. It goes to the board's own code,
+    /// which keeps it in the keychain, and is emptied once the setup ends.
+    @Published var newRelicKey = ""
+
+    /// True when the settings in use have a New Relic key kept.
+    var newRelicKeySet: Bool {
+        doc?.sections.flatMap { $0.fields }.first { $0.key == "new_relic.api_key" }.map { !$0.value.isEmpty } ?? false
+    }
+
     /// The settings as the board's own code gives them, and what has been
     /// typed over them on the Settings screen (by setting key).
     @Published var doc: SettingsDoc?
@@ -416,11 +426,14 @@ final class AppState: ObservableObject {
         removed = nil
         screen = .working
         let c = choices
+        let key = newRelicKey
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let pairing = try Setup.install(c, onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
+                let pairing = try Setup.install(c, newRelicKey: key,
+                                                onCode: { code in DispatchQueue.main.async { self.pairCode = code } },
                                                 say: { line in DispatchQueue.main.async { self.log.append(line) } })
                 DispatchQueue.main.async {
+                    self.newRelicKey = ""
                     // Why the hub did not pair stays on the first screen:
                     // the setup's own lines are gone once it shows.
                     if let pairing, !pairing.ok {

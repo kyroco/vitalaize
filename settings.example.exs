@@ -203,9 +203,13 @@
     # false removes page 2: the board stays on page 1 and never asks
     # 1Password or New Relic for anything.
     enabled: true,
-    # Where the User API key (it starts with NRAK-) lives in 1Password. The
-    # board runs `op read` with this once at startup and keeps the key in
-    # memory only. Example: "op://Private/New Relic/credential"
+    # The User API key (it starts with NRAK-) is not written here. Type it
+    # in the VitalAIze app's Settings or with `vitalaize setup`: it is kept
+    # in your keychain on a Mac, and on Linux in keys/new_relic beside the
+    # database, a file only you can read. Or, if you use 1Password, give
+    # where it is there instead; the board runs `op read` with it. Either
+    # way the key is held in memory only, and read again when it changes.
+    # Example: "op://Private/New Relic/credential"
     api_key_ref: nil,
     # Your New Relic account number.
     account_id: nil,

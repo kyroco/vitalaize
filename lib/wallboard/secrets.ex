@@ -2,44 +2,81 @@ defmodule Wallboard.Secrets do
   @moduledoc """
   Holds the New Relic key in memory only.
 
-  At startup it runs `op read "<api_key_ref>"` once. The key is kept inside a
-  function, so even if something prints the stored value it shows
+  The key comes from one of two places, in this order:
+
+    1. a key typed in the VitalAIze app or `vitalaize setup`, kept in the
+       keychain or a file only this user can read (`Wallboard.KeyStore`);
+       the settings hold only a note that it is there
+       (`new_relic.api_key`)
+    2. `op read "<api_key_ref>"`, through 1Password
+
+  It is read when the board starts, and again when either setting changes
+  under a running board (`Wallboard.Settings.Watch`). The key is kept
+  inside a function, so even if something prints the stored value it shows
   `#Function<...>`, never the key. It is never written to a file, a log or
   the settings.
   """
 
   require Logger
-  alias Wallboard.Cmd
+  alias Wallboard.{Cmd, KeyStore}
 
   @key {__MODULE__, :new_relic}
 
-  @doc "Reads the key named in settings. Safe to call when none is set."
+  @doc "Reads the key the settings point to. Safe to call when none is set."
   def load_new_relic(settings) do
     status =
-      case settings.new_relic.api_key_ref do
-        nil ->
-          {:missing, "No New Relic key reference in settings (new_relic.api_key_ref)."}
+      case {settings.new_relic[:api_key], settings.new_relic.api_key_ref} do
+        {%{}, _} ->
+          from_store()
 
-        ref ->
-          case Cmd.run("op", ["read", ref], timeout: 120_000) do
-            {:ok, out} ->
-              case String.trim(out) do
-                "" ->
-                  {:missing, "1Password returned an empty value for new_relic.api_key_ref."}
+        {_, nil} ->
+          {:missing,
+           "No New Relic API key yet. Type it in the VitalAIze app's Settings or with vitalaize setup."}
 
-                key ->
-                  Logger.info("New Relic key loaded into memory")
-                  {:ok, fn -> key end}
-              end
-
-            {:error, reason} ->
-              Logger.warning("Could not read the New Relic key from 1Password: #{reason}")
-              {:missing, "Could not read the key from 1Password: #{reason}"}
-          end
+        {_, ref} ->
+          from_1password(ref)
       end
 
     :persistent_term.put(@key, status)
     :ok
+  end
+
+  defp from_store do
+    place = KeyStore.place()
+
+    case KeyStore.fetch("new_relic") do
+      {:ok, key} ->
+        Logger.info("New Relic key loaded into memory from #{place}")
+        {:ok, fn -> key end}
+
+      :none ->
+        Logger.warning("The New Relic key saved in Settings is no longer in #{place}")
+
+        {:missing,
+         "The New Relic API key saved in Settings is no longer in #{place}. Type it in Settings again."}
+
+      {:error, why} ->
+        Logger.warning("Could not read the New Relic key from #{place}: #{why}")
+        {:missing, "Could not read the New Relic API key from #{place}: #{why}"}
+    end
+  end
+
+  defp from_1password(ref) do
+    case Cmd.run("op", ["read", ref], timeout: 120_000) do
+      {:ok, out} ->
+        case String.trim(out) do
+          "" ->
+            {:missing, "1Password returned an empty value for new_relic.api_key_ref."}
+
+          key ->
+            Logger.info("New Relic key loaded into memory from 1Password")
+            {:ok, fn -> key end}
+        end
+
+      {:error, reason} ->
+        Logger.warning("Could not read the New Relic key from 1Password: #{reason}")
+        {:missing, "Could not read the key from 1Password: #{reason}"}
+    end
   end
 
   @doc "{:ok, key_fun} or {:missing, reason}."

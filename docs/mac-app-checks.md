@@ -121,8 +121,9 @@ Pictures: [as found](mac-app-checks/pictures/fresh-hub/04-features.jpg),
 | Show Korium numbers | Turned on | Kept |
 | Show and save Codex sessions | Turned on | Kept |
 | Dev: awake or asleep; Prod: same build as dev? | Set, not opened | On the review |
-| Show the New Relic page | Turned on, then off before the install | On: Account ID and the 1Password reference appear |
-| Account ID, 1Password reference for the API key | Typed | Kept |
+| Show the New Relic page | Turned on, then off before the install | On: Account ID, New Relic API key and Or where it is in 1Password appear |
+| Account ID, Or where it is in 1Password | Typed | Kept |
+| New Relic API key | Typed, then the page turned off before the install | Shows dots as it is typed. With the page off it is not kept: the throwaway keychain has no key, and no file of the run holds it |
 | Phone number | Typed, then emptied before the install | On the review as "to +15550100 by SMS"; empty, the review says texts are off |
 | Send as | Set, not opened | On the review |
 | Back, Continue | Clicked | Keeps everything typed |
@@ -246,7 +247,8 @@ Pictures: [top](mac-app-checks/pictures/fresh-hub/10-settings.jpg),
 | Phone number (Messages) | Typed and emptied, not saved | See the last section |
 | Send as, Region | Set, not opened | In use |
 | Slack webhook, ntfy topic, ntfy server, Pushover user key, Pushover app token | Typed, saved | In use |
-| Account number, Where the API key is in 1Password | Typed, saved | In use |
+| Account number, Or where it is in 1Password | Typed, saved | In use, with no restart |
+| New Relic API key | Typed, saved | Kept in the run's throwaway keychain, never the login keychain of whoever runs it. The screen then shows dots; the key is in no file of the run's home, picture or list of a screen, and is still kept after Remove and a new setup |
 | Port they stream to | Typed, saved | In use |
 | Claude folders, Codex folders, Repositories | Typed, saved | In use |
 | Long-running after, Keep an idle session on Live for, Days to save on first start, Save a session after it is quiet for | Typed, saved | In use |
@@ -373,6 +375,8 @@ can do. Do these on a Mac where VitalAIze is set up, in this order.
    answer.
 11. **Things that reach outside this Mac**, which the run leaves off on purpose:
    a phone number (a text is sent when a session needs you), the New Relic page
-   (the key is read from 1Password when the board starts), the board password
+   with a real key typed in Settings (it should be in Keychain Access under
+   VitalAIze, the page should fill within a minute with no restart, and it
+   should still fill after a restart), the board password
    from another device (it should ask for `?token=` once), and a board started
    by hand that is really running when "Stop that board" is on.

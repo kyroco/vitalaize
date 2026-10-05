@@ -67,7 +67,8 @@ defmodule Wallboard.Setup do
     before = Settings.load!()
 
     with :ok <- role_is_ours(values),
-         {:ok, saved} <- Settings.change(values) do
+         {:ok, saved} <- Settings.change(values),
+         {:ok, saved} <- Settings.keep_keys(saved) do
       {:ok, saved!(before, saved, opts)}
     end
   end
@@ -519,7 +520,9 @@ defmodule Wallboard.Setup do
     # In a terminal a list is typed on one line, with commas.
     if help, do: say(io, "  (#{String.replace(help, "One per line. ", "")})")
 
-    case gets(io, "#{label}#{hint(type)} [#{display(type, current)}]: ") do
+    prompt = "#{label}#{hint(type)} [#{display(type, current)}]: "
+
+    case if(type == :key, do: gets_hidden(io, prompt), else: gets(io, prompt)) do
       nil ->
         values
 
@@ -547,7 +550,7 @@ defmodule Wallboard.Setup do
 
   defp display(:folders, ""), do: "found by itself"
   defp display(_type, ""), do: "none"
-  defp display(:secret, _), do: "set"
+  defp display(type, _) when type in [:secret, :key], do: "set"
   defp display(:boolean, "true"), do: "yes"
   defp display(:boolean, _), do: "no"
 
@@ -702,6 +705,21 @@ defmodule Wallboard.Setup do
     end
   end
 
+  # The same, with what is typed not shown where the terminal allows it:
+  # for a key, so it is not left on the screen.
+  defp gets_hidden(io, prompt) do
+    hidden? = :io.setopts(io, echo: false) == :ok
+
+    try do
+      gets(io, prompt)
+    after
+      if hidden? do
+        :io.setopts(io, echo: true)
+        IO.puts(io, "")
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # For the VitalAIze app
 
@@ -751,6 +769,8 @@ defmodule Wallboard.Setup do
                 {kind, options} =
                   case type do
                     {:choice, options} -> {"choice", options}
+                    # Drawn like any secret: dots when set, type to replace.
+                    :key -> {"secret", []}
                     other -> {Atom.to_string(other), []}
                   end
 
