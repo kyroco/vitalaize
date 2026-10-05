@@ -346,17 +346,44 @@ defmodule Wallboard.Archive.Trends do
         value: &(&1.deploys_dev + &1.deploys_prod),
         sub: &"dev #{&1.deploys_dev} · prod #{&1.deploys_prod}"
       },
+      # Runner time, split by whose machine ran the job (see
+      # Wallboard.Runners). GitHub's time is what the plan pays for.
       %{
         key: :runner_hours,
         group: :github,
-        label: "Runner time",
+        label: "Runner time on GitHub",
         fmt: :hours,
         good: :down,
-        value: fn d -> d.runner_s / 3600 end,
-        sub: &"#{thousands(&1.jobs)} jobs saved"
+        value: fn d -> d.github_s / 3600 end,
+        sub: &runner_sub(&1.github_jobs, &1.unknown_s)
+      },
+      %{
+        key: :own_runner_hours,
+        group: :github,
+        label: "Runner time on your machines",
+        fmt: :hours,
+        value: fn d -> d.own_s / 3600 end,
+        sub: &runner_sub(&1.own_jobs, &1.unknown_s)
+      },
+      # GitHub bills each job in whole minutes, rounded up, and does not
+      # bill your own runners: these are the minutes they kept off the bill.
+      %{
+        key: :minutes_avoided,
+        group: :github,
+        label: "Paid minutes avoided",
+        fmt: :count,
+        value: & &1.own_minutes,
+        sub: &"#{thousands(&1.own_jobs)} jobs on your machines"
       }
     ]
   end
+
+  defp runner_sub(jobs, unknown_s) when unknown_s > 0,
+    do: "#{thousands(jobs)} jobs · #{hours_text(unknown_s)} not known"
+
+  defp runner_sub(jobs, _), do: "#{thousands(jobs)} jobs"
+
+  defp hours_text(s), do: "#{:erlang.float_to_binary(s / 3600, decimals: 1)} h"
 
   # ---------------------------------------------------------------------------
   # Adding up
@@ -398,7 +425,13 @@ defmodule Wallboard.Archive.Trends do
     deploys_dev: 0,
     deploys_prod: 0,
     runner_s: 0,
-    jobs: 0
+    jobs: 0,
+    github_s: 0,
+    github_jobs: 0,
+    own_s: 0,
+    own_jobs: 0,
+    own_minutes: 0,
+    unknown_s: 0
   }
 
   @doc "Adds up day sums; days with nothing saved count as zero."
@@ -428,12 +461,15 @@ defmodule Wallboard.Archive.Trends do
       """,
       [from, dev, prod, gh.repo]
     ) ++
-      Store.query(
-        """
-        SELECT completed_at / 3600 AS h, sum(duration_s) AS runner_s, count(*) AS jobs
-        FROM gh_jobs WHERE repo = ?2 AND completed_at >= ?1 GROUP BY h
-        """,
-        [from, gh.repo]
+      Enum.map(
+        Store.query(
+          """
+          SELECT completed_at / 3600 AS h, duration_s, runner_name, runner_group_name, labels
+          FROM gh_jobs WHERE repo = ?2 AND completed_at >= ?1
+          """,
+          [from, gh.repo]
+        ),
+        &job_hour/1
       ) ++
       Enum.map(
         Store.query(
@@ -446,6 +482,18 @@ defmodule Wallboard.Archive.Trends do
         ),
         &%{h: &1.h, gate_durations: [&1.duration_s]}
       )
+  end
+
+  # One saved job as an hour's sums, by whose machine ran it.
+  defp job_hour(%{h: h, duration_s: d} = job) do
+    d = d || 0
+    base = %{h: h, runner_s: d, jobs: 1}
+
+    case Wallboard.Runners.kind(job) do
+      :github -> Map.merge(base, %{github_s: d, github_jobs: 1})
+      :own -> Map.merge(base, %{own_s: d, own_jobs: 1, own_minutes: div(d + 59, 60)})
+      :unknown -> Map.put(base, :unknown_s, d)
+    end
   end
 
   # Every source, summed by the hour in SQL, then by local day here.

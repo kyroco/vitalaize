@@ -23,6 +23,11 @@ defmodule Wallboard.GitHubFetchTest do
         else echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi ;;
       *"/actions/workflows/"*|*"/actions/runs?"*)
         echo '{"workflow_runs":[]}' ;;
+      *"/actions/runners?"*)
+        if [ -f "$WALLBOARD_TEST_GH/runners.json" ]; then cat "$WALLBOARD_TEST_GH/runners.json"
+        elif [ -f "$WALLBOARD_TEST_GH/runners_refused" ]; then
+          echo "gh: Must have admin rights to Repository. (HTTP 403)" >&2; exit 1
+        else echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi ;;
       *)
         echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac
@@ -136,5 +141,44 @@ defmodule Wallboard.GitHubFetchTest do
     assert {:ok, facts} = GitHub.fetch(boosters, prev, @now)
     assert facts.workflows == nil and facts.deploys == []
     refute Enum.any?(asked(dir), &String.starts_with?(&1, "workflows"))
+  end
+
+  describe "the repository's own runners" do
+    test "are read with the deploys, and a failed read keeps the last list", %{dir: dir} do
+      File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
+      [rockets, _] = repos(@rockets)
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert Enum.map(facts.runners, & &1.name) == ["acme-mini-1", "acme-mini-2", "acme-linux-1"]
+      assert "runners?per_page=100" in asked(dir)
+
+      # Not asked again before the deploys are.
+      assert {:ok, _} = GitHub.fetch(rockets, facts, DateTime.add(@now, 30))
+      refute "runners?per_page=100" in asked(dir)
+
+      # GitHub fails for another reason: the list read before stays.
+      File.rm!(Path.join(dir, "runners.json"))
+      later = DateTime.add(@now, rockets.deploy_poll_seconds)
+      assert {:ok, kept} = GitHub.fetch(rockets, facts, later)
+      assert "runners?per_page=100" in asked(dir)
+      assert kept.runners == facts.runners
+    end
+
+    test "that GitHub refuses to list are not asked for again within the hour", %{dir: dir} do
+      File.write!(Path.join(dir, "runners_refused"), "")
+      [rockets, _] = repos(@rockets)
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert facts.runners == :hidden
+      assert "runners?per_page=100" in asked(dir)
+
+      # Past the deploys' turn, but not an hour: still not asked.
+      assert {:ok, facts} = GitHub.fetch(rockets, facts, DateTime.add(@now, 1800))
+      assert facts.runners == :hidden
+      refute "runners?per_page=100" in asked(dir)
+
+      assert {:ok, _} = GitHub.fetch(rockets, facts, DateTime.add(@now, 3600))
+      assert "runners?per_page=100" in asked(dir)
+    end
   end
 end

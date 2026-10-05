@@ -1,0 +1,44 @@
+{
+  "total_count": 3,
+  "runners": [
+    {
+      "id": 41,
+      "name": "acme-mini-1",
+      "os": "macOS",
+      "status": "online",
+      "busy": false,
+      "ephemeral": false,
+      "labels": [
+        {"id": 1, "name": "self-hosted", "type": "read-only"},
+        {"id": 2, "name": "macOS", "type": "read-only"},
+        {"id": 3, "name": "ARM64", "type": "read-only"}
+      ]
+    },
+    {
+      "id": 42,
+      "name": "acme-mini-2",
+      "os": "macOS",
+      "status": "online",
+      "busy": true,
+      "ephemeral": false,
+      "labels": [
+        {"id": 1, "name": "self-hosted", "type": "read-only"},
+        {"id": 2, "name": "macOS", "type": "read-only"},
+        {"id": 3, "name": "ARM64", "type": "read-only"}
+      ]
+    },
+    {
+      "id": 43,
+      "name": "acme-linux-1",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "ephemeral": false,
+      "labels": [
+        {"id": 1, "name": "self-hosted", "type": "read-only"},
+        {"id": 4, "name": "Linux", "type": "read-only"},
+        {"id": 5, "name": "X64", "type": "read-only"}
+      ]
+    }
+  ]
+}

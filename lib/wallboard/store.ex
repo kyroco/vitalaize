@@ -207,7 +207,11 @@ defmodule Wallboard.Store do
     "UPDATE sessions SET source = 'upload' WHERE transcript LIKE '%/inbox/%'",
     "CREATE INDEX sessions_session ON sessions (session_id)",
     # For finding the sessions heard from lately when the hub starts.
-    "CREATE INDEX collector_events_received ON collector_events (received_at)"
+    "CREATE INDEX collector_events_received ON collector_events (received_at)",
+    # The runner group of the machine that ran a job: "GitHub Actions" for
+    # GitHub's own machines, another name for your own (see
+    # Wallboard.Runners). Jobs saved before this column have none.
+    "ALTER TABLE gh_jobs ADD COLUMN runner_group_name TEXT"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -224,7 +228,7 @@ defmodule Wallboard.Store do
     created_at started_at updated_at duration_s pr url)a
 
   @job_columns ~w(repo job_id run_id attempt name status conclusion created_at started_at
-    completed_at queue_s duration_s runner_name labels failed_step)a
+    completed_at queue_s duration_s runner_name labels failed_step runner_group_name)a
 
   @request_columns ~w(machine session_id request_id at model effort input_tokens output_tokens
     cache_read_tokens cache_write_tokens cost subagent)a
@@ -286,6 +290,20 @@ defmodule Wallboard.Store do
       [%{n: n}] -> n
       _ -> 0
     end
+  end
+
+  @doc """
+  Who ran each saved job of a repository that finished since `since` (Unix
+  seconds): `%{run_id, runner_name, runner_group_name, labels}` each.
+  """
+  def job_runners(repo, since) do
+    query(
+      """
+      SELECT run_id, runner_name, runner_group_name, labels FROM gh_jobs
+      WHERE repo = ?1 AND completed_at >= ?2 AND runner_name IS NOT NULL
+      """,
+      [repo, since]
+    )
   end
 
   @doc "A small saved setting, such as how far the GitHub backfill got."

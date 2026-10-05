@@ -236,6 +236,7 @@ defmodule Wallboard.Archive.GitHubCollector do
             queue_s: created && started && max(started - created, 0),
             duration_s: started && completed && max(completed - started, 0),
             runner_name: j["runner_name"],
+            runner_group_name: j["runner_group_name"],
             labels: j["labels"] && Enum.join(j["labels"], ","),
             failed_step:
               (j["steps"] || [])

@@ -157,6 +157,26 @@ machine you approved in the mailbox can send. See the known limits in the
 To try a hub and a collector on two machines step by step, with what you
 should see at each step, follow the [test guide](docs/test-guide.md).
 
+## Your own CI machines
+
+If some of your GitHub Actions jobs run on your own machines (self-hosted
+runners), the Git tab says so: a run your machines worked on reads "on" and
+the runner's name, and a repository's panel lists each of your runners as
+online, busy or offline, with the job it is running. Trends splits runner
+time into GitHub's and your own, and counts the paid minutes your machines
+kept off GitHub's bill (GitHub bills each job in whole minutes, and does not
+bill your own runners).
+
+A runner's state comes from GitHub when the board's GitHub login has admin
+rights on the repository. Otherwise a collector on the runner's machine
+reports it: only the runner's name and its state cross the network. When
+neither can tell, the board says the state is not known, and why.
+
+VitalAIze only shows runners. It does not install, start or change one.
+GitHub's own advice applies: self-hosted runners "should almost never be used
+for public repositories", because anyone who opens a pull request could run
+code on your machine.
+
 ## Questions and ideas
 
 Read the [wiki](https://github.com/kyroco/vitalaize/wiki) first. Ask for
