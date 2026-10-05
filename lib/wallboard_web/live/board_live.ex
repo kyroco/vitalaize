@@ -112,6 +112,9 @@ defmodule WallboardWeb.BoardLive do
         archive_progress: nil,
         selected: nil,
         open_repo: nil,
+        open_run: nil,
+        run_view: nil,
+        run_jobs: %{},
         repo_of: %{},
         back_ref: nil,
         trends: nil,
@@ -149,7 +152,10 @@ defmodule WallboardWeb.BoardLive do
   def handle_info({:source, :github, facts, meta}, socket),
     do:
       {:noreply,
-       socket |> assign(github: facts, github_meta: meta, now: now()) |> derive_github()}
+       socket
+       |> assign(github: facts, github_meta: meta, now: now())
+       |> derive_github()
+       |> derive_run()}
 
   def handle_info({:source, :new_relic, facts, meta}, socket),
     do: {:noreply, assign(socket, nr: facts, nr_meta: meta)}
@@ -207,6 +213,8 @@ defmodule WallboardWeb.BoardLive do
          session_tab: :live,
          selected: nil,
          open_repo: nil,
+         open_run: nil,
+         run_view: nil,
          back_ref: nil,
          mailbox_open?: false,
          mailbox_note: nil
@@ -264,6 +272,30 @@ defmodule WallboardWeb.BoardLive do
   def handle_event("close_repo", _params, socket),
     do: {:noreply, socket |> assign(open_repo: nil) |> touched()}
 
+  # One run's details, over the board or over its repository's details.
+  # They follow the live checks while open. A tap may read a finished run's
+  # jobs once more when the last read failed, never more than once.
+  def handle_event("open_run", %{"repo" => repo, "id" => id}, socket) do
+    with {id, ""} <- Integer.parse(to_string(id)),
+         %{} <- find_run(socket.assigns.github, repo, id) do
+      jobs =
+        Map.filter(socket.assigns.run_jobs, fn {{r, i, _}, v} ->
+          r == repo and i == id and not match?({:error, _}, v)
+        end)
+
+      {:noreply,
+       socket
+       |> assign(open_run: %{repo: repo, id: id}, run_view: nil, run_jobs: jobs)
+       |> derive_run()
+       |> touched()}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_run", _params, socket),
+    do: {:noreply, socket |> assign(open_run: nil, run_view: nil) |> touched()}
+
   def handle_event("refresh_archive", _params, %{assigns: %{archive_on?: true}} = socket) do
     Collector.refresh()
 
@@ -300,6 +332,28 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_event(_, _params, socket), do: {:noreply, socket}
 
+  # A finished run's jobs, read once for its panel. Saved in the archive
+  # when it is on, so the archive does not read them again and every
+  # screen finds them there.
+  @impl true
+  def handle_async({:run_jobs, {repo, id, _} = key}, result, socket) do
+    got =
+      case result do
+        {:ok, {:ok, rows}} ->
+          if archive?(socket), do: Store.put_jobs(repo, id, rows)
+          rows
+
+        {:ok, {:error, why}} ->
+          {:error, why}
+
+        {:exit, reason} ->
+          {:error, "the read stopped: #{inspect(reason)}"}
+      end
+
+    {:noreply,
+     socket |> assign(run_jobs: Map.put(socket.assigns.run_jobs, key, got)) |> derive_run()}
+  end
+
   defp cannot_decide do
     if Settings.get().token,
       do: "Open the board with its password to decide.",
@@ -325,8 +379,15 @@ defmodule WallboardWeb.BoardLive do
 
   # Any tap keeps the Archive tab and the details open a while longer.
   defp touched(
-         %{assigns: %{session_tab: :live, selected: nil, open_repo: nil, mailbox_open?: false}} =
-           socket
+         %{
+           assigns: %{
+             session_tab: :live,
+             selected: nil,
+             open_repo: nil,
+             open_run: nil,
+             mailbox_open?: false
+           }
+         } = socket
        ),
        do: assign(socket, back_ref: nil)
 
@@ -401,6 +462,70 @@ defmodule WallboardWeb.BoardLive do
       git_quiet: quiet,
       gh: repos |> List.first() |> then(&(&1 && &1.s))
     )
+  end
+
+  # The open run and its jobs. A run that leaves GitHub's last-day list
+  # keeps what was last seen of it. Jobs come from the check that reads
+  # running runs, from the archive, or from one read of that run alone.
+  defp derive_run(%{assigns: %{open_run: nil}} = socket), do: assign(socket, run_view: nil)
+
+  defp derive_run(%{assigns: %{open_run: %{repo: repo, id: id}}} = socket) do
+    seen = socket.assigns.run_view && socket.assigns.run_view.run
+
+    case find_run(socket.assigns.github, repo, id) || seen do
+      nil ->
+        assign(socket, open_run: nil, run_view: nil)
+
+      run ->
+        {socket, jobs} = run_jobs(socket, repo, run)
+        assign(socket, run_view: %{repo: repo, run: run, jobs: jobs})
+    end
+  end
+
+  defp run_jobs(socket, repo, %{status: :completed} = run) do
+    key = {repo, run.id, run[:attempt]}
+
+    case socket.assigns.run_jobs[key] || saved_jobs(socket, key) do
+      nil ->
+        socket =
+          socket
+          |> assign(run_jobs: Map.put(socket.assigns.run_jobs, key, :loading))
+          |> start_async({:run_jobs, key}, fn -> GitHub.fetch_run_jobs(repo, run.id) end)
+
+        {socket, :loading}
+
+      jobs ->
+        {assign(socket, run_jobs: Map.put(socket.assigns.run_jobs, key, jobs)), jobs}
+    end
+  end
+
+  defp run_jobs(socket, repo, run) do
+    case get_in(repo_facts(socket.assigns.github, repo) || %{}, [:jobs, run.id]) do
+      %{list: list} -> {socket, list}
+      _ -> {socket, if(run.status == :queued, do: :waiting, else: :pending)}
+    end
+  end
+
+  defp saved_jobs(socket, {repo, id, attempt}) do
+    if archive?(socket), do: Store.run_jobs(repo, id, attempt)
+  end
+
+  defp archive?(socket),
+    do: socket.assigns.archive_on? and is_pid(Process.whereis(Wallboard.Store))
+
+  @doc false
+  # A run the Git tab lists, by its repository and id, with the words its
+  # row shows.
+  def find_run(github, repo, id) do
+    case repo_facts(github, repo) do
+      %{runs: runs} = facts ->
+        (runs ++ (facts[:deploys] || []))
+        |> Enum.find(&(&1.id == id))
+        |> then(&(&1 && Map.merge(&1, %{what: GitHub.what(&1), took: GitHub.duration(&1)})))
+
+      _ ->
+        nil
+    end
   end
 
   defp unix(nil), do: 0
@@ -496,6 +621,7 @@ defmodule WallboardWeb.BoardLive do
         facts={repo_facts(@github, @open_repo)}
         meta={@github_meta}
       />
+      <.run_detail :if={@run_view} v={@run_view} />
       <WallboardWeb.MailboxPanel.panel
         :if={@mailbox_open?}
         items={@mailbox}
@@ -2067,9 +2193,9 @@ defmodule WallboardWeb.BoardLive do
       <%= if @r.s do %>
         <h3 class="kicker">Running now</h3>
         <div :if={@r.s.running == []} class="empty-box small">Nothing running</div>
-        <.run_card :for={x <- Enum.take(@r.s.running, 2)} r={x} />
+        <.run_card :for={x <- Enum.take(@r.s.running, 2)} r={x} repo={@r.repo} />
         <h3 class="kicker">Recent</h3>
-        <.recent_list runs={@r.s.recent} />
+        <.recent_list runs={@r.s.recent} repo={@r.repo} />
         <h3 class="kicker">Runs · last 6 hours</h3>
         <.timeline lanes={@r.s.lanes} more={@r.s.lanes_more} now={@now} />
       <% else %>
@@ -2130,11 +2256,19 @@ defmodule WallboardWeb.BoardLive do
   defp queue_word(queue), do: "#{length(queue)} waiting"
 
   attr :r, :map, required: true
+  attr :repo, :string, required: true
 
+  # A run going now. Tapping it opens its details.
   defp run_card(assigns) do
     ~H"""
-    <div class="run-card">
-      <div class="row baseline">
+    <button
+      type="button"
+      class="run-card"
+      phx-click="open_run"
+      phx-value-repo={@repo}
+      phx-value-id={@r.id}
+    >
+      <span class="row baseline">
         <svg
           width="16"
           height="16"
@@ -2150,24 +2284,34 @@ defmodule WallboardWeb.BoardLive do
         <span class="rc-name">{@r.name}</span>
         <span class="rc-what">{@r.what}</span>
         <span class="rc-elapsed"><.ago at={@r.started_at} fmt="for" /></span>
-      </div>
-      <div class="bar">
-        <div class="bar-fill" style={"width: #{@r.progress}%"}></div>
-      </div>
-      <div class="rc-step">{@r.step}</div>
-    </div>
+      </span>
+      <span class="bar">
+        <span class="bar-fill" style={"width: #{@r.progress}%"}></span>
+      </span>
+      <span class="rc-step">{@r.step}</span>
+    </button>
     """
   end
 
   attr :runs, :list, required: true
+  attr :repo, :string, required: true
 
   # Finished runs, newest first; rows that do not fit whole are hidden.
+  # Tapping one opens its details.
   defp recent_list(assigns) do
     ~H"""
     <div :if={@runs == []} class="empty-box small">No finished runs in the last day</div>
     <div :if={@runs != []} class="list recent" data-clip>
       <%!-- data-keep: a row app.js hid stays hidden through an update. --%>
-      <div :for={x <- @runs} class="recent-row" data-keep="style">
+      <button
+        :for={x <- @runs}
+        type="button"
+        class="recent-row"
+        data-keep="style"
+        phx-click="open_run"
+        phx-value-repo={@repo}
+        phx-value-id={x.id}
+      >
         <span class={["icon", result_class(x.conclusion)]}>{result_icon(x.conclusion)}</span>
         <span class="rr-text">
           <span class="rr-name">{x.label}</span>
@@ -2177,7 +2321,7 @@ defmodule WallboardWeb.BoardLive do
           <span class="rr-time"><.ago at={x.updated_at} fmt="clock" /></span>
           <span class="rr-took">{took(x.took)}</span>
         </span>
-      </div>
+      </button>
     </div>
     """
   end
@@ -2234,7 +2378,7 @@ defmodule WallboardWeb.BoardLive do
             <div class="detail-col">
               <h3 class="kicker">Running now</h3>
               <div :if={@r.s.running == []} class="empty-box small">Nothing running</div>
-              <.run_card :for={x <- @r.s.running} r={x} />
+              <.run_card :for={x <- @r.s.running} r={x} repo={@r.repo} />
 
               <h3 class="kicker gap-top">Merge queue</h3>
               <div :if={@r.s.queue == []} class="empty-box small">Empty</div>
@@ -2249,8 +2393,14 @@ defmodule WallboardWeb.BoardLive do
               <h3 class="kicker gap-top">Failures · 24h</h3>
               <div :if={@r.s.failures == []} class="empty-box small">None</div>
               <table :if={@r.s.failures != []} class="dtable">
-                <tr :for={f <- @r.s.failures}>
-                  <td>{f.name} · {GitHub.what(f)}</td>
+                <tr
+                  :for={f <- @r.s.failures}
+                  class="tap-row"
+                  phx-click="open_run"
+                  phx-value-repo={@r.repo}
+                  phx-value-id={f.id}
+                >
+                  <td><button type="button" class="row-link">{f.name} · {GitHub.what(f)}</button></td>
                   <td><.ago at={f.updated_at} fmt="when" /></td>
                 </tr>
               </table>
@@ -2272,9 +2422,17 @@ defmodule WallboardWeb.BoardLive do
                 <div :for={{name, runs} <- @workflows} class="workflow">
                   <span class="wf-name">{name}</span>
                   <table class="dtable">
-                    <tr :for={x <- Enum.take(runs, 5)}>
+                    <tr
+                      :for={x <- Enum.take(runs, 5)}
+                      class="tap-row"
+                      phx-click="open_run"
+                      phx-value-repo={@r.repo}
+                      phx-value-id={x.id}
+                    >
                       <td>
-                        <span class={result_class(x.conclusion)}>{run_icon(x)}</span> {x.what}
+                        <button type="button" class="row-link">
+                          <span class={result_class(x.conclusion)}>{run_icon(x)}</span> {x.what}
+                        </button>
                       </td>
                       <td><.ago at={x.updated_at || x.started_at} fmt="when" /></td>
                       <td>{took(x.took)}</td>
@@ -2292,6 +2450,175 @@ defmodule WallboardWeb.BoardLive do
 
   defp run_icon(%{status: :completed, conclusion: c}), do: result_icon(c)
   defp run_icon(_), do: "●"
+
+  # ---------------------------------------------------------------------------
+  # One run, over the whole board or over its repository's details
+
+  attr :v, :map, required: true
+
+  defp run_detail(assigns) do
+    run = assigns.v.run
+
+    assigns =
+      assign(assigns,
+        run: run,
+        jobs: if(is_list(assigns.v.jobs), do: sort_jobs(assigns.v.jobs)),
+        rerun_by: run[:started_by] && run[:actor] != run[:started_by] && run[:started_by]
+      )
+
+    ~H"""
+    <div class="detail-scrim" phx-click="close_run">
+      <div class="detail detail-run" phx-click="noop">
+        <div class="row">
+          <span class={["dot12", run_tone(@run)]}></span>
+          <h2 class="detail-title">{@run.name}</h2>
+          <span class={["badge", "badge-run-#{run_tone(@run)}"]}>{run_state(@run)}</span>
+          <span class="grow"></span>
+          <button class="close" phx-click="close_run" aria-label="Close">×</button>
+        </div>
+        <div class="detail-meta">
+          <span>{@v.repo}</span>
+          <span :if={@run.status == :completed && @run.took}>ran {took(@run.took)}</span>
+          <span :if={@run.status == :in_progress && @run.started_at}>
+            running for <.ago at={@run.started_at} fmt="for" />
+          </span>
+          <span :if={@run.status == :queued}>waiting for a runner</span>
+          <span :if={@run.started_at}>started <.ago at={@run.started_at} fmt="when" /></span>
+          <span :if={(@run[:attempt] || 1) > 1}>attempt {@run.attempt}</span>
+        </div>
+        <div class="detail-meta">
+          <span :if={@run.branch}>branch {@run.branch}</span>
+          <span :if={@run.sha} class="run-commit">
+            <code>{@run.sha}</code> {@run[:commit] || @run.title}
+          </span>
+          <span>{event_words(@run)}</span>
+          <span :if={@run[:actor]}>by {@run.actor}</span>
+          <span :if={@rerun_by}>rerun by {@rerun_by}</span>
+          <a
+            :if={@run.url}
+            href={@run.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="link-button"
+          >
+            Open on GitHub
+          </a>
+        </div>
+
+        <div class="detail-body">
+          <h3 class="kicker">Jobs{if @jobs, do: " · #{length(@jobs)}"}</h3>
+          <%= case @v.jobs do %>
+            <% :loading -> %>
+              <div class="empty-box small">Loading jobs…</div>
+            <% :waiting -> %>
+              <div class="empty-box small">Waiting for a runner</div>
+            <% :pending -> %>
+              <div class="empty-box small">The jobs show at the next check</div>
+            <% {:error, why} -> %>
+              <div class="empty-box small">Could not read the jobs: {why}</div>
+            <% _ -> %>
+              <div :if={@jobs == []} class="empty-box small">No jobs</div>
+              <div :if={@jobs != []} class="job-list">
+                <.job_line :for={j <- @jobs} j={j} />
+              </div>
+          <% end %>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :j, :map, required: true
+
+  # One job: its state, name, the step that failed, the runner and how long.
+  defp job_line(assigns) do
+    ~H"""
+    <div class="job-line">
+      <span class={["job-icon", job_class(@j)]}>
+        <svg
+          :if={@j.status == "in_progress"}
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+          class="spin"
+        >
+          <circle cx="8" cy="8" r="6" stroke-dasharray="26 12"></circle>
+        </svg>
+        {if @j.status != "in_progress", do: job_icon(@j)}
+      </span>
+      <span class="job-text">
+        <span class="job-name">{@j.name}</span>
+        <span :if={@j.failed_step} class="job-failed">failed at: {@j.failed_step}</span>
+      </span>
+      <span class="job-runner">
+        {cond do
+          @j.runner_name not in [nil, ""] -> "on " <> @j.runner_name
+          @j.status in ["queued", "waiting", "pending"] -> "waiting for a runner"
+          true -> ""
+        end}
+      </span>
+      <span class="job-time">
+        <%= cond do %>
+          <% @j.status == "in_progress" && @j.started_at -> %>
+            <.ago at={DateTime.from_unix!(@j.started_at)} fmt="for" />
+          <% @j.duration_s -> %>
+            {took(@j.duration_s)}
+          <% true -> %>
+            {job_state(@j)}
+        <% end %>
+      </span>
+    </div>
+    """
+  end
+
+  # In the order they ran: by start, then by when they were made.
+  defp sort_jobs(jobs),
+    do: Enum.sort_by(jobs, &{&1.started_at || &1.created_at || :infinity, &1.name || ""})
+
+  defp run_tone(%{status: :completed, conclusion: "success"}), do: "ok"
+  defp run_tone(%{status: :completed, conclusion: "failure"}), do: "bad"
+  defp run_tone(%{status: :completed}), do: "muted"
+  defp run_tone(_), do: "info"
+
+  defp run_state(%{status: :queued}), do: "Waiting"
+  defp run_state(%{status: :in_progress}), do: "Running"
+  defp run_state(%{conclusion: c}), do: conclusion_word(c)
+
+  defp job_state(%{status: "completed", conclusion: c}), do: conclusion_word(c)
+  defp job_state(%{status: "in_progress"}), do: "Running"
+  defp job_state(_), do: "Waiting"
+
+  defp conclusion_word("success"), do: "Passed"
+  defp conclusion_word("failure"), do: "Failed"
+  defp conclusion_word("cancelled"), do: "Cancelled"
+  defp conclusion_word("skipped"), do: "Skipped"
+  defp conclusion_word("timed_out"), do: "Timed out"
+  defp conclusion_word("action_required"), do: "Needs approval"
+  defp conclusion_word(nil), do: "Finished"
+  defp conclusion_word(c), do: c |> String.replace("_", " ") |> String.capitalize()
+
+  defp job_icon(%{status: "completed", conclusion: c}), do: result_icon(c)
+  defp job_icon(_), do: "○"
+
+  defp job_class(%{status: "completed", conclusion: c}), do: result_class(c)
+  defp job_class(%{status: "in_progress"}), do: "info-ink"
+  defp job_class(_), do: "muted-ink"
+
+  # What started a run, in plain words.
+  defp event_words(%{event: "push"}), do: "push"
+  defp event_words(%{event: "pull_request", pr: pr}) when is_integer(pr), do: "pull request ##{pr}"
+  defp event_words(%{event: "pull_request"}), do: "pull request"
+  defp event_words(%{event: "merge_group"}), do: "merge queue"
+  defp event_words(%{event: "workflow_dispatch"}), do: "started by hand"
+  defp event_words(%{event: "schedule"}), do: "on a schedule"
+  defp event_words(%{event: "dynamic"}), do: "GitHub's own job"
+  defp event_words(%{event: "workflow_run"}), do: "after another workflow"
+  defp event_words(%{event: nil}), do: "started"
+  defp event_words(%{event: e}), do: String.replace(e, "_", " ")
 
   defp gate_words(gate, draft) do
     words =

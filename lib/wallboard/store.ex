@@ -264,6 +264,19 @@ defmodule Wallboard.Store do
   def put_jobs(repo, run_id, jobs),
     do: GenServer.call(__MODULE__, {:put_jobs, repo, run_id, jobs}, 30_000)
 
+  @doc """
+  A run's saved jobs, or nil when none are saved for this attempt of it.
+  A rerun keeps the jobs it did not run again under the earlier attempt,
+  so the saved jobs are this attempt's when the newest of them is. With
+  no attempt given, any saved jobs do.
+  """
+  def run_jobs(repo, run_id, attempt) do
+    jobs = query("SELECT * FROM gh_jobs WHERE repo = ?1 AND run_id = ?2", [repo, run_id])
+    newest = jobs |> Enum.map(& &1.attempt) |> Enum.reject(&is_nil/1) |> Enum.max(fn -> nil end)
+
+    if jobs != [] and (is_nil(attempt) or is_nil(newest) or newest == attempt), do: jobs
+  end
+
   @doc "Finished runs whose jobs are not saved yet, newest first."
   def runs_missing_jobs(repo, limit) do
     query(
