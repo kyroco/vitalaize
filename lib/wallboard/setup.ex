@@ -706,9 +706,13 @@ defmodule Wallboard.Setup do
   end
 
   # The same, with what is typed not shown where the terminal allows it:
-  # for a key, so it is not left on the screen.
-  defp gets_hidden(io, prompt) do
-    hidden? = :io.setopts(io, echo: false) == :ok
+  # for a key, so it is not left on the screen. Erlang leaves it off the
+  # screen only when it reads the terminal itself, in its raw mode; asking
+  # for no echo without that is answered :ok and changes nothing. Input
+  # from a pipe or a file has nothing to hide, and is read as it is.
+  defp gets_hidden(:stdio = io, prompt) do
+    raw? = :shell.start_interactive({:noshell, :raw}) in [:ok, {:error, :already_started}]
+    hidden? = raw? and :io.setopts(io, echo: false) == :ok
 
     try do
       gets(io, prompt)
@@ -719,6 +723,8 @@ defmodule Wallboard.Setup do
       end
     end
   end
+
+  defp gets_hidden(io, prompt), do: gets(io, prompt)
 
   # ---------------------------------------------------------------------------
   # For the VitalAIze app

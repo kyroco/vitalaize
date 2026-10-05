@@ -241,9 +241,14 @@ for section in doc["sections"]:
 setting_is() { [ "$(setting "$1")" = "$2" ]; }
 # The key kept under NAME in this home's throwaway keychain.
 kept_key() { security find-generic-password -s VitalAIze -a "$1" -w "$KEYCHAIN" 2>/dev/null; }
-# True when TEXT is in no file of this home but its keychain, and in none
-# of the run's own pictures and lists of what each screen showed.
-nowhere_else() { ! grep -rqaF --exclude='*.keychain-db' -- "$1" "$H" "$OUT"; }
+# True when TEXT is in no file of this home but its keychain, in none of the
+# run's lists of what each screen showed, and in nothing the app printed.
+# The script's own steps, and its line for each one, hold what it typed.
+nowhere_else() {
+  ! grep -rqaF --exclude='*.keychain-db' -- "$1" "$H" &&
+    ! grep -rqaF --exclude='*.steps' --exclude='*results.txt' --exclude='*.log' -- "$1" "$OUT" &&
+    ! cat "$OUT"/*.log 2>/dev/null | grep -aF -- "$1" | grep -qavE '^(ok|FAIL)[[:space:]]'
+}
 
 # --- scenarios ----------------------------------------------------------------
 
