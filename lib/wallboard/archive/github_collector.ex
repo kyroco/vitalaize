@@ -14,6 +14,9 @@ defmodule Wallboard.Archive.GitHubCollector do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
       GitHub's 5,000; two weeks of jobs fill in over about two hours.
+    * saves the pull requests closed or changed in the last 2 days (the last
+      `backfill_days` on the first round), newest first, 100 a call: usually
+      one call. `Wallboard.Archive.PullRequests` reads them.
 
   A run that is rerun or finishes gets its jobs fetched again.
   """
@@ -137,7 +140,18 @@ defmodule Wallboard.Archive.GitHubCollector do
           end
         end)
 
-      {:ok, length(runs), jobs}
+      prs_key = "github_prs_backfill:" <> repo
+
+      prs_since =
+        if Store.get_meta(prs_key),
+          do: Date.add(today, -1),
+          else: Date.add(today, -a.backfill_days)
+
+      with {:ok, prs} <- fetch_prs(repo, prs_since) do
+        :ok = Store.put_prs(prs)
+        if !Store.get_meta(prs_key), do: Store.put_meta(prs_key, Date.to_iso8601(today))
+        {:ok, length(runs), jobs}
+      end
     end
   rescue
     e -> {:error, Exception.message(e)}
@@ -163,6 +177,25 @@ defmodule Wallboard.Archive.GitHubCollector do
 
       if runs != [] and length(acc) < total and page < 10,
         do: fetch_day(repo, day, page + 1, acc),
+        else: {:ok, acc}
+    end
+  end
+
+  # Closed pull requests changed on or after `since`, newest change first, a
+  # page of 100 at a time until a page reaches back before `since`.
+  defp fetch_prs(repo, since, page \\ 1, acc \\ []) do
+    path =
+      "repos/#{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=#{page}"
+
+    from = since |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix()
+
+    with {:ok, json} <- api(path),
+         {:ok, prs} <- parse_prs(json, repo) do
+      recent = Enum.filter(prs, &((&1.updated_at || 0) >= from))
+      acc = acc ++ Enum.map(recent, &Map.delete(&1, :updated_at))
+
+      if length(prs) == 100 and length(recent) == 100 and page < 10,
+        do: fetch_prs(repo, since, page + 1, acc),
         else: {:ok, acc}
     end
   end
@@ -211,6 +244,36 @@ defmodule Wallboard.Archive.GitHubCollector do
         |> then(&(&1 && &1["number"])),
       url: r["html_url"]
     }
+  end
+
+  @doc """
+  Closed pull requests from a REST reply, as rows for the database, each
+  with `updated_at` for knowing when to stop paging.
+  """
+  def parse_prs(text, repo) do
+    case Jason.decode(text) do
+      {:ok, prs} when is_list(prs) ->
+        {:ok,
+         for %{"number" => n} = p when is_integer(n) <- prs do
+           %{
+             repo: repo,
+             number: n,
+             title: p["title"],
+             branch: get_in(p, ["head", "ref"]),
+             base: get_in(p, ["base", "ref"]),
+             head_sha: get_in(p, ["head", "sha"]),
+             author: get_in(p, ["user", "login"]),
+             created_at: unix(p["created_at"]),
+             closed_at: unix(p["closed_at"]),
+             merged_at: unix(p["merged_at"]),
+             url: p["html_url"],
+             updated_at: unix(p["updated_at"])
+           }
+         end}
+
+      _ ->
+        {:error, "GitHub returned pull requests in an unexpected shape"}
+    end
   end
 
   @doc "A run's jobs from a REST reply, as rows for the database."

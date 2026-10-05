@@ -207,7 +207,31 @@ defmodule Wallboard.Store do
     "UPDATE sessions SET source = 'upload' WHERE transcript LIKE '%/inbox/%'",
     "CREATE INDEX sessions_session ON sessions (session_id)",
     # For finding the sessions heard from lately when the hub starts.
-    "CREATE INDEX collector_events_received ON collector_events (received_at)"
+    "CREATE INDEX collector_events_received ON collector_events (received_at)",
+    # Closed pull requests of the tracked repositories; `merged_at` is empty
+    # for one closed without merging. `branch` is the PR's own branch and
+    # `base` the one it merges into.
+    """
+    CREATE TABLE gh_prs (
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT,
+      branch TEXT,
+      base TEXT,
+      head_sha TEXT,
+      author TEXT,
+      created_at INTEGER,
+      closed_at INTEGER,
+      merged_at INTEGER,
+      url TEXT,
+      PRIMARY KEY (repo, number)
+    )
+    """,
+    "CREATE INDEX gh_prs_merged ON gh_prs (merged_at)",
+    # The session's GitHub repository as "owner/name", read from its folder
+    # where it ran. Empty for rows saved before this column, and for a
+    # folder with no GitHub origin.
+    "ALTER TABLE sessions ADD COLUMN repo TEXT"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -218,13 +242,16 @@ defmodule Wallboard.Store do
     denials lines_added lines_removed files_touched subagents subagent_cost korium_searches
     korium_search_hits korium_saves korium_save_errors code_searches code_search_hits
     korium_index korium_other detail source_size source_mtime captured_at deleted_at tool
-    source)a
+    source repo)a
 
   @run_columns ~w(repo run_id attempt workflow name event branch head_sha status conclusion
     created_at started_at updated_at duration_s pr url)a
 
   @job_columns ~w(repo job_id run_id attempt name status conclusion created_at started_at
     completed_at queue_s duration_s runner_name labels failed_step)a
+
+  @pr_columns ~w(repo number title branch base head_sha author created_at closed_at merged_at
+    url)a
 
   @request_columns ~w(machine session_id request_id at model effort input_tokens output_tokens
     cache_read_tokens cache_write_tokens cost subagent)a
@@ -259,6 +286,9 @@ defmodule Wallboard.Store do
   saved has its jobs fetched again (a rerun, or a run that finished).
   """
   def put_runs(runs), do: GenServer.call(__MODULE__, {:put_runs, runs}, 30_000)
+
+  @doc "Saves closed pull requests, replacing what was saved for each before."
+  def put_prs(prs), do: GenServer.call(__MODULE__, {:put_prs, prs}, 30_000)
 
   @doc "Saves one run's jobs and marks the run's jobs as saved."
   def put_jobs(repo, run_id, jobs),
@@ -522,6 +552,9 @@ defmodule Wallboard.Store do
 
     {:reply, result, state}
   end
+
+  def handle_call({:put_prs, prs}, _from, %{conn: c} = state),
+    do: {:reply, transaction(c, fn -> insert(c, "gh_prs", @pr_columns, prs) end), state}
 
   def handle_call({:put_meta, key, value}, _from, %{conn: c} = state) do
     run(c, "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value])
