@@ -26,7 +26,9 @@ defmodule Wallboard.Archive.CiMinutes do
   branch, in its repository when the session's repository is known, that
   was at work when the attempt began (from its start to `@after_s` past its
   last activity, since a push is often a session's last act). When several
-  qualify, the one that started last gets it, so an attempt counts once.
+  qualify, a session no other tool started comes first (a Codex review that
+  Claude started runs inside the Claude session that pushes), then the one
+  that started last, so an attempt counts once.
   Sessions save no commit, so the link is by branch and time.
 
   Attempts on the repository's default branch (and on `main` or `master`),
@@ -38,6 +40,11 @@ defmodule Wallboard.Archive.CiMinutes do
 
   # How long after a session's last activity an attempt it caused may begin.
   @after_s 300
+
+  # Who started a Codex session that another tool started, such as a review
+  # Claude asked for. Claude's own `claude -p` runs look like any other
+  # session started without a terminal, so they cannot be told apart.
+  @nested ["Claude Code", "codex_exec"]
 
   # Events no session causes by pushing.
   @not_pushed ~w(schedule merge_group dynamic)
@@ -161,8 +168,8 @@ defmodule Wallboard.Archive.CiMinutes do
 
   An attempt has `repo`, `branch`, `event`, `at` and `default` (its
   repository's default branch, or nil); a session has `machine`,
-  `session_id`, `repo` (nil when not known), `branch`, `started_at` and
-  `ended_at`.
+  `session_id`, `repo` (nil when not known), `branch`, `started_at`,
+  `ended_at` and, optionally, `nested` (true when another tool started it).
   """
   def link(attempts, sessions) do
     by_branch = Enum.group_by(sessions, & &1.branch)
@@ -187,7 +194,12 @@ defmodule Wallboard.Archive.CiMinutes do
         a.at <= s.ended_at + @after_s and
         (s.repo == nil or String.downcase(s.repo) == String.downcase(a.repo))
     end)
-    |> Enum.max_by(&{&1.started_at, &1.machine, &1.session_id}, fn -> nil end)
+    |> Enum.max_by(
+      &{!Map.get(&1, :nested, false), &1.started_at, &1.machine, &1.session_id},
+      fn ->
+        nil
+      end
+    )
   end
 
   @doc """
@@ -255,8 +267,8 @@ defmodule Wallboard.Archive.CiMinutes do
     rows =
       Store.query(
         """
-        SELECT machine, session_id, coalesce(tool, 'claude') AS tool, git_branch, started_at,
-          ended_at, cwd, source
+        SELECT machine, session_id, coalesce(tool, 'claude') AS tool, entrypoint, git_branch,
+          started_at, ended_at, cwd, source
         FROM sessions WHERE #{where}
         """,
         params
@@ -274,6 +286,7 @@ defmodule Wallboard.Archive.CiMinutes do
         machine: row.machine,
         session_id: row.session_id,
         tool: row.tool,
+        nested: row.tool == "codex" and row.entrypoint in @nested,
         # Only this machine's own sessions have their folder here.
         repo: if(row.source in [nil, ""], do: repos[row.cwd]),
         branch: row.git_branch,
