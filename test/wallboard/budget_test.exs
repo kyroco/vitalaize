@@ -1,8 +1,11 @@
 defmodule Wallboard.BudgetTest do
   use ExUnit.Case, async: false
 
+  import Phoenix.LiveViewTest, only: [render_component: 2]
+
   alias Wallboard.{Settings, Store}
   alias Wallboard.Sources.Budget
+  alias WallboardWeb.BoardLive
 
   setup do
     start_supervised!({Store, path: ":memory:"})
@@ -146,6 +149,40 @@ defmodule Wallboard.BudgetTest do
     assert Wallboard.Alerts.channels(settings(%{by_slack: false}, alerts)) == [:slack, :ntfy]
     # A channel switched on but not set up sends nothing.
     assert Budget.channels(settings(%{by_pushover: true}, alerts)) == [:slack, :ntfy]
+  end
+
+  describe "on the board" do
+    test "the poller hands the board the passed limits" do
+      put("a", "claude", noon(today()), 162.0, 1)
+
+      assert {:ok, facts, :memory} =
+               Budget.poll(settings(%{claude_dollars: 150}), nil, :memory, noon(today()))
+
+      assert [%{key: :claude_dollars}] = BoardLive.budget_over(facts)
+    end
+
+    test "the board takes up what the poller sends, and shows nothing before its first check" do
+      assert BoardLive.budget_over(nil) == []
+
+      socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}
+      facts = %{over: [%{key: :claude_dollars}]}
+
+      assert {:noreply, socket} = BoardLive.handle_info({:source, :budget, facts, %{}}, socket)
+      assert BoardLive.budget_over(socket.assigns.budget) == facts.over
+    end
+
+    test "the strip names each passed limit, and is not there with none" do
+      put("a", "claude", noon(today()), 162.0, 1)
+      put("x", "codex", noon(today()), 0.0, 60_000)
+      s = settings(%{claude_dollars: 150, codex_tokens: 50_000, codex_tokens_per: "week"})
+
+      html = render_component(&BoardLive.budget_banner/1, over: Budget.over(s, noon(today())))
+      assert html =~ "Over budget"
+      assert html =~ "Claude spend today $162 of $150"
+      assert html =~ "Codex tokens this week 60,000 of 50,000"
+
+      refute render_component(&BoardLive.budget_banner/1, over: []) =~ "Over budget"
+    end
   end
 
   test "with no limits, or the archive off, nothing shows and nothing is sent" do

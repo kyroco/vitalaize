@@ -145,6 +145,22 @@ defmodule Wallboard.CollectorRoleTest do
     assert both -- hub == [Wallboard.Archive.Collector]
   end
 
+  test "a board checks the budget limits every minute", c do
+    for role <- ["both", "hub"] do
+      %{start: {Supervisor, :start_link, [pollers, _]}} =
+        role
+        |> settings(c.dir)
+        |> Wallboard.Application.children()
+        |> Enum.find(&match?(%{id: Wallboard.Pollers}, &1))
+
+      assert {Wallboard.Poller, opts} =
+               Enum.find(pollers, fn {_, opts} -> opts[:name] == :budget end)
+
+      assert opts[:source] == Wallboard.Sources.Budget
+      assert opts[:interval_ms] == 60_000
+    end
+  end
+
   describe "the role setting" do
     test "is hub, collector or both, and both when the file leaves it out" do
       assert Settings.role(Settings.defaults()) == :both

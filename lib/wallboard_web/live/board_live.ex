@@ -434,7 +434,7 @@ defmodule WallboardWeb.BoardLive do
           mailbox={length(@mailbox)}
         />
         <.needs_banner needs={@needs} />
-        <.budget_banner over={(@budget && @budget.over) || []} />
+        <.budget_banner over={budget_over(@budget)} />
         <.tiles
           repos={@git}
           meta={@github_meta}
@@ -686,10 +686,16 @@ defmodule WallboardWeb.BoardLive do
     """
   end
 
+  @doc false
+  # The limits the budget poller last found passed; none before its first check.
+  def budget_over(%{over: over}), do: over
+  def budget_over(_), do: []
+
   attr :over, :list, required: true
 
   # The budget limits passed in their day or week (see Wallboard.Sources.Budget).
-  defp budget_banner(assigns) do
+  @doc false
+  def budget_banner(assigns) do
     ~H"""
     <section :if={@over != []} class="budget-banner" aria-label="Over budget">
       <span class="bb-kicker">Over budget</span>
