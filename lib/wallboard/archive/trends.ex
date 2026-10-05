@@ -10,7 +10,9 @@ defmodule Wallboard.Archive.Trends do
 
   Session totals (Korium use, tool calls, lines) count on the day the
   session last did something, so a session that ran for days lands on its
-  last day. Spend and requests use each request's own time.
+  last day. Spend and requests use each request's own time. CI minutes
+  count on the day each run attempt began, and the part agents caused goes
+  to the tool of the session that pushed (see `CiMinutes`).
 
   The Claude cards count Claude sessions only, the Codex cards Codex
   sessions only. Korium cards count calls from both. With Codex on,
@@ -19,6 +21,7 @@ defmodule Wallboard.Archive.Trends do
   lines of code cost each tool, in tokens, since Codex has no dollar price.
   """
 
+  alias Wallboard.Archive.CiMinutes
   alias Wallboard.Store
 
   @doc "The cards for the last `days` days, ending today."
@@ -147,6 +150,13 @@ defmodule Wallboard.Archive.Trends do
         fmt: :pct,
         claude: &ratio(&1.tool_errors, &1.tool_calls),
         codex: &ratio(&1.codex_tool_errors, &1.codex_tool_calls)
+      },
+      %{
+        key: :ci_minutes,
+        label: "CI minutes",
+        fmt: :count,
+        claude: & &1.ci_agent,
+        codex: & &1.codex_ci_agent
       }
     ]
   end
@@ -354,8 +364,29 @@ defmodule Wallboard.Archive.Trends do
         good: :down,
         value: fn d -> d.runner_s / 3600 end,
         sub: &"#{thousands(&1.jobs)} jobs saved"
+      },
+      %{
+        key: :ci_minutes,
+        group: :github,
+        label: "CI minutes",
+        fmt: :count,
+        good: :down,
+        value: & &1.ci_paid,
+        sub: &ci_note/1
       }
     ]
+  end
+
+  # What the CI minutes card's number leaves out, beside the part agents
+  # caused: minutes that use up no plan.
+  defp ci_note(d) do
+    [
+      "#{thousands(d.ci_agent + d.codex_ci_agent)} from agent sessions",
+      d.ci_free > 0 && "#{thousands(d.ci_free)} free on public repositories",
+      d.ci_own > 0 && "#{thousands(d.ci_own)} on your own machines"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
   end
 
   # ---------------------------------------------------------------------------
@@ -364,7 +395,7 @@ defmodule Wallboard.Archive.Trends do
   # What each tool counts on its own; Codex rows carry them as codex_<name>.
   # Korium counts are shared: a search is a search whichever tool made it.
   @per_tool ~w(cost requests prompt cache_read tokens sessions prompts turns turn_ms tool_calls
-    tool_errors lines_added lines_removed api_errors denials)a
+    tool_errors lines_added lines_removed api_errors denials ci_agent)a
 
   @zero_codex Map.new(@per_tool, &{:"codex_#{&1}", 0})
 
@@ -398,7 +429,11 @@ defmodule Wallboard.Archive.Trends do
     deploys_dev: 0,
     deploys_prod: 0,
     runner_s: 0,
-    jobs: 0
+    jobs: 0,
+    ci_paid: 0,
+    ci_free: 0,
+    ci_own: 0,
+    ci_agent: 0
   }
 
   @doc "Adds up day sums; days with nothing saved count as zero."
@@ -484,7 +519,8 @@ defmodule Wallboard.Archive.Trends do
         (settings
          |> Wallboard.Settings.github_repos()
          |> Enum.with_index()
-         |> Enum.flat_map(&github_hours(&1, from)))
+         |> Enum.flat_map(&github_hours(&1, from))) ++
+        CiMinutes.hourly(settings, from)
 
     hourly
     |> Enum.group_by(&local_day(&1.h * 3600))

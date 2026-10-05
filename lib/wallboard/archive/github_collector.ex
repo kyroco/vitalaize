@@ -14,14 +14,18 @@ defmodule Wallboard.Archive.GitHubCollector do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
       GitHub's 5,000; two weeks of jobs fill in over about two hours.
+    * once a day, reads whether each repository is public and its default
+      branch, for `Wallboard.Archive.CiMinutes`
 
-  A run that is rerun or finishes gets its jobs fetched again.
+  A run that is rerun or finishes gets its jobs fetched again, every
+  attempt's, since each attempt is billed.
   """
 
   use GenServer
   require Logger
 
   alias Wallboard.{Cmd, Store}
+  alias Wallboard.Archive.CiMinutes
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -127,11 +131,14 @@ defmodule Wallboard.Archive.GitHubCollector do
       :ok = Store.put_runs(runs)
       if !Store.get_meta(key), do: Store.put_meta(key, Date.to_iso8601(today))
 
+      refresh_facts(repo, today)
+
+      # Every attempt's jobs, not only the latest's: a rerun is billed again.
       jobs =
         repo
         |> Store.runs_missing_jobs(jobs_per_round)
         |> Enum.count(fn run_id ->
-          case api("repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=100") do
+          case api("repos/#{repo}/actions/runs/#{run_id}/jobs?filter=all&per_page=100") do
             {:ok, json} -> Store.put_jobs(repo, run_id, parse_jobs(json, repo, run_id)) == :ok
             {:error, _} -> false
           end
@@ -164,6 +171,20 @@ defmodule Wallboard.Archive.GitHubCollector do
       if runs != [] and length(acc) < total and page < 10,
         do: fetch_day(repo, day, page + 1, acc),
         else: {:ok, acc}
+    end
+  end
+
+  # Whether the repository is public (its minutes on GitHub's runners are
+  # then free) and its default branch, read once a day. A failed read keeps
+  # what was read before.
+  defp refresh_facts(repo, today) do
+    day = Date.to_iso8601(today)
+
+    if CiMinutes.repo_facts(repo)[:day] != day do
+      with {:ok, json} <- api("repos/#{repo}"),
+           {:ok, facts} <- parse_repo(json) do
+        Store.put_meta(CiMinutes.meta_key(repo), Jason.encode!(Map.put(facts, :day, day)))
+      end
     end
   end
 
@@ -211,6 +232,17 @@ defmodule Wallboard.Archive.GitHubCollector do
         |> then(&(&1 && &1["number"])),
       url: r["html_url"]
     }
+  end
+
+  @doc "A repository's visibility and default branch from a REST reply."
+  def parse_repo(text) do
+    case Jason.decode(text) do
+      {:ok, %{"private" => private} = r} when is_boolean(private) ->
+        {:ok, %{private: private, default_branch: r["default_branch"]}}
+
+      _ ->
+        {:error, "GitHub returned a repository in an unexpected shape"}
+    end
   end
 
   @doc "A run's jobs from a REST reply, as rows for the database."

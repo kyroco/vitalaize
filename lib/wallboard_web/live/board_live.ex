@@ -11,7 +11,7 @@ defmodule WallboardWeb.BoardLive do
   use WallboardWeb, :live_view
 
   alias Wallboard.{Mailbox, Poller, Settings, Store}
-  alias Wallboard.Archive.{Collector, Trends}
+  alias Wallboard.Archive.{CiMinutes, Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
 
   # How often the server redraws what depends on the time of day: the
@@ -244,7 +244,12 @@ defmodule WallboardWeb.BoardLive do
         %{"machine" => m, "id" => id},
         %{assigns: %{archive_on?: true}} = socket
       ) do
-    selected = Store.get_session(m, id) || %{missing: true, session_id: id}
+    selected =
+      case Store.get_session(m, id) do
+        nil -> %{missing: true, session_id: id}
+        s -> with_ci(s)
+      end
+
     {:noreply, socket |> assign(selected: selected) |> touched()}
   end
 
@@ -1699,6 +1704,12 @@ defmodule WallboardWeb.BoardLive do
             <.stat label="Cut off" value={thousands(@s.aborted)} note="replies" />
             <.stat label="Denied" value={thousands(@s.denials)} note="by permission rules" />
             <.stat label="Pull requests" value={length(@d["prs"] || [])} />
+            <.stat
+              :if={@s[:ci]}
+              label="CI minutes"
+              value={thousands(@s.ci.paid)}
+              note={ci_note(@s.ci)}
+            />
           </div>
 
           <div class="detail-cols">
@@ -1808,7 +1819,7 @@ defmodule WallboardWeb.BoardLive do
 
               <h3 :if={(@d["prs"] || []) != []} class="kicker gap-top">Pull requests</h3>
               <div :for={pr <- @d["prs"] || []} class="detail-note">
-                {pr["repo"]} #{pr["number"]}
+                {pr["repo"]} #{pr["number"]}{pr_ci(@s, pr)}
               </div>
 
               <h3 :if={@s.first_prompt} class="kicker gap-top">First prompt</h3>
@@ -1828,6 +1839,50 @@ defmodule WallboardWeb.BoardLive do
       </div>
     </div>
     """
+  end
+
+  # The CI minutes of a saved session and of each pull request it opened,
+  # read once when its details open.
+  defp with_ci(s) do
+    prs =
+      for %{"repo" => repo, "number" => n} <- (s.detail || %{})["prs"] || [],
+          is_binary(repo) and is_integer(n),
+          into: %{},
+          do: {{repo, n}, CiMinutes.for_pr(repo, n)}
+
+    Map.merge(s, %{ci: CiMinutes.for_session(s), pr_ci: prs})
+  end
+
+  @doc """
+  The note under a session's CI minutes: its runs, and the minutes that
+  use up no plan.
+  """
+  def ci_note(%{runs: 0}), do: "no runs"
+
+  def ci_note(ci) do
+    [
+      "#{thousands(ci.runs)} #{if ci.runs == 1, do: "run", else: "runs"}" <>
+        if(ci.failed > 0, do: ", #{thousands(ci.failed)} failed", else: ""),
+      ci.free > 0 && "#{thousands(ci.free)} free on a public repository",
+      ci.own > 0 && "#{thousands(ci.own)} on your own machines"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
+  end
+
+  # " · 22 CI min" after a pull request with saved runs; a public
+  # repository's are free.
+  defp pr_ci(s, pr) do
+    case s[:pr_ci] && s.pr_ci[{pr["repo"], pr["number"]}] do
+      %{runs: runs, free: free} when runs > 0 and free > 0 ->
+        " · #{thousands(free)} CI min, free on a public repository"
+
+      %{runs: runs, paid: paid} when runs > 0 ->
+        " · #{thousands(paid)} CI min"
+
+      _ ->
+        ""
+    end
   end
 
   attr :label, :string, required: true
