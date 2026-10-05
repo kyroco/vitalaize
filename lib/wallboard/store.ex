@@ -231,7 +231,10 @@ defmodule Wallboard.Store do
     # The session's GitHub repository as "owner/name", read from its folder
     # where it ran. Empty for rows saved before this column, and for a
     # folder with no GitHub origin.
-    "ALTER TABLE sessions ADD COLUMN repo TEXT"
+    "ALTER TABLE sessions ADD COLUMN repo TEXT",
+    # The repository the pull request's branch lives in, as owner/name:
+    # another one for a fork's, and empty when that fork is deleted.
+    "ALTER TABLE gh_prs ADD COLUMN head_repo TEXT"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -251,7 +254,7 @@ defmodule Wallboard.Store do
     completed_at queue_s duration_s runner_name labels failed_step)a
 
   @pr_columns ~w(repo number title branch base head_sha author created_at closed_at merged_at
-    url)a
+    url head_repo)a
 
   @request_columns ~w(machine session_id request_id at model effort input_tokens output_tokens
     cache_read_tokens cache_write_tokens cost subagent)a

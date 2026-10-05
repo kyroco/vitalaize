@@ -17,7 +17,7 @@ defmodule Wallboard.PullRequestsTest do
 
     assert length(prs) == 6
     assert pr.number == 35
-    assert {pr.branch, pr.base} == {@branch, "main"}
+    assert {pr.branch, pr.head_repo, pr.base} == {@branch, "acme/shop", "main"}
     assert pr.merged_at == @merged
     assert pr.created_at == @merged - 122
     assert pr.updated_at == @merged + 30
@@ -36,6 +36,7 @@ defmodule Wallboard.PullRequestsTest do
           title: "Shop change #{number}",
           url: "https://github.com/acme/shop/pull/#{number}",
           branch: branch,
+          head_repo: "acme/shop",
           base: "main",
           created_at: merged_at - 3600,
           merged_at: merged_at
@@ -126,6 +127,48 @@ defmodule Wallboard.PullRequestsTest do
 
       assert pr.sessions == []
     end
+
+    test "a release pull request from main does not claim the sessions that worked on main" do
+      # #76 is a feature merged into main by a session that ran on main;
+      # #77 then took main into production.
+      [feature, release] =
+        PullRequests.link(
+          [
+            pr(76, @branch, @merged - 600),
+            pr(77, "main", @merged, %{base: "production"})
+          ],
+          [
+            session("on-main", %{
+              branch: "main",
+              cost: 8.0,
+              prs: [%{"repo" => "acme/shop", "number" => 76}]
+            })
+          ]
+        )
+
+      assert {feature.cost, release.sessions} == {8.0, []}
+
+      # Long-lived branches are known from every saved pull request, not
+      # only those in the window.
+      [release] =
+        PullRequests.link(
+          [pr(77, "main", @merged, %{base: "production"})],
+          [session("on-main", %{branch: "main"})],
+          MapSet.new([{"acme/shop", "main"}])
+        )
+
+      assert release.sessions == []
+    end
+
+    test "a fork's pull request does not claim sessions on a branch of the same name here" do
+      [pr] =
+        PullRequests.link(
+          [pr(40, "patch-1", @merged, %{head_repo: "someone/shop"})],
+          [session("local", %{branch: "patch-1"})]
+        )
+
+      assert pr.sessions == []
+    end
   end
 
   describe "from the database" do
@@ -207,6 +250,7 @@ defmodule Wallboard.PullRequestsTest do
             repo: "acme/shop",
             number: 1,
             branch: "a",
+            head_repo: "acme/shop",
             base: "main",
             created_at: at - 60,
             merged_at: at
@@ -215,6 +259,7 @@ defmodule Wallboard.PullRequestsTest do
             repo: "acme/shop",
             number: 2,
             branch: "b",
+            head_repo: "acme/shop",
             base: "main",
             created_at: at - 60,
             merged_at: at
@@ -223,6 +268,7 @@ defmodule Wallboard.PullRequestsTest do
             repo: "acme/shop",
             number: 3,
             branch: "c",
+            head_repo: "acme/shop",
             base: "main",
             created_at: at - 60,
             merged_at: at

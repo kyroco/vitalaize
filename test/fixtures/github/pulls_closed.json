@@ -13,7 +13,10 @@
     },
     "head": {
       "ref": "dev/shop-0035-a-change",
-      "sha": "e28f0a53d0326c6b4c26af3bf5cf53403ef68459"
+      "sha": "e28f0a53d0326c6b4c26af3bf5cf53403ef68459",
+      "repo": {
+        "full_name": "acme/shop"
+      }
     },
     "base": {
       "ref": "main"
@@ -33,7 +36,10 @@
     },
     "head": {
       "ref": "dev/shop-0034-a-change",
-      "sha": "8f2cbc623661b6b489a7cc725f4c54b9e3cfbdf2"
+      "sha": "8f2cbc623661b6b489a7cc725f4c54b9e3cfbdf2",
+      "repo": {
+        "full_name": "acme/shop"
+      }
     },
     "base": {
       "ref": "main"
@@ -53,7 +59,10 @@
     },
     "head": {
       "ref": "dev/shop-0033-a-change",
-      "sha": "baa4d36bedb52349461172713bc0631c5099458a"
+      "sha": "baa4d36bedb52349461172713bc0631c5099458a",
+      "repo": {
+        "full_name": "acme/shop"
+      }
     },
     "base": {
       "ref": "main"
@@ -73,7 +82,10 @@
     },
     "head": {
       "ref": "dev/shop-0032-a-change",
-      "sha": "92074fa02ded300eed03e190f1ba5993c00f7d26"
+      "sha": "92074fa02ded300eed03e190f1ba5993c00f7d26",
+      "repo": {
+        "full_name": "acme/shop"
+      }
     },
     "base": {
       "ref": "main"
@@ -93,7 +105,10 @@
     },
     "head": {
       "ref": "dev/shop-0031-a-change",
-      "sha": "efc0ce15fe857faa4de132a40abbef23a15418b9"
+      "sha": "efc0ce15fe857faa4de132a40abbef23a15418b9",
+      "repo": {
+        "full_name": "acme/shop"
+      }
     },
     "base": {
       "ref": "main"
@@ -113,7 +128,10 @@
     },
     "head": {
       "ref": "dev/shop-0030-a-change",
-      "sha": "08e93a9f33c2cb510d293b520486407443df9b40"
+      "sha": "08e93a9f33c2cb510d293b520486407443df9b40",
+      "repo": {
+        "full_name": "acme/shop"
+      }
     },
     "base": {
       "ref": "main"
