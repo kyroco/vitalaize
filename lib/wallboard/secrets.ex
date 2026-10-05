@@ -21,9 +21,24 @@ defmodule Wallboard.Secrets do
   alias Wallboard.{Cmd, KeyStore}
 
   @key {__MODULE__, :new_relic}
+  @latest {__MODULE__, :new_relic_latest}
 
-  @doc "Reads the key the settings point to. Safe to call when none is set."
+  @doc """
+  Reads the key the settings point to. Safe to call when none is set.
+
+  Reads can overlap: one at the start may wait minutes for 1Password while
+  a key typed since is read at once. Only the read started last may keep
+  what it found, since it was started with the newest settings; an older
+  one that ends later is dropped.
+  """
   def load_new_relic(settings) do
+    ticket =
+      locked(fn ->
+        ticket = System.unique_integer([:monotonic])
+        :persistent_term.put(@latest, ticket)
+        ticket
+      end)
+
     status =
       case {settings.new_relic[:api_key], settings.new_relic.api_key_ref} do
         {%{}, _} ->
@@ -37,9 +52,16 @@ defmodule Wallboard.Secrets do
           from_1password(ref)
       end
 
-    :persistent_term.put(@key, status)
+    locked(fn ->
+      if :persistent_term.get(@latest, nil) == ticket, do: :persistent_term.put(@key, status)
+    end)
+
     :ok
   end
+
+  # One read at a time takes its number or keeps its result, so a newer
+  # read's result is never followed by an older one's.
+  defp locked(fun), do: :global.trans({{__MODULE__, :new_relic}, self()}, fun)
 
   defp from_store do
     place = KeyStore.place()

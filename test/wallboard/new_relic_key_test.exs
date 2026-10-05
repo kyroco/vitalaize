@@ -149,13 +149,14 @@ defmodule Wallboard.NewRelicKeyTest do
 
   # A stand-in for 1Password's op command, first on the PATH: it prints
   # the key for the one address it knows.
-  defp fake_op(dir, ref, key) do
+  defp fake_op(dir, ref, key, wait_s \\ 0) do
     bin = Path.join(dir, "bin")
     File.mkdir_p!(bin)
     op = Path.join(bin, "op")
 
     File.write!(op, """
     #!/bin/sh
+    sleep #{wait_s}
     if [ "$1" = read ] && [ "$2" = #{inspect(ref)} ]; then echo #{inspect(key)}; exit 0; fi
     echo "no such item" >&2; exit 1
     """)
@@ -360,6 +361,24 @@ defmodule Wallboard.NewRelicKeyTest do
       assert board_key() == @other
       assert log =~ "from 1Password"
       refute log =~ @other
+    end
+
+    test "a slow 1Password read that ends after a key is typed does not replace it", c do
+      settings_file(c.dir, ~s(new_relic: %{api_key_ref: "op://Private/NR/key"}))
+      # 1Password waits for someone to approve, as it can at start-up.
+      fake_op(c.dir, "op://Private/NR/key", @other, 1)
+      at_start = Settings.load!()
+      start_up = Task.async(fn -> Secrets.load_new_relic(at_start) end)
+
+      # Meanwhile the key is typed, and read at once.
+      Process.sleep(100)
+      another_program_saves(c, %{"new_relic.api_key" => @key})
+      Secrets.load_new_relic(Settings.load!())
+      assert board_key() == @key
+
+      # 1Password answers last: the typed key stays.
+      Task.await(start_up, 10_000)
+      assert board_key() == @key
     end
 
     test "a key typed later wins over the address, and removing it goes back to 1Password", c do
