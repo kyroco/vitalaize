@@ -308,6 +308,7 @@ button { font: inherit; }
 .job-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .job-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .job-failed { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-step { font-size: 12px; color: var(--info); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .job-runner { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 .job-time { font-size: 13px; text-align: right; white-space: nowrap; }
 .detail-title { margin: 0; font-size: 24px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

@@ -250,6 +250,11 @@ defmodule Wallboard.Archive.GitHubCollector do
         failed_step:
           (j["steps"] || [])
           |> Enum.find(&(&1["conclusion"] == "failure"))
+          |> then(&(&1 && &1["name"])),
+        # Not saved: the step a running job is on, for the run's panel.
+        current_step:
+          (j["steps"] || [])
+          |> Enum.find(&(&1["status"] == "in_progress"))
           |> then(&(&1 && &1["name"]))
       }
     end)

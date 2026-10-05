@@ -346,6 +346,38 @@ defmodule Wallboard.RunDetailTest do
     assert length(asked(dir)) == 1
   end
 
+  test "jobs show in the order they ran, waiting ones last, a running one with its step" do
+    use_settings(false)
+
+    jobs = [
+      job(3, "Browser tests", "queued", nil, run_id: 202, created: 400),
+      job(2, "Tests", "in_progress", nil,
+        run_id: 202,
+        created: 400,
+        started: 190,
+        steps: [
+          %{"name" => "Set up", "status" => "completed", "conclusion" => "success"},
+          %{"name" => "Run mix test", "status" => "in_progress", "conclusion" => nil}
+        ]
+      ),
+      job(1, "Build", "completed", "success", run_id: 202, started: 380, completed: 200)
+    ]
+
+    view = open_board()
+
+    send_facts(
+      view,
+      facts([run_json(202, "in_progress", nil)], %{202 => GitHub.parse_jobs(jobs_json(jobs))})
+    )
+
+    html = view |> element(~s|button.run-card[phx-value-id="202"]|) |> render_click()
+
+    at = fn text -> html |> :binary.match(text) |> elem(0) end
+    assert at.(">Build<") < at.(">Tests<")
+    assert at.(">Tests<") < at.(">Browser tests<")
+    assert html =~ "now: Run mix test"
+  end
+
   test "a waiting run says it waits for a runner" do
     use_settings(false)
     view = open_board()

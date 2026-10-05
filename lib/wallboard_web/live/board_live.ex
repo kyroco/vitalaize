@@ -2553,6 +2553,9 @@ defmodule WallboardWeb.BoardLive do
       <span class="job-text">
         <span class="job-name">{@j.name}</span>
         <span :if={@j.failed_step} class="job-failed">failed at: {@j.failed_step}</span>
+        <span :if={@j.status == "in_progress" && @j[:current_step]} class="job-step">
+          now: {@j.current_step}
+        </span>
       </span>
       <span class="job-runner">
         {cond do
@@ -2575,9 +2578,14 @@ defmodule WallboardWeb.BoardLive do
     """
   end
 
-  # In the order they ran: by start, then by when they were made.
+  # In the order they ran: the started ones by start, then the ones still
+  # waiting by when they were made.
   defp sort_jobs(jobs),
-    do: Enum.sort_by(jobs, &{&1.started_at || &1.created_at || :infinity, &1.name || ""})
+    do:
+      Enum.sort_by(
+        jobs,
+        &{is_nil(&1.started_at), &1.started_at || &1.created_at || 0, &1.name || ""}
+      )
 
   defp run_tone(%{status: :completed, conclusion: "success"}), do: "ok"
   defp run_tone(%{status: :completed, conclusion: "failure"}), do: "bad"
