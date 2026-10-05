@@ -22,8 +22,9 @@ defmodule Wallboard.Archive.CiMinutes do
   Minutes are added up by attempt: a rerun is another attempt of the same
   run, billed again, and begins when it was asked for.
 
-  An attempt goes to the session that caused it: one on the attempt's
-  branch, in its repository when the session's repository is known, that
+  An attempt goes to the session that caused it: one that worked on the
+  attempt's branch (a Claude session keeps every branch it was on; a Codex
+  session and one from another machine keep one), in its repository when the session's repository is known, that
   was at work when the attempt began (from its start to `@after_s` past its
   last activity, since a push is often a session's last act). When several
   qualify, a session no other tool started comes first (a Codex review that
@@ -74,22 +75,35 @@ defmodule Wallboard.Archive.CiMinutes do
   The minutes of one saved session: `%{paid, free, own, runs, failed}`,
   where `runs` counts attempts and `failed` those with a failed job.
   """
-  def for_session(%{git_branch: branch, started_at: from, ended_at: to} = s)
-      when is_binary(branch) and is_integer(from) and is_integer(to) do
+  def for_session(%{started_at: from, ended_at: to} = s)
+      when is_integer(from) and is_integer(to) do
+    case branches(s) do
+      [] -> total([])
+      branches -> for_session(s, branches, from, to)
+    end
+  end
+
+  def for_session(_s), do: total([])
+
+  defp for_session(s, branches, from, to) do
     attempts =
-      "r.branch = ?1"
-      |> attempts([branch])
+      "r.branch IN (#{marks(branches, 1)})"
+      |> attempts(branches)
       |> Enum.filter(&(&1.at >= from and &1.at <= to + @after_s))
 
-    # The other sessions on the branch at work then, which may have caused
-    # some of these attempts rather than this one.
+    # The other sessions on these branches at work then, which may have
+    # caused some of these attempts rather than this one.
+    on = marks(branches, 5)
+
     rivals =
       sessions(
         """
-        git_branch = ?1 AND started_at <= ?3 AND ended_at >= ?2 - #{@after_s}
-          OR (machine = ?4 AND session_id = ?5)
+        (git_branch IN (#{on}) OR EXISTS
+          (SELECT 1 FROM json_each(detail, '$.branches') b WHERE b.value IN (#{on})))
+          AND started_at <= ?2 AND ended_at >= ?1 - #{@after_s}
+          OR (machine = ?3 AND session_id = ?4)
         """,
-        [branch, from, to + @after_s, s.machine, s.session_id]
+        [from, to + @after_s, s.machine, s.session_id | branches]
       )
 
     attempts
@@ -101,7 +115,20 @@ defmodule Wallboard.Archive.CiMinutes do
     |> total()
   end
 
-  def for_session(_s), do: total([])
+  # Every branch a saved session worked on: the ones its details list (a
+  # Claude session saved since #52) and the one saved with it.
+  defp branches(s) do
+    detail = Map.get(s, :detail) || %{}
+    listed = Map.get(detail, "branches") || Map.get(detail, :branches) || []
+
+    [Map.get(s, :git_branch) | List.wrap(listed)]
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  end
+
+  # "?first, ?first+1, ..." for each value.
+  defp marks(values, first),
+    do: Enum.map_join(first..(first + length(values) - 1)//1, ", ", &"?#{&1}")
 
   @doc """
   The minutes of one pull request, in the same shape as `for_session/1`:
@@ -151,7 +178,10 @@ defmodule Wallboard.Archive.CiMinutes do
         |> Enum.filter(&(&1.at >= from))
 
       sessions =
-        sessions("git_branch IS NOT NULL AND ended_at >= ?1", [from - @after_s])
+        sessions(
+          "(git_branch IS NOT NULL OR json_extract(detail, '$.branches') IS NOT NULL) AND ended_at >= ?1",
+          [from - @after_s]
+        )
 
       Enum.map(attempts, fn a ->
         %{h: div(a.at, 3600), ci_paid: a.paid, ci_free: a.free, ci_own: a.own}
@@ -168,11 +198,15 @@ defmodule Wallboard.Archive.CiMinutes do
 
   An attempt has `repo`, `branch`, `event`, `at` and `default` (its
   repository's default branch, or nil); a session has `machine`,
-  `session_id`, `repo` (nil when not known), `branch`, `started_at`,
-  `ended_at` and, optionally, `nested` (true when another tool started it).
+  `session_id`, `repo` (nil when not known), `branch` or `branches` (every
+  branch it worked on), `started_at`, `ended_at` and, optionally, `nested`
+  (true when another tool started it).
   """
   def link(attempts, sessions) do
-    by_branch = Enum.group_by(sessions, & &1.branch)
+    by_branch =
+      for s <- sessions, b <- Map.get(s, :branches) || [s.branch], reduce: %{} do
+        acc -> Map.update(acc, b, [s], &[s | &1])
+      end
 
     for a <- attempts,
         pushed?(a),
@@ -268,7 +302,7 @@ defmodule Wallboard.Archive.CiMinutes do
       Store.query(
         """
         SELECT machine, session_id, coalesce(tool, 'claude') AS tool, entrypoint, git_branch,
-          started_at, ended_at, cwd, source
+          json_extract(detail, '$.branches') AS branches, started_at, ended_at, cwd, source
         FROM sessions WHERE #{where}
         """,
         params
@@ -289,12 +323,21 @@ defmodule Wallboard.Archive.CiMinutes do
         nested: row.tool == "codex" and row.entrypoint in @nested,
         # Only this machine's own sessions have their folder here.
         repo: if(row.source in [nil, ""], do: repos[row.cwd]),
-        branch: row.git_branch,
+        branches: branches(%{git_branch: row.git_branch, detail: %{"branches" => listed(row)}}),
         started_at: row.started_at,
         ended_at: row.ended_at
       }
     end)
   end
+
+  defp listed(%{branches: text}) when is_binary(text) do
+    case Jason.decode(text) do
+      {:ok, list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp listed(_), do: []
 
   @doc """
   What the board last read about a repository from GitHub: `private` (true

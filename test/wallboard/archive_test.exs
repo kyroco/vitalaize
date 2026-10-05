@@ -27,6 +27,31 @@ defmodule Wallboard.ArchiveTest do
 
   defp tally, do: Transcript.read_lines(Enum.join(@lines, "\n"))
 
+  test "keeps every branch a session worked on, in the order first seen" do
+    lines = [
+      ~s({"type":"user","timestamp":"2026-09-29T13:00:00Z","gitBranch":"worktree-41","message":{"role":"user","content":"go"}}),
+      ~s({"type":"user","timestamp":"2026-09-29T13:01:00Z","gitBranch":"robert/41-sign-in","message":{"role":"user","content":"push"}}),
+      ~s({"type":"user","timestamp":"2026-09-29T13:02:00Z","gitBranch":"main","message":{"role":"user","content":"back"}}),
+      ~s({"type":"user","timestamp":"2026-09-29T13:03:00Z","gitBranch":"robert/41-sign-in","message":{"role":"user","content":"again"}})
+    ]
+
+    ctx = %{
+      machine: "m",
+      session_id: "b",
+      account: "main",
+      path: "/tmp/b.jsonl",
+      size: 1,
+      mtime: 1,
+      now: 1,
+      prices: default_prices()
+    }
+
+    {session, _} = Transcript.to_record(Transcript.read_lines(Enum.join(lines, "\n")), [], ctx)
+
+    assert session.git_branch == "robert/41-sign-in"
+    assert session.detail.branches == ["worktree-41", "robert/41-sign-in", "main"]
+  end
+
   test "reads prompts, requests once per id, and tool calls" do
     t = tally()
     assert t.prompts == 1

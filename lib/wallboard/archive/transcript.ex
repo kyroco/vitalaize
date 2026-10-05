@@ -29,6 +29,9 @@ defmodule Wallboard.Archive.Transcript do
       last_at: nil,
       cwd: nil,
       git_branch: nil,
+      # Every branch seen, in the order first seen: a session can push one
+      # branch and end on another.
+      branches: [],
       version: nil,
       entrypoint: nil,
       titles: %{},
@@ -120,10 +123,17 @@ defmodule Wallboard.Archive.Transcript do
         last_at: at || t.last_at,
         cwd: e["cwd"] || t.cwd,
         git_branch: e["gitBranch"] || t.git_branch,
+        branches: branch_seen(t.branches, e["gitBranch"]),
         version: e["version"] || t.version,
         entrypoint: t.entrypoint || e["entrypoint"]
     }
   end
+
+  defp branch_seen(seen, branch) when is_binary(branch) and branch != "" do
+    if branch in seen, do: seen, else: seen ++ [branch]
+  end
+
+  defp branch_seen(seen, _), do: seen
 
   defp title(t, kind, v) when is_binary(v), do: %{t | titles: Map.put(t.titles, kind, clip(v))}
   defp title(t, _, _), do: t
@@ -474,6 +484,7 @@ defmodule Wallboard.Archive.Transcript do
         subagents: subagents,
         files: files |> MapSet.to_list() |> Enum.sort(),
         prs: Map.values(main.prs),
+        branches: main.branches,
         korium_save_failures: Enum.reduce(all, %{}, &merge_counts(&2, &1.save_failures))
       },
       source_size: ctx.size,
