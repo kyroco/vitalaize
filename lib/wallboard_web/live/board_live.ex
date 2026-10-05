@@ -91,6 +91,7 @@ defmodule WallboardWeb.BoardLive do
     dev = Poller.snapshot(:dev_power)
     builds = Poller.snapshot(:builds)
     release = Poller.snapshot(:release)
+    budget = Poller.snapshot(:budget)
 
     socket =
       socket
@@ -102,7 +103,7 @@ defmodule WallboardWeb.BoardLive do
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
       |> assign(dev: dev.facts, dev_meta: dev.meta, dev_on?: DevPower.enabled?(settings))
-      |> assign(builds: builds.facts, release: release.facts)
+      |> assign(builds: builds.facts, release: release.facts, budget: budget.facts)
       |> assign(
         archive_on?: settings.archive.enabled,
         machine: if(settings.archive.enabled, do: Collector.machine(settings)),
@@ -165,6 +166,9 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_info({:source, :release, facts, _meta}, socket),
     do: {:noreply, assign(socket, release: facts)}
+
+  def handle_info({:source, :budget, facts, _meta}, socket),
+    do: {:noreply, assign(socket, budget: facts)}
 
   def handle_info({:source_meta, name, meta}, socket) do
     key =
@@ -430,6 +434,7 @@ defmodule WallboardWeb.BoardLive do
           mailbox={length(@mailbox)}
         />
         <.needs_banner needs={@needs} />
+        <.budget_banner over={(@budget && @budget.over) || []} />
         <.tiles
           repos={@git}
           meta={@github_meta}
@@ -678,6 +683,22 @@ defmodule WallboardWeb.BoardLive do
       · <.ago at={@meta.fetched_at} stale={stale_seconds(@meta)} />
       <span :if={@meta.error} class="stale-note">· stale: {@meta.error}</span>
     </span>
+    """
+  end
+
+  attr :over, :list, required: true
+
+  # The budget limits passed in their day or week (see Wallboard.Sources.Budget).
+  defp budget_banner(assigns) do
+    ~H"""
+    <section :if={@over != []} class="budget-banner" aria-label="Over budget">
+      <span class="bb-kicker">Over budget</span>
+      <span class="bb-items">
+        <%= for {item, i} <- Enum.with_index(@over) do %>
+          <span :if={i > 0}> · </span>{Wallboard.Sources.Budget.describe(item)}
+        <% end %>
+      </span>
+    </section>
     """
   end
 

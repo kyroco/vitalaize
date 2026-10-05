@@ -78,6 +78,24 @@
   # when it is newer, shows a note by Settings. false stops the check.
   updates: %{check: true},
 
+  # Limits on use. Each is over a "day" or a "week" (a week starts on Monday;
+  # days are this machine's, as on the Trends tab), and nil means no limit.
+  # Claude spend is in dollars at the list prices above. When a total passes
+  # its limit, the board shows it and one alert goes out for that limit and
+  # period, on each channel below that is true and also set up under alerts.
+  budget: %{
+    claude_dollars: nil,
+    claude_dollars_per: "day",
+    claude_tokens: nil,
+    claude_tokens_per: "day",
+    codex_tokens: nil,
+    codex_tokens_per: "day",
+    by_messages: true,
+    by_slack: true,
+    by_ntfy: true,
+    by_pushover: true
+  },
+
   # Alerts. When a Claude session starts waiting on you, every channel set up
   # here gets one alert. Leave them all nil and alerts are off.
   alerts: %{

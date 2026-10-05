@@ -116,6 +116,22 @@ defmodule Wallboard.Settings do
       pushover_user: nil,
       pushover_token: nil
     },
+    # Limits on use, each over a "day" or a "week" (see
+    # Wallboard.Sources.Budget). nil turns a limit off. Passing one shows on
+    # the board and sends one alert per limit per period, on each channel
+    # switched on here that is also set up under alerts.
+    budget: %{
+      claude_dollars: nil,
+      claude_dollars_per: "day",
+      claude_tokens: nil,
+      claude_tokens_per: "day",
+      codex_tokens: nil,
+      codex_tokens_per: "day",
+      by_messages: true,
+      by_slack: true,
+      by_ntfy: true,
+      by_pushover: true
+    },
     usage: %{
       poll_seconds: 30,
       # How far back to read transcripts. The trend compares the last 7 days
@@ -665,7 +681,8 @@ defmodule Wallboard.Settings do
   @doc """
   The settings a person can change on the settings page, in page order:
   {section, [{path, label, type, restart?, help}]}. Types: :string,
-  :integer, :lines (a list, one per line), :secret, and {:choice, options}.
+  :integer, :limit (a whole number, or empty for none), :lines (a list, one
+  per line), :secret, and {:choice, options}.
   `restart?` marks the few that only take effect when the board restarts.
   """
   def editable do
@@ -709,6 +726,24 @@ defmodule Wallboard.Settings do
          {[:alerts, :pushover_user], "Pushover user key", :secret, false, nil},
          {[:alerts, :pushover_token], "Pushover app token", :secret, false,
           "Both Pushover fields are needed"}
+       ]},
+      {"Budget",
+       [
+         {[:budget, :claude_dollars], "Claude spend limit (dollars)", :limit, false,
+          "At API list prices, as on Trends. Empty means no limit"},
+         {[:budget, :claude_dollars_per], "Claude spend limit is per", {:choice, ["day", "week"]},
+          false, "A week starts on Monday"},
+         {[:budget, :claude_tokens], "Claude token limit", :limit, false, "Empty means no limit"},
+         {[:budget, :claude_tokens_per], "Claude token limit is per", {:choice, ["day", "week"]},
+          false, nil},
+         {[:budget, :codex_tokens], "Codex token limit", :limit, false, "Empty means no limit"},
+         {[:budget, :codex_tokens_per], "Codex token limit is per", {:choice, ["day", "week"]},
+          false, nil},
+         {[:budget, :by_messages], "Budget alerts by Messages", :boolean, false, nil},
+         {[:budget, :by_slack], "Budget alerts by Slack", :boolean, false, nil},
+         {[:budget, :by_ntfy], "Budget alerts by ntfy", :boolean, false, nil},
+         {[:budget, :by_pushover], "Budget alerts by Pushover", :boolean, false,
+          "A channel sends only when it is set up under Alerts"}
        ]},
       {"New Relic",
        [
@@ -912,6 +947,21 @@ defmodule Wallboard.Settings do
     case Integer.parse(String.trim(raw)) do
       {n, ""} when n >= 0 -> {:ok, n}
       _ -> {:error, "must be a whole number"}
+    end
+  end
+
+  # A limit is a whole number, or empty for none. Spaces, commas and a
+  # dollar sign are let through, as people write amounts.
+  defp parse(:limit, raw, _path) do
+    case String.replace(raw, ~r/[\s,_$]/, "") do
+      "" ->
+        {:ok, nil}
+
+      text ->
+        case Integer.parse(text) do
+          {n, ""} when n >= 1 -> {:ok, n}
+          _ -> {:error, "must be a whole number, or empty for no limit"}
+        end
     end
   end
 

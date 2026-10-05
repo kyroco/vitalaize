@@ -16,6 +16,9 @@ defmodule Wallboard.Alerts do
     * Pushover: posts to Pushover's message API.
 
   With none of them set up, alerts are off.
+
+  A budget limit that is passed (see `Wallboard.Sources.Budget`) sends its
+  alert the same way, on the channels its settings pick.
   """
 
   require Logger
@@ -29,14 +32,26 @@ defmodule Wallboard.Alerts do
   def needs_you([], _settings), do: :ok
 
   def needs_you(sessions, settings) do
-    for channel <- channels(settings), session <- sessions do
+    for session <- sessions do
+      send_text(message(session), "#{session.name} needs you", channels(settings), settings)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Sends one text on each of `channels`, each in a task of its own, and logs
+  how it went under `what`. Returns right away.
+  """
+  def send_text(text, what, channels, settings) do
+    for channel <- channels do
       Task.Supervisor.start_child(Wallboard.TaskSupervisor, fn ->
-        case deliver(channel, message(session), settings) do
+        case deliver(channel, text, settings) do
           :ok ->
-            Logger.info("Sent by #{name(channel)}: #{session.name} needs you")
+            Logger.info("Sent by #{name(channel)}: #{what}")
 
           {:error, reason} ->
-            Logger.warning("Could not send by #{name(channel)} for #{session.name}: #{reason}")
+            Logger.warning("Could not send by #{name(channel)} (#{what}): #{reason}")
         end
       end)
     end

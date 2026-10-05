@@ -98,6 +98,10 @@ button { font: inherit; }
 .nb-acct { font-weight: 500; opacity: 0.85; font-size: 15px; }
 .nb-why { font-size: 18px; flex-grow: 1; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .nb-age { font-size: 15px; font-weight: 500; opacity: 0.9; white-space: nowrap; }
+/* A passed budget limit: calmer than Needs you, since nothing is waiting. */
+.budget-banner { display: flex; align-items: center; gap: 18px; padding: 10px 22px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); border-left: 6px solid var(--warn); flex: none; }
+.bb-kicker { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; color: var(--warn-deep); }
+.bb-items { font-size: 17px; color: var(--text); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 /* Dots */
 .dot12, .dot10, .dot8 { display: inline-block; border-radius: 9999px; flex: none; background: var(--text-muted); }
