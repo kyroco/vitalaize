@@ -323,9 +323,79 @@ defmodule Wallboard.PullRequestsTest do
     end
   end
 
+  describe "the GitHub round" do
+    setup do
+      start_supervised!({Store, path: ":memory:"})
+
+      dir = Path.join(System.tmp_dir!(), "vitalaize-gh-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      pulls = Path.join(dir, "pulls.json")
+
+      # A stand-in for `gh api`: the pull requests from a file, and no runs.
+      File.write!(Path.join(dir, "gh"), """
+      #!/bin/sh
+      case "$2" in
+        *pulls*) cat "#{pulls}" ;;
+        *actions/runs\\?*) echo '{"workflow_runs": [], "total_count": 0}' ;;
+        *) echo '{}' ;;
+      esac
+      """)
+
+      File.chmod!(Path.join(dir, "gh"), 0o755)
+      path = System.get_env("PATH")
+      System.put_env("PATH", dir <> ":" <> path)
+
+      on_exit(fn ->
+        System.put_env("PATH", path)
+        File.rm_rf!(dir)
+      end)
+
+      %{pulls: pulls}
+    end
+
+    test "a pull request merged while the board was off for a weekend is still saved", %{
+      pulls: pulls
+    } do
+      # The board's last good round was Friday 5:00 PM Eastern; a pull
+      # request merged at 6:30 PM and nothing touched it again. The board
+      # comes back Monday 9:00 AM Eastern.
+      friday = DateTime.to_unix(~U[2026-10-02 21:00:00Z])
+      monday = ~U[2026-10-05 13:00:00Z]
+
+      File.write!(
+        pulls,
+        Jason.encode!([
+          %{
+            number: 50,
+            state: "closed",
+            title: "Shop change 50",
+            html_url: "https://github.com/acme/shop/pull/50",
+            created_at: "2026-10-02T20:00:00Z",
+            updated_at: "2026-10-02T22:30:05Z",
+            closed_at: "2026-10-02T22:30:00Z",
+            merged_at: "2026-10-02T22:30:00Z",
+            head: %{ref: "dev/shop-0050", sha: "abc"},
+            base: %{ref: "main"}
+          }
+        ])
+      )
+
+      Store.put_meta("github_backfill:acme/shop", "2026-09-20")
+      Store.put_meta("github_prs_backfill:acme/shop", "2026-09-20")
+      Store.put_meta("github_prs_through:acme/shop", Integer.to_string(friday))
+
+      assert {:ok, 0, 0} = GitHubCollector.round(full_settings(), monday)
+      assert [%{number: 50}] = Store.query("SELECT number FROM gh_prs", [])
+
+      # The next round starts from this one.
+      assert Store.get_meta("github_prs_through:acme/shop") ==
+               Integer.to_string(DateTime.to_unix(monday))
+    end
+  end
+
   defp full_settings do
     %{
-      archive: %{backfill_days: 14},
+      archive: %{backfill_days: 14, github_jobs_per_round: 10},
       codex: %{enabled: true},
       github: %{
         repo: "acme/shop",

@@ -14,9 +14,9 @@ defmodule Wallboard.Archive.GitHubCollector do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
       GitHub's 5,000; two weeks of jobs fill in over about two hours.
-    * saves the pull requests closed or changed in the last 2 days (the last
-      `backfill_days` on the first round), newest first, 100 a call: usually
-      one call. `Wallboard.Archive.PullRequests` reads them.
+    * saves the closed pull requests changed since the last good round (the
+      last `backfill_days` on the first round), newest first, 100 a call:
+      usually one call. `Wallboard.Archive.PullRequests` reads them.
 
   A run that is rerun or finishes gets its jobs fetched again.
   """
@@ -141,20 +141,36 @@ defmodule Wallboard.Archive.GitHubCollector do
         end)
 
       prs_key = "github_prs_backfill:" <> repo
+      through_key = "github_prs_through:" <> repo
 
-      prs_since =
-        if Store.get_meta(prs_key),
-          do: Date.add(today, -1),
-          else: Date.add(today, -a.backfill_days)
-
-      with {:ok, prs} <- fetch_prs(repo, prs_since) do
+      with {:ok, prs} <- fetch_prs(repo, prs_from(prs_key, through_key, today, a, now)) do
         :ok = Store.put_prs(prs)
         if !Store.get_meta(prs_key), do: Store.put_meta(prs_key, Date.to_iso8601(today))
+        Store.put_meta(through_key, Integer.to_string(DateTime.to_unix(now)))
         {:ok, length(runs), jobs}
       end
     end
   rescue
     e -> {:error, Exception.message(e)}
+  end
+
+  # Where a round's pull requests start, in Unix seconds: the backfill on
+  # the first round, then an hour before the last good round began, so a
+  # pull request merged while the board was off is still read. A merged one
+  # is rarely changed again, so a fixed window would miss it for good.
+  defp prs_from(prs_key, through_key, today, archive, now) do
+    midnight = &(&1 |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix())
+
+    cond do
+      !Store.get_meta(prs_key) ->
+        midnight.(Date.add(today, -archive.backfill_days))
+
+      (through = Store.get_meta(through_key)) && match?({_, ""}, Integer.parse(through)) ->
+        min(String.to_integer(through), DateTime.to_unix(now)) - 3600
+
+      true ->
+        midnight.(Date.add(today, -1))
+    end
   end
 
   defp fetch_days(repo, days) do
@@ -181,13 +197,11 @@ defmodule Wallboard.Archive.GitHubCollector do
     end
   end
 
-  # Closed pull requests changed on or after `since`, newest change first, a
-  # page of 100 at a time until a page reaches back before `since`.
-  defp fetch_prs(repo, since, page \\ 1, acc \\ []) do
+  # Closed pull requests changed at or after `from` (Unix seconds), newest
+  # change first, a page of 100 at a time until a page reaches back before it.
+  defp fetch_prs(repo, from, page \\ 1, acc \\ []) do
     path =
       "repos/#{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=#{page}"
-
-    from = since |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix()
 
     with {:ok, json} <- api(path),
          {:ok, prs} <- parse_prs(json, repo) do
@@ -195,7 +209,7 @@ defmodule Wallboard.Archive.GitHubCollector do
       acc = acc ++ Enum.map(recent, &Map.delete(&1, :updated_at))
 
       if length(prs) == 100 and length(recent) == 100 and page < 10,
-        do: fetch_prs(repo, since, page + 1, acc),
+        do: fetch_prs(repo, from, page + 1, acc),
         else: {:ok, acc}
     end
   end
