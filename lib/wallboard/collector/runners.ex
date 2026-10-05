@@ -1,0 +1,138 @@
+defmodule Wallboard.Collector.Runners do
+  @moduledoc """
+  The GitHub Actions runners running on the collector's machine now, read
+  from the process list. It only looks: nothing here installs, starts, stops
+  or changes a runner.
+
+  GitHub's runner keeps everything in the folder it was set up in. Its
+  program `Runner.Listener` (in that folder's `bin`) runs while the runner
+  is connected to GitHub and waiting for work, and it starts a
+  `Runner.Worker` from the same place for each job it runs. So:
+
+    * a `Runner.Listener` means the runner is online
+    * a `Runner.Worker` from the same folder means it is busy
+
+  The runner's name is in the `.runner` file of that folder (its
+  `agentName`). A runner is often run as a user of its own, whose folder
+  the collector's user may not read. Such a runner has no name here, so it
+  is left out, and `read/1` says which folders those are so the caller can
+  say so once. The process list names no runner, and the service name a
+  runner may be installed under is cut short and numbered when it is long,
+  so neither is used as a name.
+
+  What `read/1` returns goes through `Wallboard.Collector.Filter.runners/1`
+  before it leaves the machine: only each name and state cross.
+  """
+
+  # `ps` is the same on macOS and Linux in this form: every process, every
+  # user, the full command line, no header.
+  @ps_args ["axww", "-o", "command="]
+  @ps_timeout_ms 5_000
+  # A `.runner` file is a few hundred bytes.
+  @file_max 64_000
+
+  @doc """
+  The runners running now: `{runners, unnamed}`, where `runners` is
+  `[%{name, state}]` sorted by name, with `state` `:online` or `:busy`,
+  and `unnamed` is the folders of runners whose name could not be read.
+
+  `processes` gives the process list, one command line each, as
+  `{:ok, [line]}` or `:error`; `processes/0` unless given (tests pass
+  their own).
+  """
+  def read(processes \\ &processes/0) do
+    case processes.() do
+      {:ok, lines} ->
+        folders = parse(lines)
+
+        {named, unnamed} =
+          Enum.reduce(folders, {%{}, []}, fn {folder, state}, {named, unnamed} ->
+            case name(folder) do
+              {:ok, name} -> {Map.update(named, name, state, &busiest(&1, state)), unnamed}
+              :error -> {named, [folder | unnamed]}
+            end
+          end)
+
+        runners =
+          named
+          |> Enum.map(fn {name, state} -> %{name: name, state: state} end)
+          |> Enum.sort_by(& &1.name)
+
+        {runners, Enum.sort(unnamed)}
+
+      _ ->
+        :error
+    end
+  end
+
+  @doc """
+  The runner folders in a process list, `%{folder => :online | :busy}`.
+  A line counts when it starts with the full path of `Runner.Listener` or
+  `Runner.Worker` in a folder's `bin` (or `bin.<version>`, where a runner
+  that updated itself may run from).
+  """
+  def parse(lines) do
+    Enum.reduce(lines, %{}, fn line, acc ->
+      case Regex.run(
+             ~r"\A(/.*?)/bin(?:\.[^/\s]+)?/Runner\.(Listener|Worker)(?:\s|\z)",
+             String.trim_leading(line),
+             capture: :all_but_first
+           ) do
+        [folder, "Worker"] -> Map.put(acc, folder, :busy)
+        [folder, "Listener"] -> Map.update(acc, folder, :online, &busiest(&1, :online))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp busiest(:busy, _), do: :busy
+  defp busiest(_, state), do: state
+
+  @doc """
+  The name GitHub knows the runner set up in `folder` by, from its
+  `.runner` file: `{:ok, name}`, or `:error` when the file cannot be read
+  or holds no name.
+  """
+  def name(folder) do
+    path = Path.join(folder, ".runner")
+
+    with {:ok, %{size: size}} when size <= @file_max <- File.stat(path),
+         {:ok, text} <- File.read(path),
+         # The runner writes the file with a byte order mark first.
+         text = String.replace_prefix(text, "﻿", ""),
+         {:ok, %{} = settings} <- Jason.decode(text),
+         name when is_binary(name) and name != "" <- agent_name(settings) do
+      {:ok, name}
+    else
+      _ -> :error
+    end
+  end
+
+  # The runner's JSON names its fields in camel case ("agentName"); an
+  # older or hand-written file may say "AgentName".
+  defp agent_name(settings) do
+    Enum.find_value(settings, fn {key, value} ->
+      if is_binary(key) and String.downcase(key) == "agentname", do: value
+    end)
+  end
+
+  @doc """
+  This machine's process list, one command line each: `{:ok, lines}`, or
+  `:error` when `ps` cannot be run or takes too long.
+  """
+  def processes do
+    task =
+      Task.async(fn ->
+        try do
+          System.cmd("ps", @ps_args, stderr_to_stdout: true)
+        rescue
+          _ -> :error
+        end
+      end)
+
+    case Task.yield(task, @ps_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {out, 0}} -> {:ok, String.split(out, "\n", trim: true)}
+      _ -> :error
+    end
+  end
+end

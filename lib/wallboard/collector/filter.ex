@@ -27,8 +27,14 @@ defmodule Wallboard.Collector.Filter do
         * `SessionEnded`
         * `Counts`: prompts, turns, time, errors, context size and Korium use
     * `Ack`: the collector got the hub message with that id.
+    * `RunnerStates`: the GitHub Actions runners running on the machine
+      now, each by name and state (online or busy) only. Sent whole when
+      it changes and once after each connect; the hub keeps the latest in
+      memory and saves none of it (see `Wallboard.Collector.Runners`).
 
-  Each carries a `seq` that counts up, so the hub can say how far it saved.
+  Each hello and event carries a `seq` that counts up, so the hub can say
+  how far it saved. `RunnerStates` has none and gets no answer: an older
+  hub that does not know it skips it, and the link stays up.
 
   Hub to collector (`FromHub`, each with an id the collector acks):
 
@@ -82,6 +88,10 @@ defmodule Wallboard.Collector.Filter do
       count of tool calls is whole
     * a request id of letters, digits, `_` and `-`; any other id leaves as
       a hash of itself
+    * the name of a GitHub Actions runner on the machine (`kyroco-air-1`):
+      letters, digits, `.`, `_` and `-`, up to 64. A runner whose name does
+      not fit is not sent at all. Only its name and whether it is online
+      or busy leave; never its folder, its jobs or its logs
 
   Free text, and nothing else. Each is cut to 500 characters, with
   characters that do not show (control, formatting and tag characters)
@@ -136,6 +146,7 @@ defmodule Wallboard.Collector.Filter do
   @other "other"
   @tool_limit 200
   @pr_limit 50
+  @runner_limit 100
   # The largest number a message field can hold.
   @max 0xFFFFFFFFFFFFFFFF
 
@@ -277,6 +288,24 @@ defmodule Wallboard.Collector.Filter do
       version: text(info[:version], 100),
       folders: folders |> Enum.map(&text/1) |> Enum.reject(&(&1 == "")) |> Enum.take(20)
     }
+  end
+
+  @doc """
+  The runners running on this machine now (`[%{name, state}]`, `state`
+  `:online` or `:busy`; see `Wallboard.Collector.Runners`), as the message
+  for the hub. A runner whose name does not have a runner name's shape is
+  left out, and at most #{@runner_limit} are sent.
+  """
+  def runners(list) when is_list(list) do
+    runners =
+      for %{name: name, state: state} <- list,
+          name = runner_name(name),
+          name != "",
+          state in [:online, :busy] do
+        %Proto.RunnerState{name: name, state: if(state == :busy, do: :BUSY, else: :ONLINE)}
+      end
+
+    %Proto.RunnerStates{runners: runners |> Enum.uniq_by(& &1.name) |> Enum.take(@runner_limit)}
   end
 
   # ---------------------------------------------------------------------------
@@ -632,6 +661,8 @@ defmodule Wallboard.Collector.Filter do
   defp version(s), do: shaped(s, ~r"\A[0-9][0-9A-Za-z.+-]{0,31}\z")
   defp account(s), do: shaped(s, ~r"\A[A-Za-z0-9_.-]{1,64}\z")
   defp id(s), do: shaped(s, ~r"\A[A-Za-z0-9_-]{1,100}\z")
+  # GitHub's runner names: letters, digits, dot, underscore and hyphen.
+  defp runner_name(s), do: shaped(s, ~r"\A[A-Za-z0-9._-]{1,64}\z")
 
   defp entrypoint(s),
     do: shaped(s, ~r"\A[A-Za-z][A-Za-z_-]{0,19}( [A-Za-z][A-Za-z_-]{0,19})?\z")

@@ -14,6 +14,12 @@ defmodule Wallboard.Link.Client do
   once it is on disk. From there the client sends it, keeps it until the
   hub confirms it, and sends it again after a dropout if it must.
 
+  `runners/2` takes the machine's GitHub runners as
+  `Wallboard.Collector.Filter.runners/1` built them. Only the latest list
+  is kept, in memory: it is sent when it changes and once after each
+  connect, beside the events and not through the buffer, with no `seq`,
+  so it never touches what the hub has confirmed.
+
   With `hold: true` the client sends nothing after a `Resume` until its
   reader has called `rewound/1` or `rewound/2`. A reader that goes back to
   the hub's positions wants this: what waited in the buffer from before
@@ -83,6 +89,14 @@ defmodule Wallboard.Link.Client do
     do: GenServer.call(client, {:push, events}, 30_000)
 
   @doc """
+  The machine's GitHub runners now, as a `RunnerStates` message. Sent to
+  the hub when it differs from the last one sent on this stream, and again
+  after each connect. Never kept on disk: only the latest one counts.
+  """
+  def runners(client \\ __MODULE__, %Proto.RunnerStates{} = runners),
+    do: GenServer.cast(client, {:runners, runners})
+
+  @doc """
   Says the reader of the session files has gone back to the positions of
   the last `{:resume, points}`. Files the buffer had stopped taking are
   taken again from here on. Call it before pushing the lines from those
@@ -137,7 +151,11 @@ defmodule Wallboard.Link.Client do
       back_soon: false,
       pump: nil,
       # True from a shed until the next Resume.
-      shed: false
+      shed: false,
+      # The machine's runners as last given, and as last sent on this
+      # stream (nil: not yet).
+      runners: nil,
+      runners_sent: nil
     }
 
     send(self(), :connect)
@@ -178,6 +196,9 @@ defmodule Wallboard.Link.Client do
   end
 
   @impl true
+  def handle_cast({:runners, runners}, s), do: {:noreply, send_runners(%{s | runners: runners})}
+
+  @impl true
   def handle_info(:connect, %{phase: :waiting} = s) do
     ref = make_ref()
     parent = self()
@@ -194,8 +215,19 @@ defmodule Wallboard.Link.Client do
     Process.send_after(self(), {:keepalive, ref}, s.pace.keepalive_ms)
     Process.send_after(self(), {:settled, ref}, s.pace.settle_ms)
 
-    {:noreply,
-     %{s | phase: :resuming, conn: conn, points: %{}, sent: 0, in_flight: 0, heard: now()}}
+    s = %{
+      s
+      | phase: :resuming,
+        conn: conn,
+        points: %{},
+        sent: 0,
+        in_flight: 0,
+        heard: now(),
+        runners_sent: nil
+    }
+
+    # The hello is on the stream already, so the runners may follow it now.
+    {:noreply, send_runners(s)}
   end
 
   def handle_info({:link_message, ref, %Proto.FromHub{} = message}, %{conn: %{ref: ref}} = s) do
@@ -339,6 +371,19 @@ defmodule Wallboard.Link.Client do
 
   defp pump(s), do: s
 
+  # The runners go out on their own, with no seq: the hub neither saves nor
+  # answers them, so they never move the count of what it confirmed. An
+  # older hub skips a message it does not know.
+  defp send_runners(%{runners: runners, runners_sent: runners} = s), do: s
+
+  defp send_runners(%{runners: %Proto.RunnerStates{} = runners, conn: %{stream: stream}} = s)
+       when stream != nil do
+    s = transmit(s, %Proto.FromCollector{body: {:runners, runners}})
+    if s.conn, do: %{s | runners_sent: runners}, else: s
+  end
+
+  defp send_runners(s), do: s
+
   # A send that fails means the stream is gone. Nothing is lost: the event
   # is still in the buffer.
   defp transmit(%{conn: %{stream: stream}} = s, message) when stream != nil do
@@ -428,7 +473,16 @@ defmodule Wallboard.Link.Client do
     if s.pump, do: Process.cancel_timer(s.pump)
     Process.send_after(self(), :connect, wait)
 
-    %{s | phase: :waiting, conn: nil, backoff: backoff, back_soon: false, pump: nil, in_flight: 0}
+    %{
+      s
+      | phase: :waiting,
+        conn: nil,
+        backoff: backoff,
+        back_soon: false,
+        pump: nil,
+        in_flight: 0,
+        runners_sent: nil
+    }
   end
 
   defp hang_up(%{conn: nil}), do: :ok

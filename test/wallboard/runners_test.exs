@@ -98,6 +98,10 @@ defmodule Wallboard.RunnersTest do
     test "from a collector when GitHub will not list them" do
       [state] = Runners.states(:hidden, %{"acme-mini-1" => :busy}, ["acme-mini-1"], %{})
       assert {state.state, state.from, state.why} == {:busy, :collector, nil}
+
+      # A runner a collector reports that this repository's jobs never ran
+      # on, and GitHub does not list for it, works for another repository.
+      assert Runners.states(:hidden, %{"other-box" => :online}, [], %{}) == []
     end
 
     test "when neither can tell, the state is not known, never made up, and says why" do

@@ -4,9 +4,11 @@ defmodule Wallboard.StreamTest do
   # and one database.
   use ExUnit.Case, async: false
 
-  alias Wallboard.Collector.{Outbox, Sender, Watcher}
+  import Phoenix.LiveViewTest, only: [render_component: 2]
+
+  alias Wallboard.Collector.{Outbox, Proto, Sender, Watcher}
   alias Wallboard.Fixtures
-  alias Wallboard.Link.{Authority, Hub, Sessions}
+  alias Wallboard.Link.{Authority, Hub, RunnerStates, Sessions}
   alias Wallboard.Settings
   alias Wallboard.Sources.Claude
   alias Wallboard.Store
@@ -78,6 +80,7 @@ defmodule Wallboard.StreamTest do
   defp start_hub(c) do
     once({Store, path: Path.join(c.dir, "wallboard.db")})
     once({Sessions, save_ms: 100})
+    once(RunnerStates)
     once({Hub, dir: c.link, port: c.port})
     :ok
   end
@@ -94,7 +97,7 @@ defmodule Wallboard.StreamTest do
 
   # The hub, its sessions and its database, gone at once.
   defp kill_hub do
-    for name <- [Hub, Sessions, Store] do
+    for name <- [Hub, RunnerStates, Sessions, Store] do
       pid = Process.whereis(name)
       # The hub's name belongs to its list of machines; its supervisor is
       # what holds the port too.
@@ -126,7 +129,10 @@ defmodule Wallboard.StreamTest do
     )
   end
 
-  defp start_collector(c) do
+  # `sender` adds to the sender's options. Its process list is the test's,
+  # empty unless the test sets one (see `processes/2`), never this
+  # machine's.
+  defp start_collector(c, sender \\ []) do
     dir = c.collector.collector.dir
     world = c.world
     outbox = once({Outbox, dir: Path.join(dir, "outbox"), name: nil}, id: :outbox)
@@ -146,12 +152,15 @@ defmodule Wallboard.StreamTest do
     sender =
       once(
         {Sender,
-         name: nil,
-         dir: dir,
-         outbox: outbox,
-         watcher: watcher,
-         tick_ms: 30,
-         client: [name: :"stream-client-#{System.unique_integer([:positive])}", backoff: @fast]},
+         [
+           name: nil,
+           dir: dir,
+           outbox: outbox,
+           watcher: watcher,
+           tick_ms: 30,
+           processes: fn -> {:ok, Agent.get(world, &Map.get(&1, :ps, []))} end,
+           client: [name: :"stream-client-#{System.unique_integer([:positive])}", backoff: @fast]
+         ] ++ sender},
         id: :sender
       )
 
@@ -949,5 +958,187 @@ defmodule Wallboard.StreamTest do
 
     pair(c)
     wait_until(fn -> card(@claude_id) != nil end)
+  end
+
+  # ---------------------------------------------------------------------------
+  # GitHub runners on the collector's machine
+
+  describe "GitHub runners" do
+    # A runner's folder as GitHub's runner leaves it: a .runner file whose
+    # JSON starts with a byte order mark. With no name, no file at all, as
+    # when the folder belongs to a user the collector's user cannot read.
+    defp runner_folder(c, folder, name) do
+      dir = Path.join([c.dir, "runners", folder])
+      File.mkdir_p!(dir)
+
+      if name do
+        json = Jason.encode!(%{agentId: 7, agentName: name, poolName: "Default"})
+        File.write!(Path.join(dir, ".runner"), "﻿" <> json)
+      end
+
+      dir
+    end
+
+    # What `ps` shows on the collector's machine from now on.
+    defp processes(c, lines), do: Agent.update(c.world, &Map.put(&1, :ps, lines))
+
+    # The board's Git tab for one repository whose jobs ran on `air-1`, with
+    # a GitHub login that may not list its runners, after the board heard
+    # `states` from the hub.
+    defp board_runners(states) do
+      facts = %{
+        repos: [
+          %{
+            repo: "acme/shop",
+            error: nil,
+            facts: %{
+              runs: [],
+              deploys: [],
+              deploys_checked_at: DateTime.utc_now(),
+              queue: [],
+              prs: [],
+              jobs: %{},
+              own_by_run: %{1 => ["air-1"]},
+              runners: :hidden
+            }
+          }
+        ]
+      }
+
+      socket = %Phoenix.LiveView.Socket{
+        assigns: %{__changed__: %{}, github: facts, now: DateTime.utc_now()}
+      }
+
+      {:noreply, socket} = WallboardWeb.BoardLive.handle_info({:runners, states}, socket)
+      [repo] = socket.assigns.git
+
+      render_component(&WallboardWeb.BoardLive.runners_table/1,
+        runners: repo.s.runners
+      )
+    end
+
+    test "online, then busy, then offline at the hub and on the board; not known once the collector is gone",
+         c do
+      Settings.put(Map.put(Settings.get(), :github, %{repos: ["acme/shop"]}))
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Poller.topic())
+
+      air = runner_folder(c, "actions runner", "air-1")
+      listener = "#{air}/bin/Runner.Listener run --startuptype service"
+      worker = "#{air}/bin/Runner.Worker spawnclient 115 118"
+      processes(c, ["/usr/sbin/sshd -D", listener, "grep Runner.Listener"])
+
+      start_hub(c)
+      pair(c)
+      w = start_collector(c, runners_ms: 30)
+
+      assert_receive {:runners, %{"air-1" => :online} = states}, 5_000
+      assert states == %{"air-1" => :online}
+      assert RunnerStates.states() == %{"air-1" => :online}
+      assert board_runners(states) =~ ~r/air-1.*online.*from the collector on that machine/s
+
+      processes(c, [listener, worker])
+      assert_receive {:runners, %{"air-1" => :busy}}, 5_000
+
+      # The runner stopped while the collector is still connected.
+      processes(c, ["/usr/sbin/sshd -D"])
+      assert_receive {:runners, %{"air-1" => :offline} = states}, 5_000
+      assert board_runners(states) =~ ~r/air-1.*offline/s
+
+      # A session's events still go through and are confirmed as before:
+      # the runner messages took no seq and no place in the buffer.
+      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+      look(w)
+      drained(w)
+      assert Store.collector_events("papa", @claude_id) != []
+
+      # The collector's program goes away: the hub no longer knows.
+      kill_collector(w)
+      assert_receive {:runners, states} when map_size(states) == 0, 5_000
+      assert RunnerStates.states() == %{}
+
+      html = board_runners(states)
+      assert html =~ ~r/air-1.*state not known/s
+      refute html =~ "offline"
+      refute html =~ "online"
+    end
+
+    test "a hub that restarts hears the runners again, with nothing changed on the machine", c do
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Poller.topic())
+      air = runner_folder(c, "air", "air-1")
+      processes(c, ["#{air}/bin/Runner.Listener run"])
+
+      start_hub(c)
+      pair(c)
+      w = start_collector(c, runners_ms: 30)
+      assert_receive {:runners, %{"air-1" => :online}}, 5_000
+
+      kill_hub()
+      start_hub(c)
+      assert_receive {:runners, %{"air-1" => :online}}, 10_000
+      assert RunnerStates.states() == %{"air-1" => :online}
+      kill_collector(w)
+    end
+
+    test "a runner whose name fails the check, or cannot be read, is not sent", c do
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Poller.topic())
+      good = runner_folder(c, "good", "air-2")
+      odd = runner_folder(c, "odd", "air 2; rm -rf /")
+      long = runner_folder(c, "long", String.duplicate("a", 65))
+      hidden = runner_folder(c, "hidden", nil)
+
+      processes(
+        c,
+        for(dir <- [good, odd, long, hidden], do: "#{dir}/bin/Runner.Listener run")
+      )
+
+      start_hub(c)
+      pair(c)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          w = start_collector(c, runners_ms: 30)
+          assert_receive {:runners, states}, 5_000
+          assert states == %{"air-2" => :online}
+          # Many more looks at the process list, and still one line each.
+          Process.sleep(400)
+          assert RunnerStates.states() == %{"air-2" => :online}
+          kill_collector(w)
+        end)
+
+      assert log |> String.split("cannot read its .runner file") |> length() == 2
+      assert log =~ hidden
+      assert log |> String.split("is not sent: a runner name") |> length() == 3
+    end
+
+    test "a hub that does not know a message skips it and keeps the stream", c do
+      start_hub(c)
+      pair(c)
+      w = start_collector(c)
+      wait_until(fn -> Map.has_key?(Hub.connected(), "papa") end)
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, "link")
+
+      client = :sys.get_state(w.sender).client
+      %{conn: %{stream: stream, pid: stream_pid}} = :sys.get_state(client)
+
+      # A hub older than RunnerStates reads one as a message with no body it
+      # knows (see test/wallboard/collector_proto_test.exs). This hub knows
+      # field 5, so the same bytes go under a number it does not know, on
+      # the real collector's own stream.
+      runners =
+        Proto.RunnerStates.encode(%Proto.RunnerStates{
+          runners: [%Proto.RunnerState{name: "air-1", state: :BUSY}]
+        })
+
+      GRPC.Stub.send_request(stream, %Proto.FromCollector{__unknown_fields__: [{15, 2, runners}]})
+
+      # Events after it are saved and confirmed on the same stream.
+      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+      look(w)
+      drained(w)
+      assert Store.collector_events("papa", @claude_id) != []
+      assert %{conn: %{pid: ^stream_pid}, phase: :live} = :sys.get_state(client)
+      refute_received {:link, :down, "papa"}
+      assert RunnerStates.states() == %{}
+    end
   end
 end

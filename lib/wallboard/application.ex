@@ -45,6 +45,8 @@ defmodule Wallboard.Application do
       [
         # Listens for what the port saves, so it starts first.
         Wallboard.Link.Sessions,
+        # Holds the GitHub runners collectors report, in memory only.
+        Wallboard.Link.RunnerStates,
         {Wallboard.Link.Hub, dir: dir, port: settings.link.port},
         {Wallboard.Pairing.Door,
          dir: dir,

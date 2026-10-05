@@ -5,7 +5,10 @@ defmodule Wallboard.Link.Server do
   Each stream runs in its own process. It asks `Wallboard.Link.Hub` who the
   certificate belongs to, then reads messages until the collector goes: the
   first must be a `Hello`, answered with `Resume`; every event after it is
-  saved under the certificate's machine and confirmed with `Stored`.
+  saved under the certificate's machine and confirmed with `Stored`. A
+  `RunnerStates` is handed to `Wallboard.Link.RunnerStates` and neither
+  saved nor answered; a message of a kind this hub does not know is
+  skipped, and the stream goes on.
 
   It reads the stream's bytes itself instead of taking the gRPC library's
   ready-made list of messages, because that list has no size limit: it
@@ -23,11 +26,12 @@ defmodule Wallboard.Link.Server do
 
   alias GRPC.Server.Adapters.Cowboy
   alias Wallboard.Collector.Proto
-  alias Wallboard.Link.{Authority, Hub}
+  alias Wallboard.Link.{Authority, Hub, RunnerStates}
   alias Wallboard.Store
 
   @resume_chunk 1_000
   @max_items 256
+  @max_runners 100
 
   @doc false
   # Called by the gRPC library for each Stream call. Its own list of
@@ -185,9 +189,20 @@ defmodule Wallboard.Link.Server do
     {events, seq, alive?} =
       Enum.reduce(messages, {[], s.seq, false}, fn m, {events, seq, alive?} ->
         case m.body do
-          {:event, event} -> {[event | events], max(seq, m.seq), alive?}
-          {:ack, %Proto.Ack{id: 0}} -> {events, seq, true}
-          _ -> {events, seq, alive?}
+          {:event, event} ->
+            {[event | events], max(seq, m.seq), alive?}
+
+          {:ack, %Proto.Ack{id: 0}} ->
+            {events, seq, true}
+
+          # Only the latest list counts, so it is passed on as it comes. It
+          # has no seq and asks for no answer.
+          {:runners, %Proto.RunnerStates{} = runners} ->
+            RunnerStates.put(s.machine, self(), runner_states(runners))
+            {events, seq, alive?}
+
+          _ ->
+            {events, seq, alive?}
         end
       end)
 
@@ -248,6 +263,17 @@ defmodule Wallboard.Link.Server do
       ]
     else
       []
+    end
+  end
+
+  # The runners a collector reports, as the filter would have built them: a
+  # runner's name, online or busy. Anything else is dropped.
+  defp runner_states(%Proto.RunnerStates{runners: runners}) do
+    for %Proto.RunnerState{name: name, state: state} <- Enum.take(runners, @max_runners),
+        is_binary(name) and name =~ ~r/\A[A-Za-z0-9._-]{1,64}\z/,
+        state in [:ONLINE, :BUSY],
+        into: %{} do
+      {name, if(state == :BUSY, do: :busy, else: :online)}
     end
   end
 

@@ -98,6 +98,8 @@ defmodule WallboardWeb.BoardLive do
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(stream: Wallboard.Link.Sessions.cards())
+      # What collectors say about the GitHub runners on their machines.
+      |> assign(runners: Wallboard.Link.RunnerStates.states())
       |> assign(github: github.facts, github_meta: github.meta)
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
@@ -145,6 +147,10 @@ defmodule WallboardWeb.BoardLive do
   # Sessions that collectors stream from other machines.
   def handle_info({:stream, cards}, socket),
     do: {:noreply, socket |> assign(stream: cards) |> derive_sessions()}
+
+  # The GitHub runners collectors report, `%{name => state}`.
+  def handle_info({:runners, states}, socket) when is_map(states),
+    do: {:noreply, socket |> assign(runners: states) |> derive_github()}
 
   def handle_info({:source, :github, facts, meta}, socket),
     do:
@@ -389,10 +395,11 @@ defmodule WallboardWeb.BoardLive do
   # rest, and the first one's summary, which the Dev and Prod tiles read.
   # The repository list comes from the settings as they are now, like the
   # poller's, so one added or removed on the settings page shows without a
-  # reload.
+  # reload. A runner GitHub does not list takes its state from a collector
+  # on its machine, when one reports it.
   defp derive_github(socket) do
     %{github: facts, now: now} = socket.assigns
-    repos = GitHub.repos(facts, Settings.get(), now)
+    repos = GitHub.repos(facts, Settings.get(), now, socket.assigns[:runners] || %{})
     {columns, quiet} = GitHub.arrange(repos)
 
     assign(socket,

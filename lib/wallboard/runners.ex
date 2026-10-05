@@ -73,12 +73,16 @@ defmodule Wallboard.Runners do
   `state` is `:online`, `:busy`, `:offline` or `:unknown`; `from` is
   `:github`, `:collector` or nil; `why` says, for an unknown state, why it
   is not known.
+
+  A collector does not know which repository its runner works for, so
+  what it reports only gives a state to a runner GitHub lists or the
+  repository's jobs ran on; it adds no runner of its own.
   """
   def states(listed, reported, seen, busy) do
     github = if is_list(listed), do: Map.new(listed, &{&1.name, github_state(&1)}), else: %{}
 
     names =
-      (Map.keys(github) ++ Map.keys(reported) ++ seen)
+      (Map.keys(github) ++ seen)
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
       |> Enum.uniq()
       |> Enum.sort()

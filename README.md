@@ -26,7 +26,8 @@ machines, known limits, building from source and how it works.
   connection. Their sessions get cards on the board as they work, show Needs
   you, and send your alerts. It sends numbers and a few short lines (a
   session's title, its folder and branch, and the start of your prompts),
-  never the agent's replies, the commands it ran or your files; the
+  and the name and state of any GitHub runner on that machine (see "Your
+  own CI machines" below), never the agent's replies, the commands it ran or your files; the
   [wiki](https://github.com/kyroco/vitalaize/wiki/How-it-works) lists what
   crosses the network.
 - **Connect a machine by code**: the new machine shows a six-digit code, and
@@ -169,8 +170,15 @@ bill your own runners).
 
 A runner's state comes from GitHub when the board's GitHub login has admin
 rights on the repository. Otherwise a collector on the runner's machine
-reports it: only the runner's name and its state cross the network. When
-neither can tell, the board says the state is not known, and why.
+reports it: only the runner's name and its state cross the network, never
+its folder, its jobs or its logs. The collector finds the runner in the
+machine's list of running programs and reads its name from the `.runner`
+file in the runner's folder, so it can report a runner only when its user
+may read that file. A runner set up under a user of its own, with a folder
+other users cannot open, is left out, and the collector's log says so
+once. When neither GitHub nor a collector can tell, the board says the
+state is not known, and why; that is also what it says once the collector
+disconnects.
 
 VitalAIze only shows runners. It does not install, start or change one.
 GitHub's own advice applies: self-hosted runners "should almost never be used
