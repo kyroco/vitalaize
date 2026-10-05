@@ -19,7 +19,11 @@
       }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
     }
   },
   {
@@ -42,7 +46,11 @@
       }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
     }
   },
   {
@@ -65,7 +73,11 @@
       }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
     }
   },
   {
@@ -88,7 +100,11 @@
       }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
     }
   },
   {
@@ -111,7 +127,11 @@
       }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
     }
   },
   {
@@ -134,7 +154,11 @@
       }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
     }
   }
 ]

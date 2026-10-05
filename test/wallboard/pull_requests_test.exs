@@ -17,7 +17,10 @@ defmodule Wallboard.PullRequestsTest do
 
     assert length(prs) == 6
     assert pr.number == 35
-    assert {pr.branch, pr.head_repo, pr.base} == {@branch, "acme/shop", "main"}
+
+    assert {pr.branch, pr.head_repo, pr.base, pr.default_branch} ==
+             {@branch, "acme/shop", "main", "main"}
+
     assert pr.merged_at == @merged
     assert pr.created_at == @merged - 122
     assert pr.updated_at == @merged + 30
@@ -38,6 +41,7 @@ defmodule Wallboard.PullRequestsTest do
           branch: branch,
           head_repo: "acme/shop",
           base: "main",
+          default_branch: "main",
           created_at: merged_at - 3600,
           merged_at: merged_at
         },
@@ -148,16 +152,45 @@ defmodule Wallboard.PullRequestsTest do
 
       assert {feature.cost, release.sessions} == {8.0, []}
 
-      # Long-lived branches are known from every saved pull request, not
-      # only those in the window.
+      # main is the repository's default branch, which GitHub names on every
+      # pull request, so a release alone in the window is known too.
       [release] =
         PullRequests.link(
           [pr(77, "main", @merged, %{base: "production"})],
-          [session("on-main", %{branch: "main"})],
-          MapSet.new([{"acme/shop", "main"}])
+          [session("on-main", %{branch: "main"})]
         )
 
       assert release.sessions == []
+    end
+
+    test "a branch that takes merges after its own merged is long-lived, and claims no sessions" do
+      # develop went into main, and a feature merged into develop after.
+      [release, _feature] =
+        PullRequests.link(
+          [pr(78, "develop", @merged), pr(79, "feat-x", @merged + 3600, %{base: "develop"})],
+          [session("on-develop", %{branch: "develop"})]
+        )
+
+      assert release.sessions == []
+    end
+
+    test "a stacked branch's own pull request keeps the sessions that worked on it" do
+      # feat-b was merged into feat-a, then feat-a into main. A suggestion
+      # into feat-a was closed without merging, so it is not saved as merged.
+      [b, a] =
+        PullRequests.link(
+          [
+            pr(2, "feat-b", @merged - 600, %{base: "feat-a"}),
+            pr(1, "feat-a", @merged)
+          ],
+          [
+            session("on-a", %{tool: "codex", branch: "feat-a", tokens: 300}),
+            session("on-b", %{tool: "codex", branch: "feat-b", tokens: 100})
+          ]
+        )
+
+      assert {Enum.map(a.sessions, & &1.session_id), a.codex_tokens} == {["on-a"], 300.0}
+      assert Enum.map(b.sessions, & &1.session_id) == ["on-b"]
     end
 
     test "a fork's pull request does not claim sessions on a branch of the same name here" do
@@ -198,6 +231,27 @@ defmodule Wallboard.PullRequestsTest do
             row
           )
         )
+    end
+
+    test "a saved release from the default branch claims no session on it" do
+      :ok =
+        Store.put_prs([
+          %{
+            repo: "acme/shop",
+            number: 77,
+            branch: "main",
+            head_repo: "acme/shop",
+            base: "production",
+            default_branch: "main",
+            created_at: @merged - 3600,
+            merged_at: @merged
+          }
+        ])
+
+      put_session("on-main", %{git_branch: "main", repo: "acme/shop", cost: 5.0})
+
+      settings = Settings.merge(%{github: %{repo: "acme/shop"}}, %{})
+      assert [%{number: 77, sessions: []}] = PullRequests.merged(settings, @merged - 86_400)
     end
 
     test "a session saved before its repository was recorded is found from this machine's folder" do

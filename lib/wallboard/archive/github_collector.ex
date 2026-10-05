@@ -275,6 +275,7 @@ defmodule Wallboard.Archive.GitHubCollector do
              title: p["title"],
              branch: get_in(p, ["head", "ref"]),
              head_repo: get_in(p, ["head", "repo", "full_name"]),
+             default_branch: get_in(p, ["base", "repo", "default_branch"]),
              base: get_in(p, ["base", "ref"]),
              head_sha: get_in(p, ["head", "sha"]),
              author: get_in(p, ["user", "login"]),

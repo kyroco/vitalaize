@@ -11,11 +11,14 @@ defmodule Wallboard.Archive.PullRequests do
     * it ran on the pull request's branch in the same repository and started
       before the merge. This is how Codex sessions are found (Codex records
       the branch, not the pull request), and how a session that reviewed or
-      fixed a pull request it did not open is counted. A long-lived branch,
-      one any saved pull request merges into (main, develop, production),
+      fixed a pull request it did not open is counted. A long-lived branch
       ties no session this way: a release from main into production did not
-      do the work of every session on main. Nor does a fork's branch, which
-      only shares a name with one here.
+      do the work of every session on main. A branch is long-lived when it
+      is the repository's default branch, or when another pull request
+      merged into it after its own pull request merged (develop, which
+      keeps taking features after each release). A stacked branch, merged
+      into before its own merge, still counts. Nor does a fork's branch tie
+      sessions, since it only shares a name with one here.
 
   A session tied to several merged pull requests splits its cost and tokens
   evenly between them, so a dollar is never counted twice. Repository names
@@ -49,30 +52,30 @@ defmodule Wallboard.Archive.PullRequests do
     prs =
       Store.query(
         """
-        SELECT repo, number, title, url, branch, head_repo, base, created_at, merged_at
+        SELECT repo, number, title, url, branch, head_repo, base, default_branch, created_at,
+          merged_at
         FROM gh_prs WHERE merged_at >= ?1 ORDER BY merged_at, repo, number
         """,
         [from]
       )
       |> Enum.filter(&MapSet.member?(tracked, String.downcase(&1.repo)))
 
-    long_lived =
-      "SELECT DISTINCT repo, base FROM gh_prs WHERE base IS NOT NULL"
-      |> Store.query([])
-      |> MapSet.new(&{String.downcase(&1.repo), &1.base})
-
-    link(prs, sessions(prs), long_lived)
+    link(prs, sessions(prs))
   end
 
   @doc """
   Ties sessions to pull requests (both as `merged/2` reads them) and adds up
-  each pull request's share of their spending. `long_lived` holds
-  `{repo, branch}` for the branches pull requests merge into, besides the
-  bases of `prs` themselves. Pure, for the tests.
+  each pull request's share of their spending. Pure, for the tests.
   """
-  def link(prs, sessions, long_lived \\ MapSet.new()) do
+  def link(prs, sessions) do
     by_number = Map.new(prs, &{{String.downcase(&1.repo), &1.number}, &1})
-    long_lived = MapSet.union(long_lived, MapSet.new(prs, &{String.downcase(&1.repo), &1.base}))
+
+    # The last merge into each branch. A merge after a pull request's own is
+    # always in `prs` too, since they run from `from` to now.
+    merged_into =
+      Enum.reduce(prs, %{}, fn pr, acc ->
+        Map.update(acc, {String.downcase(pr.repo), pr.base}, pr.merged_at, &max(&1, pr.merged_at))
+      end)
 
     by_branch =
       prs
@@ -80,8 +83,8 @@ defmodule Wallboard.Archive.PullRequests do
         repo = String.downcase(pr.repo)
 
         is_binary(pr.branch) and is_binary(pr[:head_repo]) and
-          String.downcase(pr.head_repo) == repo and
-          not MapSet.member?(long_lived, {repo, pr.branch})
+          String.downcase(pr.head_repo) == repo and pr.branch != pr[:default_branch] and
+          Map.get(merged_into, {repo, pr.branch}, 0) <= pr.merged_at
       end)
       |> Enum.group_by(&{String.downcase(&1.repo), &1.branch})
 
@@ -101,7 +104,7 @@ defmodule Wallboard.Archive.PullRequests do
       sum = fn list, f -> list |> Enum.map(fn {s, share} -> f.(s) * share end) |> Enum.sum() end
 
       pr
-      |> Map.drop([:base, :head_repo])
+      |> Map.drop([:base, :head_repo, :default_branch])
       |> Map.merge(%{
         sessions:
           Enum.map(linked, fn {s, share} ->
