@@ -6,7 +6,8 @@ defmodule Wallboard.Archive.CiMinutes do
   Minutes are counted the way GitHub bills them: each job's time is rounded
   up to a whole minute, a Windows job counts 2 and a macOS job 10 against the
   plan's included minutes, and a job on one of your own machines (a runner
-  labelled `self-hosted`) counts nothing. GitHub's standard runners are free
+  labelled `self-hosted`, or one whose name is not one GitHub gives its
+  machines) counts nothing. GitHub's standard runners are free
   on a public repository, so a public repository's minutes are kept apart
   from the ones that use up the plan. Three kinds, then:
 
@@ -41,8 +42,17 @@ defmodule Wallboard.Archive.CiMinutes do
   # Events no session causes by pushing.
   @not_pushed ~w(schedule merge_group dynamic)
 
-  # A job that ran on one of your own machines.
-  @own "(',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%'"
+  # A job that ran on one of your own machines. Its labels are only what the
+  # workflow asked for, so "self-hosted" is often missing; the runner's name
+  # tells: GitHub names its standard machines "GitHub Actions 1000041223"
+  # and its larger ones after their label, "ubuntu-8core-1000027280". A job
+  # with no runner (never started) is GitHub's, as it costs nothing anyway.
+  @own """
+  ((',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%'
+    OR (coalesce(j.runner_name, '') != ''
+      AND j.runner_name NOT GLOB 'GitHub Actions [0-9]*'
+      AND j.runner_name NOT GLOB (coalesce(j.labels, '') || '-[0-9]*')))
+  """
 
   # A job's minutes as GitHub rounds them.
   @rounded "((coalesce(j.duration_s, 0) + 59) / 60)"

@@ -111,6 +111,51 @@ defmodule Wallboard.CiMinutesTest do
     end
   end
 
+  describe "review fixes" do
+    test "your own machines are told by the runner, not only by a self-hosted label" do
+      run(1, pr: 7)
+
+      jobs(1, [
+        # A runner on your own machine, asked for by its own label alone.
+        job(1, 120, "kyroco-gate", "success", runner: "kyroco-air-1"),
+        # GitHub's standard and larger runners.
+        job(2, 60, "ubuntu-latest", "success", runner: "GitHub Actions 1000041223"),
+        job(3, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1000027280"),
+        # No runner recorded (never started, or cancelled): counted as GitHub's.
+        job(4, 60, "ubuntu-latest", "cancelled")
+      ])
+
+      assert %{paid: 3, own: 2} = CiMinutes.for_pr(@repo, 7)
+    end
+
+    test "a session started by another tool does not take the pushes of the one that started it" do
+      claude = session("claude", "feature", @t0, @t0 + 7200)
+      codex = session("codex", "feature", @t0 + 1800, @t0 + 3000, "codex", "Claude Code")
+
+      # Pushed while the Codex review ran, and just after it ended.
+      run(1, branch: "feature", created_at: @t0 + 2400)
+      run(2, branch: "feature", created_at: @t0 + 3100)
+      jobs(1, [job(1, 60, "ubuntu-latest")])
+      jobs(2, [job(2, 120, "ubuntu-latest")])
+
+      assert %{paid: 3, runs: 2} = CiMinutes.for_session(claude)
+      assert %{runs: 0} = CiMinutes.for_session(codex)
+    end
+
+    test "a session that pushed one branch and was saved on another still gets its runs" do
+      s =
+        session("s1", "main", @t0, @t0 + 3600, "claude", "cli", ["robert/41-sign-in", "main"])
+
+      run(1, branch: "robert/41-sign-in", created_at: @t0 + 600)
+      jobs(1, [job(1, 60, "ubuntu-latest")])
+
+      assert %{paid: 1, runs: 1} = CiMinutes.for_session(s)
+
+      t = Trends.build(Wallboard.Settings.merge(settings(), %{}), 7, DateTime.from_unix!(@t0))
+      assert %{sub: "1 from agent sessions"} = Enum.find(t.cards, &(&1.key == :ci_minutes))
+    end
+  end
+
   test "a session in another repository does not take the run" do
     a = %{repo: "acme/shop", branch: "feature", event: "push", at: 100, default: nil}
 
@@ -245,7 +290,8 @@ defmodule Wallboard.CiMinutesTest do
       conclusion: conclusion,
       created_at: opts[:created_at],
       duration_s: seconds,
-      labels: labels
+      labels: labels,
+      runner_name: opts[:runner]
     }
   end
 
@@ -254,16 +300,26 @@ defmodule Wallboard.CiMinutesTest do
 
   # A session streamed from another machine, so no folder is read for its
   # repository. Each has one request, so Trends has spending for its tool.
-  defp session(id, branch, started_at, ended_at, tool \\ "claude") do
+  defp session(
+         id,
+         branch,
+         started_at,
+         ended_at,
+         tool \\ "claude",
+         entrypoint \\ "cli",
+         branches \\ nil
+       ) do
     s = %{
       machine: "m",
       session_id: id,
       source: "stream",
       tool: tool,
+      entrypoint: entrypoint,
       git_branch: branch,
       started_at: started_at,
       ended_at: ended_at,
-      prompts: 1
+      prompts: 1,
+      detail: %{branches: branches || [branch]}
     }
 
     :ok =
