@@ -2610,7 +2610,10 @@ defmodule WallboardWeb.BoardLive do
 
   # What started a run, in plain words.
   defp event_words(%{event: "push"}), do: "push"
-  defp event_words(%{event: "pull_request", pr: pr}) when is_integer(pr), do: "pull request ##{pr}"
+
+  defp event_words(%{event: "pull_request", pr: pr}) when is_integer(pr),
+    do: "pull request ##{pr}"
+
   defp event_words(%{event: "pull_request"}), do: "pull request"
   defp event_words(%{event: "merge_group"}), do: "merge queue"
   defp event_words(%{event: "workflow_dispatch"}), do: "started by hand"
