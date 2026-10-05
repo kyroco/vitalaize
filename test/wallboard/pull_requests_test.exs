@@ -200,6 +200,49 @@ defmodule Wallboard.PullRequestsTest do
         )
     end
 
+    test "a session saved before its repository was recorded is found from this machine's folder" do
+      dir = Path.join(System.tmp_dir!(), "vitalaize-old-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, ".git"))
+
+      File.write!(Path.join([dir, ".git", "config"]), """
+      [remote "origin"]
+      \turl = https://github.com/acme/shop.git
+      """)
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      :ok =
+        Store.put_prs([
+          %{
+            repo: "acme/shop",
+            number: 35,
+            branch: @branch,
+            head_repo: "acme/shop",
+            base: "main",
+            created_at: @merged - 3600,
+            merged_at: @merged
+          }
+        ])
+
+      # Both rows have no repo. The first ran on this machine; the second
+      # came from another one, whose folder cannot be read here.
+      put_session("own", %{tool: "codex", cwd: dir, git_branch: @branch, output_tokens: 50})
+
+      put_session("streamed", %{
+        tool: "codex",
+        source: "stream",
+        cwd: dir,
+        git_branch: @branch,
+        output_tokens: 70
+      })
+
+      settings = Settings.merge(%{github: %{repo: "acme/shop"}}, %{})
+      [pr] = PullRequests.merged(settings, @merged - 86_400)
+
+      assert Enum.map(pr.sessions, & &1.session_id) == ["own"]
+      assert pr.codex_tokens == 50.0
+    end
+
     test "only the tracked repositories' merged pull requests are read, with their sessions" do
       {:ok, prs} =
         GitHubCollector.parse_prs(Fixtures.read!("github/pulls_closed.json"), "acme/shop")
