@@ -283,6 +283,57 @@ defmodule Wallboard.PullRequestsTest do
       Store.put_meta("github_prs_backfill:o/r", "2026-10-05")
       assert Trends.shipped_loading(settings) == nil
     end
+
+    test "after an upgrade only Shipped waits for its pull requests; every other card keeps its change" do
+      now = DateTime.utc_now()
+      today = Date.utc_today()
+      day = 86_400
+      at = DateTime.to_unix(now)
+
+      # A board that has saved sessions and runs for 90 days, upgraded today:
+      # its first pull request round has just saved 14 days of them.
+      Store.put_meta("claude_since", Date.to_iso8601(Date.add(today, -90)))
+      Store.put_meta("github_backfill:acme/shop", Date.to_iso8601(Date.add(today, -90)))
+      Store.put_meta("github_prs_backfill:acme/shop", Date.to_iso8601(today))
+
+      for {id, ago} <- [{"now", 2}, {"before", 20}] do
+        put_session(id, %{started_at: at - ago * day - 60, ended_at: at - ago * day, prompts: 1})
+      end
+
+      :ok =
+        Store.put_prs(
+          for {n, ago} <- [{1, 2}, {2, 20}],
+              do: %{
+                repo: "acme/shop",
+                number: n,
+                branch: "b#{n}",
+                base: "main",
+                created_at: at - ago * day - 60,
+                merged_at: at - ago * day
+              }
+        )
+
+      t = Trends.build(full_settings(), 14, now)
+      card = fn key -> Enum.find(t.cards, &(&1.key == key)) end
+
+      assert t.history_start == Date.add(today, -90)
+      assert card.(:sessions).change == 0.0
+      # The 14 days before reach past the pull requests' first saved day.
+      assert card.(:merged_prs).change == nil
+    end
+  end
+
+  defp full_settings do
+    %{
+      archive: %{backfill_days: 14},
+      codex: %{enabled: true},
+      github: %{
+        repo: "acme/shop",
+        gate_workflow: "ci.yml",
+        dev_deploy: "deploy-staging.yml",
+        prod_deploy: "deploy-production.yml"
+      }
+    }
   end
 
   test "this machine's session records the GitHub repository of its folder" do

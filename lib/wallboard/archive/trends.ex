@@ -36,7 +36,9 @@ defmodule Wallboard.Archive.Trends do
 
     sums = day_sums(settings, since)
     history = history_start(settings, today)
-    prev_ok? = history != nil and Date.compare(List.first(previous), history) != :lt
+    shipped = shipped_start(settings, today, history)
+    saved_since? = &(&1 != nil and Date.compare(List.first(previous), &1) != :lt)
+    prev_ok? = fn group -> saved_since?.(if group == :shipped, do: shipped, else: history) end
 
     # A tool with nothing in the period has no section, and the comparison
     # shows only when both have something to compare.
@@ -80,7 +82,7 @@ defmodule Wallboard.Archive.Trends do
       cards:
         Enum.map(shown, fn m ->
           cur = merge(Enum.map(current, &sums[&1]))
-          prev = if prev_ok?, do: merge(Enum.map(previous, &sums[&1])), else: nil
+          prev = if prev_ok?.(m.group), do: merge(Enum.map(previous, &sums[&1])), else: nil
           value = m.value.(cur)
           prev_value = prev && m.value.(prev)
 
@@ -167,17 +169,29 @@ defmodule Wallboard.Archive.Trends do
 
   # The first day every source had saved, or nil before anything is saved.
   defp history_start(settings, today) do
-    back = settings.archive.backfill_days
+    repos = Wallboard.Settings.repo_names(settings)
+    latest_start([{"claude_since", 0}] ++ backfills(settings, repos, "github_backfill:"), today)
+  end
 
-    # Pull requests were first saved by 0.4.0, so a board that saved runs
-    # before then has fewer days of them.
+  # The same for the Shipped cards, which also need the pull requests saved.
+  # Those were first saved later than sessions and runs on a board that ran
+  # before, so they hold only the Shipped cards back, never the others.
+  defp shipped_start(settings, today, history) do
+    repos = Wallboard.Settings.repo_names(settings)
+
+    case latest_start(backfills(settings, repos, "github_prs_backfill:"), today) do
+      prs when history != nil and prs != nil -> Enum.max([history, prs], Date)
+      _ -> nil
+    end
+  end
+
+  defp backfills(settings, repos, prefix),
+    do: Enum.map(repos, &{prefix <> &1, settings.archive.backfill_days})
+
+  # The latest of the saved starts, or nil when none is saved.
+  defp latest_start(keys, today) do
     starts =
-      ([{"claude_since", 0}] ++
-         Enum.flat_map(
-           Wallboard.Settings.repo_names(settings),
-           &[{"github_backfill:" <> &1, back}, {"github_prs_backfill:" <> &1, back}]
-         ))
-      |> Enum.flat_map(fn {key, days_back} ->
+      Enum.flat_map(keys, fn {key, days_back} ->
         with v when is_binary(v) <- Store.get_meta(key),
              {:ok, d} <- Date.from_iso8601(v) do
           [Date.add(d, -days_back)]
