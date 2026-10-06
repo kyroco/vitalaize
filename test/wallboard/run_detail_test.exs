@@ -665,24 +665,24 @@ defmodule Wallboard.RunDetailTest do
 
   test "only the newest runs' jobs are kept once the limit is reached", %{dir: dir} do
     stop_supervised!(Wallboard.RunJobs)
-    start_supervised!({Wallboard.RunJobs, keep: 1})
+    start_supervised!({Wallboard.RunJobs, keep: 2})
     use_settings(false)
     File.write!(Path.join(dir, "go"), "")
-    view = open_board()
+    runs = facts(Enum.map(101..103, &run_json(&1, "completed", "success")))
 
-    send_facts(
-      view,
-      facts([run_json(101, "completed", "failure"), run_json(102, "completed", "success")])
-    )
-
-    for id <- [101, 102, 102, 101] do
+    tap_on_new_screen = fn id ->
+      view = open_board()
+      send_facts(view, runs)
       view |> element(~s|button.recent-row[phx-value-id="#{id}"]|) |> render_click()
-      render_async(view, 5_000)
-      view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
+      assert render_async(view, 5_000) =~ "Jobs · 3"
     end
 
-    # 102 was still kept the second time; 101 had made way for it.
-    assert asked(dir) |> Enum.map(&(&1 =~ "/101/")) == [true, false, true]
+    # Each tap on a screen of its own, so it asks the board's one reader.
+    for id <- [101, 102, 103, 102, 101], do: tap_on_new_screen.(id)
+
+    # 102 and 103 were still kept; 101 had made way for 103.
+    ids = Enum.map(asked(dir), &(Regex.run(~r{runs/(\d+)/jobs}, &1) |> List.last()))
+    assert ids == ["101", "102", "103", "101"]
   end
 
   test "failures are forgotten once their wait is over", %{dir: dir} do
