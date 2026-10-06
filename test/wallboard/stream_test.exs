@@ -1068,6 +1068,9 @@ defmodule Wallboard.StreamTest do
     {:ok, {_, board}} = ThousandIsland.listener_info(web)
     start_hub(c, board_port: board)
     pair(c, "papa", %{port: free_port()})
+    # Paired a minute ago: the sender's own write of the board's port then
+    # changes the file's time, which is how a pairing again would be seen.
+    File.touch!(Path.join(c.collector.collector.dir, "hub.json"), System.os_time(:second) - 60)
     w = start_collector(c)
     dir = c.collector.collector.dir
     hub_json = fn -> dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() end
@@ -1103,6 +1106,9 @@ defmodule Wallboard.StreamTest do
     {:ok, {_, board}} = ThousandIsland.listener_info(web)
     start_hub(c, board_port: board)
     pair(c, "papa", %{port: free_port()})
+    # Paired a minute ago: the sender's own write of the board's port then
+    # changes the file's time, which is how a pairing again would be seen.
+    File.touch!(Path.join(c.collector.collector.dir, "hub.json"), System.os_time(:second) - 60)
 
     # The sender looks at its files, and the client tries the hub again,
     # only when the test says.

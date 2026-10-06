@@ -204,9 +204,8 @@ tries grow to a minute apart while it is away, so after a long time off this can
 take up to about three minutes. The hub tells each collector the board's port
 every time it connects, so a collector asks in the right place even after the
 board's port was changed in Settings. A collector that has not connected since
-the board moved asks on the port it last knew (4747 if an older VitalAIze
-paired it); if it was removed meanwhile, it stays on down until it is paired
-again.
+the board moved asks on the port it last knew, or on 4747 if it never learned
+one; if it was removed meanwhile, it stays on down until it is paired again.
 
 To connect it again: **Pair again…** in the app. On Linux, run
 `bin/vitalaize setup` and, at "A hub's address to pair again, or Enter to keep

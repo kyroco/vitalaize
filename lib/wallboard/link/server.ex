@@ -262,8 +262,9 @@ defmodule Wallboard.Link.Server do
     end)
   end
 
-  # An event the filter could not have built is dropped, and still counts as
-  # received, so the collector does not send it for ever.
+  # An event the filter could not have built, or dated more than a day ahead
+  # of the hub's clock, is dropped, and still counts as received, so the
+  # collector does not send it for ever.
   defp row(%Proto.Event{} = e) do
     if e.session_id =~ ~r/\A[A-Za-z0-9_-]{1,100}\z/ and byte_size(e.file) <= 1024 and
          String.valid?(e.file) and length(e.items) <= @max_items and time?(e.at) and

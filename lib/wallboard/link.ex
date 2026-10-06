@@ -56,9 +56,9 @@ defmodule Wallboard.Link do
   answers `Stored` with that number or a later one, which the hub does
   only after the event is in its database. So a stream cut at any moment
   loses nothing: what was not confirmed is sent again. The exception is
-  an event the collector's filter could not have built, which the hub
-  will not keep (`Wallboard.Link.Server`): for example a number out of
-  range, or a time dated more than a day ahead of the hub's clock. It is confirmed
+  an event the hub will not keep (`Wallboard.Link.Server`): one the
+  collector's filter could not have built, such as a number out of range,
+  or one dated more than a day ahead of the hub's clock. It is confirmed
   without being saved, so the collector does not send it for ever.
 
   On every connect the hub first sends `Resume`: the last position it has
