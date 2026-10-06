@@ -120,13 +120,12 @@ defmodule Wallboard.Sources.GitHub do
          {:ok, repo} <- parse_graphql(gql_json, gh.gate_check) do
       deploys = fetch_deploys(gh, prev, now)
 
-      # Every run the board shows, the deploys too, as summary/4 joins them:
-      # a deploy held for an approval over a weekend is not in the last
-      # day's runs. Its jobs that ran already are what its panel shows.
-      shown = Enum.uniq_by(runs ++ deploys.runs, & &1.id)
-
+      # Every run the running list shows, so the deploys too: a deploy held
+      # for an approval over a weekend is not in the last day's runs. Its
+      # jobs that ran already are what its panel shows.
       jobs =
-        shown
+        (runs ++ deploys.runs)
+        |> Enum.uniq_by(& &1.id)
         |> Enum.filter(&(&1.status in [:in_progress, :waiting]))
         |> Map.new(fn run ->
           case GitHubCollector.fetch_jobs(gh.repo, run.id, timeout: 30_000) do
@@ -147,7 +146,7 @@ defmodule Wallboard.Sources.GitHub do
          queue: repo.queue,
          prs: repo.prs,
          jobs: jobs,
-         own_by_run: own_by_run(gh.repo, shown, jobs, prev, now, listed),
+         own_by_run: own_by_run(gh.repo, runs, jobs, prev, now, listed),
          runners: runners.listed,
          runners_checked_at: runners.checked_at
        }}
@@ -268,10 +267,8 @@ defmodule Wallboard.Sources.GitHub do
   # Which of your own runners ran each run, by run id: what this poll's
   # jobs say, what the last poll knew (a run's last jobs can start after the
   # last poll that saw it running), and what the archive saved, for every
-  # run the board still shows: the last day's runs and the deploy list.
-  # The archive keeps jobs only of runs created since yesterday, so after a
-  # restart an older deploy that already finished has no tag. `listed` is
-  # the names of the runners GitHub lists for the repository.
+  # run still in the last day's list. `listed` is the names of the runners
+  # GitHub lists for the repository.
   defp own_by_run(repo, runs, jobs, prev, now, listed) do
     ids = MapSet.new(runs, & &1.id)
 
