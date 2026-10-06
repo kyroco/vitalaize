@@ -14,8 +14,9 @@ scenario_fresh_hub() {
   check "the wizard's repositories are in use" setting_is github.repos "kyroco/vitalaize
 acme/rockets"
   check "a workflow left at None is none, not a made-up name" setting_is github.dev_deploy ""
-  check "a New Relic key typed with the page then turned off is not kept" test -z "$(kept_key new_relic)"
-  check "and is in no file" nowhere_else NRAK-UITEST0WIZARD0KEY00000001
+  check "the New Relic key typed in the wizard is in the keychain" test "$(kept_key new_relic)" = NRAK-UITEST0WIZARD0KEY00000001
+  check "the board read it from there" wait_until 30 grep -q "New Relic key loaded into memory from the keychain" "$H/Library/Logs/VitalAIze/board.log"
+  check "and it is in no file, list or log of the run" nowhere_else NRAK-UITEST0WIZARD0KEY00000001
 
   drive hub-status
   check "a new port saved in Settings is where the board answers" answers "$PORT2"
@@ -27,6 +28,7 @@ acme/rockets"
   check "the name typed in Reconfigure is in use" setting_is brand.name "Acme Three"
   check "a setting the wizard does not ask about is still as saved" setting_is rotate_seconds "45"
   check "Reconfigure's Send as is in use" setting_is alerts.via "iMessage"
+  check "Reconfigure with the key field left empty keeps the key" test "$(kept_key new_relic)" = NRAK-UITEST0WIZARD0KEY00000001
 
   drive hub-settings-all
   check "the time zone saved in Settings is in use" setting_is timezone "America/Chicago"

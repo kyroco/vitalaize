@@ -121,9 +121,9 @@ Pictures: [as found](mac-app-checks/pictures/fresh-hub/04-features.jpg),
 | Show Korium numbers | Turned on | Kept |
 | Show and save Codex sessions | Turned on | Kept |
 | Dev: awake or asleep; Prod: same build as dev? | Set, not opened | On the review |
-| Show the New Relic page | Turned on, then off before the install | On: Account ID, New Relic API key and Or where it is in 1Password appear |
+| Show the New Relic page | Turned on, and left on for the install | On: Account ID, New Relic API key and Or where it is in 1Password appear. With no checks in the settings, the board never calls New Relic |
 | Account ID, Or where it is in 1Password | Typed | Kept |
-| New Relic API key | Typed, then the page turned off before the install | Shows dots as it is typed. With the page off it is not kept: the throwaway keychain has no key, and no file of the run holds it |
+| New Relic API key | Typed | Shows dots as it is typed. After the install it is in the run's throwaway keychain, the board's log says it read the key from there, and no file, list or log of the run holds it. Reconfigure with the field left empty keeps it |
 | Phone number | Typed, then emptied before the install | On the review as "to +15550100 by SMS"; empty, the review says texts are off |
 | Send as | Set, not opened | On the review |
 | Back, Continue | Clicked | Keeps everything typed |
