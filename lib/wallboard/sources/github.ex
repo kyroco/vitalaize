@@ -269,8 +269,9 @@ defmodule Wallboard.Sources.GitHub do
   # jobs say, what the last poll knew (a run's last jobs can start after the
   # last poll that saw it running), and what the archive saved, for every
   # run the board still shows: the last day's runs and the deploy list.
-  # `listed` is the names of the runners
-  # GitHub lists for the repository.
+  # The archive keeps jobs only of runs created since yesterday, so after a
+  # restart an older deploy that already finished has no tag. `listed` is
+  # the names of the runners GitHub lists for the repository.
   defp own_by_run(repo, runs, jobs, prev, now, listed) do
     ids = MapSet.new(runs, & &1.id)
 
