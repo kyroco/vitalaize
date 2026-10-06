@@ -444,13 +444,14 @@ defmodule Wallboard.Archive.Trends do
       },
       # Beside CI minutes: your own runners' minutes, which GitHub does not
       # bill, counted the way it would have (each job rounded up to a whole
-      # minute; see CiMinutes).
+      # minute; see CiMinutes), and not on a public repository, where its
+      # standard runners are free.
       %{
         key: :minutes_avoided,
         group: :github,
         label: "Paid minutes avoided",
         fmt: :count,
-        value: & &1.ci_own,
+        value: & &1.ci_avoided,
         sub: &"#{thousands(&1.own_jobs)} jobs on your machines"
       }
     ]
@@ -524,6 +525,7 @@ defmodule Wallboard.Archive.Trends do
     ci_paid: 0,
     ci_free: 0,
     ci_own: 0,
+    ci_avoided: 0,
     ci_agent: 0,
     # Merged pull requests, those with any session found, and those with a
     # Claude or a Codex session; then their sessions, Claude dollars and

@@ -12,12 +12,22 @@ defmodule Wallboard.Archive.CiMinutes do
   from the ones that use up the plan. Three kinds, then:
 
     * `paid`: GitHub's runners on a private repository, or one whose
-      visibility is not known yet, weighted as above
-    * `free`: GitHub's runners on a public repository, weighted the same
+      visibility is not known yet, and its larger runners anywhere,
+      weighted as above
+    * `free`: GitHub's standard runners on a public repository, weighted
+      the same
     * `own`: your own machines, in plain minutes
 
-  GitHub's larger runners carry names their owner chose, with no price to
-  read, so they count as Linux.
+  GitHub's larger runners are billed on every repository, public or not,
+  and the plan's minutes never cover them. A job ran on one when it is
+  GitHub's and either sits in a runner group other than "GitHub Actions"
+  (Linux and Windows larger runners, which their owner names and groups)
+  or asks for one of GitHub's macOS larger runners by label
+  (`macos-15-large`, `macos-latest-xlarge`). Its system is read from the
+  words in its labels, its runner's name and its group, so `big-windows`
+  counts 2. GitHub prices a larger runner by its size too, which no job
+  says, so its minutes are a floor: a 96-core Linux runner costs 42 times a
+  2-core one and counts the same.
 
   Minutes are added up by attempt: a rerun is another attempt of the same
   run, billed again, and begins when it was asked for.
@@ -34,8 +44,13 @@ defmodule Wallboard.Archive.CiMinutes do
   Sessions save no commit, so the link is by branch and time.
 
   Attempts on the repository's default branch (and on `main` or `master`),
-  scheduled runs, merge queue runs and runs GitHub starts itself are never
-  a session's: anyone's merge can cause them.
+  on another long-lived branch, scheduled runs, merge queue runs and runs
+  GitHub starts itself are never a session's: anyone's merge can cause
+  them. A branch is long-lived by the rule of
+  `Wallboard.Archive.PullRequests`: a pull request merged into it after
+  its own pull request merged (develop, which keeps taking features after
+  each release), or it took a merge and has no pull request of its own. A
+  stacked branch, merged into while its own pull request is open, is not.
   """
 
   alias Wallboard.{GitRemote, Settings, Store}
@@ -67,10 +82,30 @@ defmodule Wallboard.Archive.CiMinutes do
   # A job's minutes as GitHub rounds them.
   @rounded "((coalesce(j.duration_s, 0) + 59) / 60)"
 
+  # A job on one of GitHub's larger runners, when it is not your own: in a
+  # runner group other than GitHub's (old rows saved no group and are not
+  # swept in), or asking by label for a macOS larger runner, as
+  # "macos-15-large" or "macos-latest-xlarge". LIKE ignores case, as GitHub
+  # does with labels.
+  @larger """
+  (coalesce(j.runner_group_name, '') NOT IN ('', 'GitHub Actions') OR
+    (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-latest-large,%' OR
+    (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-latest-xlarge,%' OR
+    (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-__-large,%' OR
+    (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-__-xlarge,%')
+  """
+
+  # Everything a job says about its machine: a larger runner's system can
+  # be in its runner's name or group rather than its labels.
+  @names """
+  (coalesce(j.labels, '') || ',' || coalesce(j.runner_name, '') || ',' ||
+    coalesce(j.runner_group_name, ''))
+  """
+
   # What a minute on GitHub's runner counts against the plan.
   @weight """
-  (CASE WHEN coalesce(j.labels, '') LIKE '%macos%' THEN 10
-    WHEN coalesce(j.labels, '') LIKE '%windows%' THEN 2 ELSE 1 END)
+  (CASE WHEN #{@names} LIKE '%macos%' THEN 10
+    WHEN #{@names} LIKE '%windows%' THEN 2 ELSE 1 END)
   """
 
   @doc """
@@ -150,6 +185,8 @@ defmodule Wallboard.Archive.CiMinutes do
   merge queue runs. `repo` is "owner/name".
   """
   def for_pr(repo, number) when is_binary(repo) and is_integer(number) do
+    {since, until} = window(repo, number)
+
     branches =
       Store.query(
         """
@@ -161,20 +198,53 @@ defmodule Wallboard.Archive.CiMinutes do
       |> Enum.map(& &1.branch)
       |> Enum.reject(&(&1 in ["main", "master", repo_facts(repo)[:default_branch]]))
 
-    marks = Enum.map_join(Enum.with_index(branches, 4), ", ", fn {_, i} -> "?#{i}" end)
-    on_branch = if branches == [], do: "", else: " OR r.branch IN (#{marks})"
+    marks = Enum.map_join(Enum.with_index(branches, 6), ", ", fn {_, i} -> "?#{i}" end)
+
+    # A later pull request can use the branch's name again: a run on it is
+    # this one's only in its time, and not when GitHub tagged another.
+    {on_branch, more} =
+      if branches == [],
+        do: {"", []},
+        else:
+          {"""
+            OR (r.branch IN (#{marks}) AND (r.pr IS NULL OR r.pr = ?2)
+             AND r.created_at > ?4 AND r.created_at <= ?5)
+           """, [since, until | branches]}
 
     "lower(r.repo) = lower(?1) AND (r.pr = ?2 OR r.branch LIKE ?3#{on_branch})"
-    |> attempts([repo, number, "gh-readonly-queue/%/pr-#{number}-%" | branches])
+    |> attempts([repo, number, "gh-readonly-queue/%/pr-#{number}-%" | more])
     |> total()
   end
 
   def for_pr(_repo, _number), do: total([])
 
+  # When a run on a pull request's branch can be its own, `{since, until}`:
+  # after the last pull request before it on the same branch closed, until
+  # it closed. Open, or not saved: no end.
+  @no_end 9_223_372_036_854_775_807
+
+  defp window(repo, number) do
+    Store.query(
+      """
+      SELECT coalesce(p.closed_at, p.merged_at) AS closed,
+        (SELECT max(coalesce(o.closed_at, o.merged_at)) FROM gh_prs o
+          WHERE lower(o.repo) = lower(p.repo) AND o.branch = p.branch AND o.number <> p.number
+            AND lower(coalesce(o.head_repo, o.repo)) = lower(coalesce(p.head_repo, p.repo))
+            AND coalesce(o.closed_at, o.merged_at) <= p.created_at) AS since
+      FROM gh_prs p WHERE lower(p.repo) = lower(?1) AND p.number = ?2
+      """,
+      [repo, number]
+    )
+    |> case do
+      [row | _] -> {row.since || 0, row.closed || @no_end}
+      [] -> {0, @no_end}
+    end
+  end
+
   @doc """
   Rows for Trends, by the hour each attempt began, from `from` (Unix
-  seconds), for the tracked repositories: `%{h, ci_paid, ci_free, ci_own}`
-  for every attempt, and `%{h, tool, ci_agent}` for the paid minutes of
+  seconds), for the tracked repositories: `%{h, ci_paid, ci_free, ci_own,
+  ci_avoided}` for every attempt, and `%{h, tool, ci_agent}` for the paid minutes of
   each attempt a session caused, under that session's tool.
   """
   def hourly(settings, from) do
@@ -198,7 +268,13 @@ defmodule Wallboard.Archive.CiMinutes do
         )
 
       Enum.map(attempts, fn a ->
-        %{h: div(a.at, 3600), ci_paid: a.paid, ci_free: a.free, ci_own: a.own}
+        %{
+          h: div(a.at, 3600),
+          ci_paid: a.paid,
+          ci_free: a.free,
+          ci_own: a.own,
+          ci_avoided: a.avoided
+        }
       end) ++
         Enum.map(link(attempts, sessions), fn {a, s} ->
           %{h: div(a.at, 3600), tool: s.tool, ci_agent: a.paid}
@@ -210,8 +286,9 @@ defmodule Wallboard.Archive.CiMinutes do
   Pairs each attempt with the session that caused it, as `{attempt,
   session}`; attempts no session caused are left out. Pure, for the tests.
 
-  An attempt has `repo`, `branch`, `event`, `at` and `default` (its
-  repository's default branch, or nil); a session has `machine`,
+  An attempt has `repo`, `branch`, `event`, `at`, `default` (its
+  repository's default branch, or nil) and, optionally, `long_lived` (true
+  when its branch is another long-lived one); a session has `machine`,
   `session_id`, `repo` (nil when not known), `started_at`, `ended_at`,
   either `branch` (worked on for the whole session) or `spans` (each branch
   with when it was worked on, `%{branch, from, to}`), and, optionally,
@@ -235,7 +312,7 @@ defmodule Wallboard.Archive.CiMinutes do
 
   defp pushed?(a) do
     is_binary(a.branch) and is_integer(a.at) and a.event not in @not_pushed and
-      a.branch not in ["main", "master", a.default] and
+      a.branch not in ["main", "master", a.default] and not Map.get(a, :long_lived, false) and
       not String.starts_with?(a.branch, "gh-readonly-queue/")
   end
 
@@ -273,7 +350,9 @@ defmodule Wallboard.Archive.CiMinutes do
   # The attempts of the saved runs that match `where` (over gh_runs as r):
   # each one's time, its minutes split by the repository's visibility, and
   # whether a job failed. The first attempt begins when its run was
-  # created; a rerun when its first job was.
+  # created; a rerun when its first job was. `avoided` is the minutes on
+  # your own machines GitHub would have billed: none on a public
+  # repository, where its standard runners are free.
   defp attempts(where, params) do
     rows =
       Store.query(
@@ -281,7 +360,10 @@ defmodule Wallboard.Archive.CiMinutes do
         SELECT r.repo, r.run_id, coalesce(j.attempt, 1) AS attempt, r.branch, r.event, r.pr,
           r.created_at, min(j.created_at) AS job_created,
           max(coalesce(j.conclusion, '') = 'failure') AS failed,
-          sum(CASE WHEN #{@own} THEN 0 ELSE #{@rounded} * #{@weight} END) AS hosted,
+          sum(CASE WHEN #{@own} OR #{@larger} THEN 0 ELSE #{@rounded} * #{@weight} END)
+            AS hosted,
+          sum(CASE WHEN #{@own} OR NOT #{@larger} THEN 0 ELSE #{@rounded} * #{@weight} END)
+            AS larger,
           sum(CASE WHEN #{@own} THEN #{@rounded} ELSE 0 END) AS own
         FROM gh_runs r JOIN gh_jobs j ON j.repo = r.repo AND j.run_id = r.run_id
         WHERE #{where}
@@ -290,13 +372,16 @@ defmodule Wallboard.Archive.CiMinutes do
         params
       )
 
-    facts = rows |> Enum.map(& &1.repo) |> Enum.uniq() |> Map.new(&{&1, repo_facts(&1)})
+    repos = rows |> Enum.map(& &1.repo) |> Enum.uniq()
+    facts = Map.new(repos, &{&1, repo_facts(&1)})
+    long_lived = Map.new(repos, &{&1, long_lived(&1)})
 
     for row <- rows,
         at = if(row.attempt > 1, do: row.job_created || row.created_at, else: row.created_at),
         is_integer(at) do
       public? = facts[row.repo][:private] == false
       hosted = row.hosted || 0
+      own = row.own || 0
 
       %{
         repo: row.repo,
@@ -307,12 +392,36 @@ defmodule Wallboard.Archive.CiMinutes do
         pr: row.pr,
         at: at,
         default: facts[row.repo][:default_branch],
+        long_lived: MapSet.member?(long_lived[row.repo], row.branch),
         failed: row.failed == 1,
-        paid: if(public?, do: 0, else: hosted),
+        paid: if(public?, do: 0, else: hosted) + (row.larger || 0),
         free: if(public?, do: hosted, else: 0),
-        own: row.own || 0
+        own: own,
+        avoided: if(public?, do: 0, else: own)
       }
     end
+  end
+
+  # The long-lived branches of `repo` besides its default one, by the rule
+  # in the moduledoc: a pull request merged into the branch, and the branch
+  # has no pull request of its own that is open, or merged at or after the
+  # last merge into it. A fork's branch only shares the name.
+  defp long_lived(repo) do
+    Store.query(
+      """
+      SELECT t.base AS branch FROM
+        (SELECT base, max(merged_at) AS last_in FROM gh_prs
+          WHERE lower(repo) = lower(?1) AND merged_at IS NOT NULL AND base IS NOT NULL
+          GROUP BY base) t
+      WHERE NOT EXISTS
+        (SELECT 1 FROM gh_prs o
+          WHERE lower(o.repo) = lower(?1) AND o.branch = t.base
+            AND lower(coalesce(o.head_repo, o.repo)) = lower(o.repo)
+            AND (o.merged_at >= t.last_in OR (o.merged_at IS NULL AND o.closed_at IS NULL)))
+      """,
+      [repo]
+    )
+    |> MapSet.new(& &1.branch)
   end
 
   # Saved sessions matching `where`, as `link/2` takes them. A session saves

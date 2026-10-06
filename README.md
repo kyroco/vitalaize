@@ -170,9 +170,13 @@ should see at each step, follow the [test guide](docs/test-guide.md).
 If some of your GitHub Actions jobs run on your own machines (self-hosted
 runners), the Git tab says so: a run your machines worked on reads "on" and
 the runner's name. A job counts as yours when it carries the `self-hosted`
-label or its runner is in GitHub's list of the repository's runners; any
-other job outside GitHub's own runner group, such as one on GitHub's paid
-larger runners, is counted apart as not known.
+label (in any letter case, as GitHub reads it) or its runner is in GitHub's
+list of the repository's runners; any other job outside GitHub's own runner
+group, such as one on GitHub's paid larger runners, is counted apart as not
+known. CI minutes count a larger runner's minutes as paid on every
+repository, public ones too, because GitHub always bills them; GitHub also
+prices them by size, which the board cannot see, so they count as a 2-core
+runner's minutes would, a floor.
 
 A repository's panel lists its runners that GitHub or a collector reports,
 each online, busy or offline, with the job it is running. Runners that ran
@@ -182,9 +186,10 @@ the reason, and the column's runner count leaves them out.
 
 Trends splits runner time into GitHub's and your own, and counts the paid
 minutes your machines avoided: GitHub bills each job in whole minutes,
-rounded up, and does not bill your own runners. The board does not know
-your plan, so minutes inside your plan's allowance, or on a public
-repository, are counted too, though GitHub would not have charged them.
+rounded up, and does not bill your own runners. Minutes on a public
+repository are left out, since GitHub's standard runners are free there.
+The board does not know your plan, so minutes inside your plan's allowance
+are counted too, though GitHub would not have charged them.
 
 A runner's state comes from GitHub when the board's GitHub login has admin
 rights on the repository. Otherwise a collector on the runner's machine

@@ -321,6 +321,66 @@ defmodule Wallboard.CiMinutesTest do
              "1 run · 12 free on a public repository · 3 on your own machines"
   end
 
+  describe "billed the way GitHub bills them (#118)" do
+    test "a larger runner is billed on a public repository, by the system its names give" do
+      public!(@repo)
+      run(1, pr: 7)
+
+      jobs(1, [
+        # A larger runner its owner named, in a group of the owner's.
+        job(1, 600, "big-windows", "success", runner: "big-windows_ab12", group: "Default"),
+        # The system is in the runner's name, not its label.
+        job(2, 120, "builder", "success", runner: "builder-windows-16core", group: "Big ones"),
+        # GitHub's own macOS larger runners, asked for by label.
+        job(3, 60, "macos-latest-xlarge", "success", group: "GitHub Actions"),
+        job(4, 60, "macOS-15-Large", "success", group: "GitHub Actions"),
+        # Standard runners stay free here, with or without a saved group.
+        job(5, 60, "ubuntu-latest", "success", group: "GitHub Actions"),
+        job(6, 60, "macos-15", "success", runner: "GitHub Actions 5")
+      ])
+
+      # 2 * 10 + 2 * 2 + 10 + 10 billed; 1 + 10 free.
+      assert %{paid: 44, free: 11, own: 0} = CiMinutes.for_pr(@repo, 7)
+    end
+
+    test "a long-lived branch's runs are no session's; a stacked branch's still are" do
+      # develop: a feature merged into it after its own release merged.
+      pr(1, "develop", "main", @t0 - 9000, @t0 - 8000)
+      pr(2, "feature-a", "develop", @t0 - 7000, @t0 - 6000)
+      # staging: took a merge and has no pull request of its own.
+      pr(3, "hotfix", "staging", @t0 - 7000, @t0 - 6000)
+      # stack-base: merged into before its own pull request merges.
+      pr(4, "stack-base", "main", @t0 - 9000, nil)
+      pr(5, "stack-top", "stack-base", @t0 - 7000, @t0 - 6000)
+
+      for {branch, id} <- Enum.with_index(~w(develop staging stack-base), 1) do
+        run(id, branch: branch, created_at: @t0 + 600, event: "push")
+        jobs(id, [job(id, 60, "ubuntu-latest")])
+      end
+
+      assert %{runs: 0} = CiMinutes.for_session(session("d", "develop", @t0, @t0 + 3600))
+      assert %{runs: 0} = CiMinutes.for_session(session("s", "staging", @t0, @t0 + 3600))
+      assert %{runs: 1} = CiMinutes.for_session(session("b", "stack-base", @t0, @t0 + 3600))
+    end
+
+    test "a reused branch name: each pull request counts only its own runs there" do
+      pr(5, "fix", "main", @t0, @t0 + 1000)
+      pr(9, "fix", "main", @t0 + 5000, nil)
+
+      run(1, pr: 5, branch: "fix", created_at: @t0 + 100)
+      run(2, branch: "fix", event: "push", created_at: @t0 + 200)
+      run(3, pr: 9, branch: "fix", created_at: @t0 + 5100)
+      # Pushed after #5 closed, before #9 opened: #9's first push.
+      run(4, branch: "fix", event: "push", created_at: @t0 + 4900)
+      # GitHub tagged this push with #5.
+      run(5, pr: 5, branch: "fix", event: "push", created_at: @t0 + 300)
+      for id <- 1..5, do: jobs(id, [job(id, 60 * id, "ubuntu-latest")])
+
+      assert %{paid: 8, runs: 3} = CiMinutes.for_pr(@repo, 5)
+      assert %{paid: 7, runs: 2} = CiMinutes.for_pr(@repo, 9)
+    end
+  end
+
   # ---------------------------------------------------------------------------
 
   defp settings do
@@ -367,8 +427,25 @@ defmodule Wallboard.CiMinutesTest do
       created_at: opts[:created_at],
       duration_s: seconds,
       labels: labels,
-      runner_name: opts[:runner]
+      runner_name: opts[:runner],
+      runner_group_name: opts[:group]
     }
+  end
+
+  defp pr(number, branch, base, created_at, merged_at, opts \\ []) do
+    :ok =
+      Store.put_prs([
+        %{
+          repo: @repo,
+          number: number,
+          branch: branch,
+          base: base,
+          head_repo: opts[:head_repo] || @repo,
+          created_at: created_at,
+          closed_at: opts[:closed_at] || merged_at,
+          merged_at: merged_at
+        }
+      ])
   end
 
   defp conclusion(2), do: "failure"

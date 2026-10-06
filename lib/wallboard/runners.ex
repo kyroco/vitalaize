@@ -4,7 +4,8 @@ defmodule Wallboard.Runners do
   (a self-hosted runner), and the state of each of your own runners.
 
   GitHub's own machines are in the runner group "GitHub Actions". A job
-  ran on your own machine when it has the "self-hosted" label, or when its
+  ran on your own machine when it has the "self-hosted" label (in any letter
+  case, as GitHub matches labels), or when its
   runner is one GitHub lists among the repository's own runners. A job in
   another group with neither is not known: GitHub's paid larger runners sit
   in groups too, and their minutes must not count as yours. Jobs saved
@@ -50,8 +51,10 @@ defmodule Wallboard.Runners do
 
   defp field(job, key), do: Map.get(job, key) || Map.get(job, Atom.to_string(key))
 
-  defp labels(list) when is_list(list), do: list
-  defp labels(text) when is_binary(text), do: String.split(text, ",", trim: true)
+  # Lowercased: GitHub matches a job's labels without regard to case, and so
+  # does the SQL in `Wallboard.Archive.CiMinutes`.
+  defp labels(list) when is_list(list), do: for(l <- list, is_binary(l), do: String.downcase(l))
+  defp labels(text) when is_binary(text), do: text |> String.split(",", trim: true) |> labels()
   defp labels(_), do: []
 
   @doc """
