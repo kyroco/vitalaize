@@ -11,6 +11,26 @@ defmodule Wallboard.NewRelicKeyTest do
 
   @moduletag :capture_log
 
+  defmodule Seen do
+    @moduledoc "A key store that holds nothing and tells the test what it was asked."
+    @behaviour Wallboard.KeyStore
+
+    @impl true
+    def place, do: "the test keychain"
+    @impl true
+    def where(_name, _opts), do: "the test keychain"
+    @impl true
+    def put(_name, _key, _opts), do: :ok
+    @impl true
+    def delete(_name, _opts), do: :ok
+
+    @impl true
+    def fetch(name, opts) do
+      send(:persistent_term.get({__MODULE__, :test}), {:fetch, name, opts})
+      :none
+    end
+  end
+
   # A made-up key. Every test that saves it looks for it everywhere it
   # must not be.
   @key "NRAK-FAKE0TEST0KEY0NOT0REAL0XYZ"
@@ -645,6 +665,42 @@ defmodule Wallboard.NewRelicKeyTest do
 
       refute Enum.any?(lines, &(&1 =~ "Took the New Relic"))
       assert Memory.all() == %{"new_relic" => @key}
+    end
+
+    test "a key store that cannot be read is said, and nothing says the key went or stayed", c do
+      settings_file(c.dir)
+      {:ok, _, %{"ok" => true}} = app_save(%{"new_relic.api_key" => @key})
+      Memory.unreadable()
+
+      out = io([])
+      assert :ok = Setup.json(["remove"], mac() ++ [out: out])
+      "VITALAIZE_JSON" <> json = String.trim(output(out))
+      assert %{"ok" => true, "lines" => lines} = Jason.decode!(json)
+
+      assert ("Could not look for the New Relic API key in the test keychain " <>
+                "(the test keychain could not be read). If it was kept there, it still is.") in lines
+
+      refute Enum.any?(lines, &(&1 =~ ~r/Left the New Relic|Took the New Relic/))
+      refute json =~ @key
+    end
+
+    test "remove beside settings that do not load still finds the key file through them", c do
+      # The settings file the remove falls back from: it does not load.
+      File.write!(Path.join(c.dir, "settings.exs"), "%{archive: ")
+      :persistent_term.erase({Settings, :settings})
+
+      # Remove hands the store the settings it fell back to...
+      Application.put_env(:wallboard, :key_store, __MODULE__.Seen)
+      :persistent_term.put({__MODULE__.Seen, :test}, self())
+      Setup.remove(home: Path.join(c.dir, "home"), env: fn _ -> nil end)
+      assert_received {:fetch, "new_relic", opts}
+      assert %{archive: %{path: _}} = opts[:settings]
+
+      # ...and the file store finds its folder in them, never loading the
+      # file that does not load.
+      settings = %{archive: %{path: Path.join(c.dir, "elsewhere/wallboard.db")}}
+      assert KeyStore.File.dir(settings: settings) == Path.join(c.dir, "elsewhere/keys")
+      assert KeyStore.File.fetch("new_relic", settings: settings) == :none
     end
 
     test "vitalaize remove on Linux says the key file stays, and where", c do
