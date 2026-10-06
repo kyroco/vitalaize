@@ -136,7 +136,13 @@ them. If you would sooner write a file, copy `settings.example.exs` to
 `settings.exs` and edit it: it still works, and what `vitalaize setup` saves
 goes on top of it. List your repositories under GitHub.
 Text alerts by Messages need a Mac, so use Slack, ntfy or Pushover instead.
-The database lives in `~/.local/share/vitalaize`. To have other machines
+The database lives in `~/.local/share/vitalaize`. Many Linux machines have
+no keychain, so a New Relic API key typed in `vitalaize setup` is kept in
+`keys/new_relic` beside the database (`~/.local/share/vitalaize/keys/new_relic`
+unless you moved the database), a file only your user can read, and never in
+`settings.json`. On a Mac it is kept in your login keychain.
+Either way, `vitalaize setup` shows it only as "set", and the board takes
+up a new key with no restart. To have other machines
 find the hub on the network by themselves, install `avahi-utils` on the hub;
 without it, collectors type the hub's address.
 

@@ -15,7 +15,8 @@ type "ntfy server" "http://localhost:9"
 type "Pushover user key" "acmeuser1"
 type "Pushover app token" "acmetoken1"
 type "Account number" "7654321"
-type "Where the API key is in 1Password (restarts)" "op://Private/Acme/key"
+type "New Relic API key" "NRAK-UITEST0SETTINGS0KEY000001"
+type "Or where it is in 1Password" "op://Private/Acme/key"
 pick "Region" "eu"
 toggle "Take collectors (restarts)"
 type "Port they stream to (restarts)" "4761"
@@ -34,10 +35,11 @@ type "Prod profile (restarts)" "acme-prod-read"
 type "Days to save on first start" "7"
 type "Save a session after it is quiet for (seconds)" "60"
 
-# Three that would reach outside the run if they were saved: a phone number
-# could be sent a text, the New Relic page reads 1Password when the board
-# starts, and turning off this Mac's own sessions changes what it does.
-# Each is changed and put back before the save.
+# Three that would change more than the run means to if they were saved: a
+# phone number could be sent a text, turning the New Relic page off
+# restarts the board with no page 2, and turning off this Mac's own
+# sessions changes what it does. Each is changed and put back before the
+# save.
 type "Phone number (Messages)" "+15550100"
 type "Phone number (Messages)" ""
 toggle "New Relic page (restarts)"

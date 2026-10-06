@@ -291,7 +291,7 @@ defmodule Wallboard.PairingTest do
     end
 
     test "Approve at the last moment still reaches the collector", %{dir: dir} do
-      port = start_hub(dir, %{expire_ms: 600})
+      port = start_hub(dir, %{expire_ms: 10_000})
       me = self()
 
       task =
@@ -307,10 +307,20 @@ defmodule Wallboard.PairingTest do
 
       assert_receive {:code, "air", _}, 5_000
       [%{id: id}] = Door.pending()
-      # After the collector's second question, and before its third, which
-      # comes after the request's own time is up.
-      Process.sleep(450)
+
+      # Time passes by moving the request's start back, not by sleeping,
+      # so a slow machine cannot run it out early.
+      older = fn ms ->
+        :sys.replace_state(Door, fn s ->
+          update_in(s.requests[id], &%{&1 | made: &1.made - ms})
+        end)
+      end
+
+      # Approve comes with one second of the request's time left, and the
+      # collector asks again after that time would have run out.
+      older.(9_000)
       assert :ok = Door.approve(id)
+      older.(1_500)
       assert {:ok, %{machine: "air"}} = Task.await(task, 5_000)
       assert {:ok, _} = Pairing.load(Path.join(dir, "air"))
     end

@@ -46,7 +46,10 @@ defmodule Wallboard.MixProject do
       {:mint, "~> 1.9"},
       # Security scanner for Phoenix code. CI runs it; run it yourself with
       # `mix sobelow`.
-      {:sobelow, "~> 0.16", only: [:dev, :test], runtime: false}
+      {:sobelow, "~> 0.16", only: [:dev, :test], runtime: false},
+      # Reads the board page in tests that tap it (LiveView's test helpers
+      # need it).
+      {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end
 

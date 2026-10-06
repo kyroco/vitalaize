@@ -354,8 +354,12 @@ struct FeaturesPage: View {
                 Toggle("Show the New Relic page", isOn: $state.choices.newRelic)
                 if state.choices.newRelic {
                     TextField("Account ID", text: $state.choices.newRelicAccount)
-                    TextField("1Password reference for the API key", text: $state.choices.newRelicKeyRef, prompt: Text("op://…"))
-                    Text("The key is read from 1Password when the board starts and is never written to a file.")
+                    SecureField("New Relic API key", text: $state.newRelicKey,
+                                prompt: Text(state.newRelicKeySet ? "set; type a new one to replace it" : "NRAK-…"))
+                    Text("Paste the User key (it starts with NRAK-). It is kept in your keychain, never in a file.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Or where it is in 1Password", text: $state.choices.newRelicKeyRef, prompt: Text("op://…"))
+                    Text("Read with 1Password's op command. Used when no key is typed above.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
