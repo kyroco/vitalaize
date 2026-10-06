@@ -121,6 +121,12 @@ defmodule Wallboard.Link.Hub do
   def connected, do: GenServer.call(__MODULE__, :connected)
 
   @doc """
+  Whether `pid` is the stream the hub holds for `machine` now. A stream
+  that a newer one of the same machine replaced is not.
+  """
+  def current?(machine, pid), do: GenServer.call(__MODULE__, {:current?, machine, pid})
+
+  @doc """
   Revokes a machine's certificate and closes its stream. It is told
   "disconnected" first, so it stops instead of trying again.
   """
@@ -176,6 +182,9 @@ defmodule Wallboard.Link.Hub do
   def handle_call(:connected, _from, s) do
     {:reply, Map.new(s.streams, fn {m, c} -> {m, Map.take(c, [:since, :hello])} end), s}
   end
+
+  def handle_call({:current?, machine, pid}, _from, s),
+    do: {:reply, match?(%{pid: ^pid}, s.streams[machine]), s}
 
   def handle_call({:attach, cert, stream, counter}, {pid, _}, s) do
     case Authority.machine(s.dir, cert) do

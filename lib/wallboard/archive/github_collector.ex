@@ -15,7 +15,8 @@ defmodule Wallboard.Archive.GitHubCollector do
     * saves the jobs of up to `github_jobs_per_round` finished runs that do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
-      GitHub's 5,000; two weeks of jobs fill in over about two hours.
+      GitHub's 5,000; two weeks of jobs fill in over about two hours. A run
+      with more than 100 jobs takes a call for each 100 (see `fetch_jobs/3`).
     * once a day, reads whether each repository is public and its default
       branch, for `Wallboard.Archive.CiMinutes`
     * saves the closed pull requests changed since the last good read of
@@ -145,8 +146,8 @@ defmodule Wallboard.Archive.GitHubCollector do
         repo
         |> Store.runs_missing_jobs(jobs_per_round)
         |> Enum.count(fn run_id ->
-          case api("repos/#{repo}/actions/runs/#{run_id}/jobs?filter=all&per_page=100") do
-            {:ok, json} -> Store.put_jobs(repo, run_id, parse_jobs(json, repo, run_id)) == :ok
+          case fetch_jobs(repo, run_id, filter: "all") do
+            {:ok, list} -> Store.put_jobs(repo, run_id, job_rows(list, repo, run_id)) == :ok
             {:error, _} -> false
           end
         end)
@@ -310,7 +311,46 @@ defmodule Wallboard.Archive.GitHubCollector do
     end
   end
 
-  defp api(path), do: Cmd.run("gh", ["api", path], timeout: 60_000)
+  defp api(path, timeout \\ 60_000), do: Cmd.run("gh", ["api", path], timeout: timeout)
+
+  @doc """
+  Every job of a run, as GitHub's REST reply has them: {:ok, jobs} or
+  {:error, why}. GitHub gives at most 100 a call, so a big matrix takes
+  several; at most 10 are made, and a run with more jobs keeps its first
+  1,000. Options: `filter` ("all" for every attempt's jobs, not only the
+  latest's) and `timeout` for each call.
+  """
+  def fetch_jobs(repo, run_id, opts \\ []) do
+    filter = if opts[:filter], do: "filter=#{opts[:filter]}&", else: ""
+
+    fetch_jobs_page(
+      "repos/#{repo}/actions/runs/#{run_id}/jobs?#{filter}per_page=100",
+      1,
+      [],
+      opts
+    )
+  end
+
+  defp fetch_jobs_page(path, page, acc, opts) do
+    with {:ok, json} <- api("#{path}&page=#{page}", Keyword.get(opts, :timeout, 60_000)),
+         {:ok, jobs, total} <- parse_jobs_page(json) do
+      acc = acc ++ jobs
+
+      if length(jobs) == 100 and (is_nil(total) or length(acc) < total) and page < 10,
+        do: fetch_jobs_page(path, page + 1, acc, opts),
+        else: {:ok, acc}
+    end
+  end
+
+  defp parse_jobs_page(text) do
+    case Jason.decode(text) do
+      {:ok, %{"jobs" => jobs} = reply} when is_list(jobs) ->
+        {:ok, jobs, if(is_integer(reply["total_count"]), do: reply["total_count"])}
+
+      _ ->
+        {:error, "GitHub returned jobs in an unexpected shape"}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Parsing (pure, tested against saved real replies)

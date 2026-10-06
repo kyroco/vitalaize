@@ -10,6 +10,8 @@ defmodule WallboardWeb.BoardLive do
   """
   use WallboardWeb, :live_view
 
+  require Logger
+
   alias Wallboard.{Mailbox, Poller, RunJobs, Runners, Settings, Store}
   alias Wallboard.Archive.{CiMinutes, Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
@@ -359,8 +361,11 @@ defmodule WallboardWeb.BoardLive do
         {:ok, {:error, why}} ->
           {:error, why}
 
+        # A program's own words for what went wrong are for the log, not
+        # the page.
         {:exit, reason} ->
-          {:error, "the read stopped: #{inspect(reason)}"}
+          Logger.warning("Run panel: reading #{inspect(key)}'s jobs stopped: #{inspect(reason)}")
+          {:error, "the board stopped reading them. Close the run and tap it again"}
       end
 
     {:noreply,
@@ -2402,7 +2407,9 @@ defmodule WallboardWeb.BoardLive do
   defp runners(_), do: []
 
   # " · on kyroco-air-1" for a run your own machines ran; nothing for one
-  # GitHub ran.
+  # GitHub ran. Past three names, a count: runners made for one job each
+  # leave a name per job, so a big matrix would list dozens.
+  defp on_own(%{own: [_, _, _, _ | _] = names}), do: " · on #{length(names)} of your runners"
   defp on_own(%{own: [_ | _] = names}), do: " · on " <> Enum.join(names, ", ")
   defp on_own(_), do: nil
 
@@ -2676,6 +2683,7 @@ defmodule WallboardWeb.BoardLive do
             running for <.ago at={@run.started_at} fmt="for" />
           </span>
           <span :if={@run.status == :queued}>waiting for a runner</span>
+          <span :if={@run.status == :waiting}>waiting for approval</span>
           <span :if={@run.started_at}>started <.ago at={@run.started_at} fmt="when" /></span>
           <span :if={(@run[:attempt] || 1) > 1}>attempt {@run.attempt}</span>
         </div>
@@ -2757,7 +2765,8 @@ defmodule WallboardWeb.BoardLive do
       <span class="job-runner">
         {cond do
           @j.runner_name not in [nil, ""] -> "on " <> @j.runner_name
-          @j.status in ["queued", "waiting", "pending"] -> "waiting for a runner"
+          @j.status == "waiting" -> "waiting for approval"
+          @j.status in ["queued", "pending"] -> "waiting for a runner"
           true -> ""
         end}<span :if={@own? and @j.runner_name not in [nil, ""]} class="own-tag"> · your machine</span>
       </span>
@@ -2789,7 +2798,7 @@ defmodule WallboardWeb.BoardLive do
   defp run_tone(%{status: :completed}), do: "muted"
   defp run_tone(_), do: "info"
 
-  defp run_state(%{status: :queued}), do: "Waiting"
+  defp run_state(%{status: s}) when s in [:queued, :waiting], do: "Waiting"
   defp run_state(%{status: :in_progress}), do: "Running"
   defp run_state(%{conclusion: c}), do: conclusion_word(c)
 
