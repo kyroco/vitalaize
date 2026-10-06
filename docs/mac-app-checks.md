@@ -276,7 +276,7 @@ Pictures: [the sheet](mac-app-checks/pictures/fresh-hub/13-remove-sheet.jpg),
 
 | Control | Script | What happened |
 |---|---|---|
-| Also delete the database and settings | Turned on | The data folder is gone after Remove, and the New Relic key typed in Settings is out of the keychain; left off, the database, settings and key stay |
+| Also delete the database and settings | Turned on | The data folder is gone after Remove, and the New Relic key is out of the keychain, as the screen after says; left off, the database, settings and key stay, and the screen says where the key is |
 | Cancel | Clicked | The sheet goes, the board still runs |
 | Remove | Pressed, not clicked | The board stops, the login item is gone, and the screen says what was done and whether the data was kept |
 | Set up again | Clicked | The setup from step 1, filled in from the settings that were kept. Run through, the board comes back with the kept database and settings ([picture](mac-app-checks/pictures/fresh-hub/14-set-up-again.jpg)) |

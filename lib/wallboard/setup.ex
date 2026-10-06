@@ -241,22 +241,47 @@ defmodule Wallboard.Setup do
   pairing saved. Returns what it did as sentences. The service is the
   caller's to stop first (the VitalAIze app does, and `vitalaize remove`).
 
-  With `keys: true`, the keys typed in Settings go too
-  (`Wallboard.KeyStore`): the app asks for that when the settings are
+  With `keys: true`, the keys typed in the app or in `vitalaize setup` go
+  too (`Wallboard.KeyStore`): the app asks for that when the settings are
   being deleted, since on a Mac the keys are not in the settings folder.
+  Without it, each key still kept is named, with where it is, so nobody
+  takes it to have gone with the rest.
   """
   def remove(opts \\ []) do
     settings = settings_or_defaults()
-
-    retire_old_hooks(settings, opts) ++
-      forget_hub(settings) ++ if(opts[:keys], do: forget_keys(), else: [])
+    keys = if opts[:keys], do: forget_keys(settings), else: kept_keys(settings)
+    retire_old_hooks(settings, opts) ++ forget_hub(settings) ++ keys
   end
 
-  defp forget_keys do
+  defp kept_keys(settings) do
+    opts = [settings: settings]
+
+    Enum.flat_map(Settings.kept_keys(), fn {name, label} ->
+      case Wallboard.KeyStore.fetch(name, opts) do
+        {:ok, _} ->
+          [
+            "Left the #{label} in #{Wallboard.KeyStore.where(name, opts)}. " <>
+              "Delete it there to take it out too."
+          ]
+
+        :none ->
+          []
+
+        {:error, why} ->
+          [
+            "Could not look for the #{label} in #{Wallboard.KeyStore.place()} (#{why}). " <>
+              "If it was kept there, it still is."
+          ]
+      end
+    end)
+  end
+
+  defp forget_keys(settings) do
+    opts = [settings: settings]
     place = Wallboard.KeyStore.place()
 
-    for {name, label} <- Settings.kept_keys(), Wallboard.KeyStore.fetch(name) != :none do
-      case Wallboard.KeyStore.delete(name) do
+    for {name, label} <- Settings.kept_keys(), Wallboard.KeyStore.fetch(name, opts) != :none do
+      case Wallboard.KeyStore.delete(name, opts) do
         :ok ->
           "Took the #{label} out of #{place}."
 
@@ -340,7 +365,7 @@ defmodule Wallboard.Setup do
 
           say(io, """
           Done. Your settings are still in #{Path.dirname(Settings.saved_path())}.
-          Delete that folder, and the folder VitalAIze was unpacked in, to remove the rest.
+          Delete that folder, and the folder VitalAIze was unpacked in, to take away its settings and its program.
           """)
 
         {:error, line} ->
@@ -794,7 +819,7 @@ defmodule Wallboard.Setup do
       and answers `lines`, what it did.
     * `["remove"]`: `remove/1`, and answers `lines`. It works beside a
       settings file that does not load. `["remove", "keys"]` takes the
-      keys typed in Settings out of the key store too, for a Remove that
+      keys typed in the app out of the key store too, for a Remove that
       deletes the settings.
   """
   def json(args, opts \\ [])
