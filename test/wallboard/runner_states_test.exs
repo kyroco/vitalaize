@@ -34,6 +34,16 @@ defmodule Wallboard.RunnerStatesTest do
     assert_receive {:DOWN, ^ref, _, _, _}
   end
 
+  test "the hub holds one stream for a machine: an older stream of it is not current" do
+    old = stream()
+    new = stream()
+    s = %{streams: %{"air" => %{pid: new}}}
+
+    assert {:reply, true, ^s} = Wallboard.Link.Hub.handle_call({:current?, "air", new}, nil, s)
+    assert {:reply, false, ^s} = Wallboard.Link.Hub.handle_call({:current?, "air", old}, nil, s)
+    assert {:reply, false, ^s} = Wallboard.Link.Hub.handle_call({:current?, "mini", new}, nil, s)
+  end
+
   describe "with the hub" do
     setup do
       start_supervised!(FakeHub)
