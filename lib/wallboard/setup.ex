@@ -732,8 +732,8 @@ defmodule Wallboard.Setup do
   # nothing, and Erlang's raw mode hides it but cannot be left, so every
   # later answer would be typed blind and a Backspace kept as a character.
   # So echo is turned off on the terminal itself for this one line, the
-  # way a password prompt does. Input from a pipe or a file has no
-  # terminal to change, and is read as it is.
+  # way a password prompt does. A program with no terminal (a service, a
+  # job with no login) has none to change, and reads the line as it is.
   # Public only for its test, which types into a real terminal.
   @doc false
   def gets_hidden(:stdio = io, prompt) do
