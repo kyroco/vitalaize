@@ -157,3 +157,78 @@ defmodule Wallboard.CollectorRunnersTest do
     end
   end
 end
+
+defmodule Wallboard.CollectorRunnersSlowReadTest do
+  @moduledoc """
+  A `.runner` whose read never ends, with no race: a stand-in `head`
+  first on the PATH never answers, as a real one stuck on a named pipe
+  would not, so only the read's time limit and the kill can end it. One
+  at a time: the PATH is the whole test run's.
+  """
+  use ExUnit.Case, async: false
+
+  alias Wallboard.Collector.Runners
+  alias Wallboard.Fixtures
+
+  test "a read that never ends is cut off, and the reader is killed" do
+    dir = Fixtures.tmp_path("wallboard-slow-read")
+    folder = Path.join(dir, "air")
+    File.mkdir_p!(folder)
+    File.write!(Path.join(folder, ".runner"), ~s({"agentName": "air-1"}))
+    # With the real head, the name is read.
+    assert Runners.name(folder) == {:ok, "air-1"}
+
+    # The stand-in's first act is to write down its process number.
+    started = Path.join(dir, "started")
+    bin = Path.join(dir, "bin")
+    File.mkdir_p!(bin)
+
+    File.write!(Path.join(bin, "head"), """
+    #!/bin/sh
+    echo $$ > #{started}
+    while :; do sleep 1; done
+    """)
+
+    File.chmod!(Path.join(bin, "head"), 0o755)
+    path = System.get_env("PATH")
+    System.put_env("PATH", bin <> ":" <> path)
+
+    on_exit(fn ->
+      System.put_env("PATH", path)
+
+      with {:ok, pid} <- File.read(started),
+           do: System.cmd("kill", ["-9", String.trim(pid)], stderr_to_stdout: true)
+
+      File.rm_rf!(dir)
+    end)
+
+    # The stand-in never answers, so the read always runs out its tenth of
+    # a second, however fast or slow the machine: no race.
+    assert Runners.name(folder, 100) == :error
+    assert stand_in(started, 100) in [:killed, :never_ran]
+  end
+
+  # What became of the stand-in: `:killed`; `:never_ran`, when it was
+  # killed before its first line; or `:still_running`.
+  defp stand_in(started, tries) do
+    case File.read(started) do
+      {:ok, pid} ->
+        cond do
+          not alive?(String.trim(pid)) -> :killed
+          tries == 0 -> :still_running
+          true -> pause() && stand_in(started, tries - 1)
+        end
+
+      _ when tries == 0 ->
+        :never_ran
+
+      _ ->
+        pause() && stand_in(started, tries - 1)
+    end
+  end
+
+  defp alive?(pid), do: match?({_, 0}, System.cmd("kill", ["-0", pid], stderr_to_stdout: true))
+
+  # A pause between looks at the stand-in, not a wait for a timer.
+  defp pause, do: Process.sleep(20)
+end
