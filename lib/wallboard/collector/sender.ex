@@ -17,7 +17,11 @@ defmodule Wallboard.Collector.Sender do
   hub's address, such as `{"host": "192.168.1.20", "port": 4747, "link_port": 4748}`.
   `port` is the board's own, where the client asks the pairing door
   whether this machine was removed while it was away; a machine paired
-  before VitalAIze saved it asks on 4747, the board's usual port.
+  before VitalAIze saved it asks on 4747, the board's usual port. The hub
+  says the board's port each time the client connects, and the sender
+  keeps it in `hub.json` when it changed, so a port the owner changes in
+  Settings reaches every collector once the board restarts on it. That
+  write is the sender's own, and is not taken for a pairing again.
   Until all four are there nothing is sent, and the outbox keeps the
   events. The sender looks for them twice a second, so a collector paired
   for the first time while it runs starts sending without a restart. A
@@ -72,6 +76,7 @@ defmodule Wallboard.Collector.Sender do
 
   alias Wallboard.Collector.{Filter, Outbox, Proto, Runners, Watcher}
   alias Wallboard.Link.{Authority, Client}
+  alias Wallboard.Pairing
 
   @tick_ms 500
   # How often the process list is read for GitHub runners.
@@ -251,6 +256,14 @@ defmodule Wallboard.Collector.Sender do
 
   def handle_info({:wallboard_link, :back_soon}, state),
     do: {:noreply, note(state, "back_soon")}
+
+  # Kept only while the files are the ones the client was started with: a
+  # pairing that landed meanwhile is the newer word.
+  def handle_info({:wallboard_link, {:board_port, port}}, state) do
+    if stamp(state.dir) == state.paired_as and Pairing.keep_board_port(state.dir, port) == :ok,
+      do: {:noreply, %{state | paired_as: stamp(state.dir)}},
+      else: {:noreply, state}
+  end
 
   def handle_info(_other, state), do: {:noreply, state}
 

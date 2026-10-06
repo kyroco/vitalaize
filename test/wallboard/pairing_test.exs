@@ -564,6 +564,29 @@ defmodule Wallboard.PairingTest do
       assert said(:air) == []
     end
 
+    test "a machine an older list of machines does not hold is not told removed",
+         %{dir: dir} do
+      port = start_hub(dir)
+      door = %{host: "127.0.0.1", port: port}
+      _air = pair!(port, dir, "air")
+
+      # The owner keeps a copy of the list, pairs another machine, then
+      # puts the older copy back.
+      list = Path.join(dir, "link/machines.json")
+      older = File.read!(list)
+      bee = pair!(port, dir, "bee")
+      newer = File.read!(list)
+      File.write!(list, older)
+
+      # Not removed: nothing was revoked, so the door says nothing either
+      # way and the collector keeps trying.
+      assert {:error, :busy} = Pairing.check(door, bee.tls)
+
+      # Once the right list is back, it works again.
+      File.write!(list, newer)
+      assert {:ok, :approved} = Pairing.check(door, bee.tls)
+    end
+
     test "a client with no door, or a door that does not answer, keeps trying", %{dir: dir} do
       port = start_hub(dir)
       paired = pair!(port, dir, "air")

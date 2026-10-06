@@ -286,6 +286,48 @@ defmodule Wallboard.LinkTest do
       assert Enum.map(saved("papa"), & &1.position) == [100]
     end
 
+    test "an event with a number out of range is taken and not saved", %{dir: dir, link: link} do
+      port = start_hub(dir)
+      {:ok, papa} = Authority.issue(link, "papa")
+      client = start_client(dir, port, papa)
+      assert_receive {:wallboard_link, {:resume, _}}, 5_000
+
+      now = System.os_time(:second)
+      day = 86_400
+      top = Bitwise.bsl(1, 40)
+
+      at = fn n, at -> %{event(n) | at: at} end
+      item = fn n, body -> %{event(n) | items: [%Proto.Item{body: body}]} end
+      request = &{:request, %Proto.Request{request_id: "r", cost: 1.0} |> Map.merge(&1)}
+
+      bad = [
+        item.(2, request.(%{cost: 10_000.01})),
+        item.(3, request.(%{cost: 1.0e308})),
+        at.(4, now + day + 3_600),
+        at.(5, -1),
+        item.(6, request.(%{input_tokens: top + 1})),
+        item.(7, {:counts, %Proto.Counts{turn_ms: top + 1}}),
+        item.(8, {:counts, %Proto.Counts{korium: %Proto.Korium{searches: top + 1}}}),
+        item.(9, {:tool, %Proto.ToolTally{name: "Bash", calls: top + 1}}),
+        item.(10, {:changes, %Proto.Changes{lines_added: top + 1}}),
+        item.(11, {:status, %Proto.Status{state: :WORKING, since: now + 2 * day}})
+      ]
+
+      # At each limit, and a collector whose clock runs a few hours fast.
+      good = [
+        item.(12, request.(%{cost: 10_000.0, output_tokens: top})),
+        at.(13, now + day - 3_600),
+        at.(14, 0),
+        item.(15, {:counts, %Proto.Counts{turn_ms: top}})
+      ]
+
+      for e <- bad ++ good, do: :ok = Client.push(client, e)
+
+      # Every one is confirmed, so the collector does not send them for ever.
+      assert_receive {:wallboard_link, {:stored, 14}}, 5_000
+      assert Enum.map(saved("papa"), & &1.position) == [1200, 1300, 1400, 1500]
+    end
+
     test "the port speaks TLS only, and HTTP/2 only", %{dir: dir, link: link} do
       log = capture_log(fn -> send(self(), {:port, start_hub(dir)}) end)
       assert_received {:port, port}

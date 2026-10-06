@@ -241,6 +241,7 @@ message FromHub {
     Disconnected disconnected = 4;
     Answer answer = 5;
     Stored stored = 6;
+    Board board = 7;
   }
 }
 
@@ -271,4 +272,11 @@ message Answer {}
 // The hub has saved every collector message up to and including this seq.
 message Stored {
   uint64 seq = 1;
+}
+
+// The board's own port on the hub, where its pairing door is. Sent once on
+// each stream, after the Resume, so a collector learns a port the owner
+// changed. An older collector skips it.
+message Board {
+  uint32 port = 1;
 }

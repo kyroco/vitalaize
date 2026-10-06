@@ -77,11 +77,12 @@ defmodule Wallboard.StreamTest do
   # ---------------------------------------------------------------------------
   # The two sides
 
-  defp start_hub(c) do
+  # `hub` adds to the hub's options.
+  defp start_hub(c, hub \\ []) do
     once({Store, path: Path.join(c.dir, "wallboard.db")})
     once({Sessions, save_ms: 100})
     once(RunnerStates)
-    once({Hub, dir: c.link, port: c.port})
+    once({Hub, [dir: c.link, port: c.port] ++ hub})
     :ok
   end
 
@@ -129,7 +130,7 @@ defmodule Wallboard.StreamTest do
     )
   end
 
-  # `sender` adds to the sender's options. Its process list is the test's,
+  # `sender` adds to or replaces the sender's options. Its process list is the test's,
   # empty unless the test sets one (see `processes/2`), never this
   # machine's.
   defp start_collector(c, sender \\ []) do
@@ -173,7 +174,8 @@ defmodule Wallboard.StreamTest do
              end
            end,
            client: [name: :"stream-client-#{System.unique_integer([:positive])}", backoff: @fast]
-         ] ++ sender},
+         ]
+         |> Keyword.merge(sender)},
         id: :sender
       )
 
@@ -1051,6 +1053,119 @@ defmodule Wallboard.StreamTest do
 
     assert stopped?(w)
     assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
+  end
+
+  test "a collector learns the board's port from the hub, and is told removed there", c do
+    # The board, with its pairing door, on a port of its own. The
+    # collector was paired while the board was on another port.
+    once({Wallboard.Pairing.Door, dir: c.link, link_port: c.port})
+
+    web =
+      once({Bandit, plug: WallboardWeb.Router, ip: :loopback, port: 0, startup_log: false},
+        id: :web
+      )
+
+    {:ok, {_, board}} = ThousandIsland.listener_info(web)
+    start_hub(c, board_port: board)
+    pair(c, "papa", %{port: free_port()})
+    # Paired a minute ago: the sender's own write of the board's port then
+    # changes the file's time, which is how a pairing again would be seen.
+    File.touch!(Path.join(c.collector.collector.dir, "hub.json"), System.os_time(:second) - 60)
+    w = start_collector(c)
+    dir = c.collector.collector.dir
+    hub_json = fn -> dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() end
+
+    wait_until(fn -> hub_json.()["port"] == board end)
+    # The rest of what pairing saved is kept.
+    assert %{"host" => "127.0.0.1", "link_port" => link_port, "machine" => "papa"} = hub_json.()
+    assert link_port == c.port
+
+    # Its own write is not taken for a pairing again: the client stays.
+    client = :sys.get_state(w.sender).client
+    tick(w)
+    assert :sys.get_state(w.sender).client == client
+
+    # The machine goes off, and is removed on the hub meanwhile. Back, it
+    # asks the door on the board's port as it is now.
+    kill_collector(w)
+    {:ok, [_]} = Authority.revoke(c.link, "papa")
+
+    w = start_collector(c)
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
+    assert stopped?(w)
+  end
+
+  test "a running collector asks the door on the board's port it learned", c do
+    once({Wallboard.Pairing.Door, dir: c.link, link_port: c.port})
+
+    web =
+      once({Bandit, plug: WallboardWeb.Router, ip: :loopback, port: 0, startup_log: false},
+        id: :web
+      )
+
+    {:ok, {_, board}} = ThousandIsland.listener_info(web)
+    start_hub(c, board_port: board)
+    pair(c, "papa", %{port: free_port()})
+    # Paired a minute ago: the sender's own write of the board's port then
+    # changes the file's time, which is how a pairing again would be seen.
+    File.touch!(Path.join(c.collector.collector.dir, "hub.json"), System.os_time(:second) - 60)
+
+    # The sender looks at its files, and the client tries the hub again,
+    # only when the test says.
+    never = [base_ms: 3_600_000, cap_ms: 3_600_000, back_soon_ms: 3_600_000]
+    name = :"stream-client-#{System.unique_integer([:positive])}"
+    w = start_collector(c, tick_ms: 3_600_000, client: [name: name, backoff: never])
+    dir = c.collector.collector.dir
+
+    port = fn ->
+      dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() |> Map.get("port")
+    end
+
+    wait_until(fn -> port.() == board end)
+
+    # Its own write is not taken for a pairing again: the client stays.
+    client = :sys.get_state(w.sender).client
+    tick(w)
+    assert :sys.get_state(w.sender).client == client
+
+    # The hub goes away and the machine is removed meanwhile. Three tries
+    # that fail before the hub says a word, and the same client, never
+    # restarted, asks the door on the board's port and is told so.
+    kill_hub()
+    {:ok, [_]} = Authority.revoke(c.link, "papa")
+
+    for _ <- 1..3 do
+      wait_until(fn -> Wallboard.Link.Client.status(client).phase == :waiting end)
+      send(client, :connect)
+    end
+
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
+    assert :sys.get_state(w.sender).client == client
+  end
+
+  test "the board's port from an older pairing is not written over a newer one", c do
+    start_hub(c, board_port: 4800)
+    pair(c, "papa", %{port: 4747})
+    # The sender looks at its files only when the test says (`tick/1`).
+    w = start_collector(c, tick_ms: 3_600_000)
+    dir = c.collector.collector.dir
+    hub = fn -> dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() end
+    wait_until(fn -> tick(w) && hub.()["port"] == 4800 end)
+    client = :sys.get_state(w.sender).client
+
+    # Paired again meanwhile, with a board on another port. The file's time
+    # is kept to the second, so the new one is dated a second on.
+    pair(c, "quebec", %{port: 4900})
+    File.touch!(Path.join(dir, "hub.json"), System.os_time(:second) + 1)
+
+    # The old client's word comes in before the sender has looked again.
+    send(w.sender, {:wallboard_link, {:board_port, 4800}})
+    :sys.get_state(w.sender)
+    assert hub.()["port"] == 4900
+
+    # And its next look sees the new pairing and starts a new client.
+    tick(w)
+    refute :sys.get_state(w.sender).client == client
   end
 
   test "a collector that is not paired sends nothing, and starts once it is", c do
