@@ -30,6 +30,7 @@ defmodule Wallboard.GitHubCollectorRoundTest do
         if [ -f "$WALLBOARD_TEST_GH/pulls_forbidden" ]; then
           echo "gh: Resource not accessible by personal access token (HTTP 403)" >&2; exit 1
         fi
+        if [ -f "$WALLBOARD_TEST_GH/pulls_not_found" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
         # Pages of pull requests from files, pulls_page_<n>.json, then none;
         # or the same full page for every page asked.
         page=$(echo "$2" | sed -n 's/.*[?&]page=\\([0-9]*\\).*/\\1/p')
@@ -193,8 +194,20 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     # Said once when it starts, not every round.
     assert length(Regex.scan(~r/pull requests/, log)) == 1
 
-    # GitHub failing for another reason is said differently.
+    # A private repository the sign-in cannot see answers 404: refused too.
     File.rm!(Path.join(dir, "pulls_forbidden"))
+    File.write!(Path.join(dir, "pulls_not_found"), "")
+    Store.put_meta(GitHubCollector.prs_error_key("acme/shop"), "")
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      GitHubCollector.round(settings, ~U[2026-09-30 18:07:00Z])
+    end)
+
+    assert Trends.shipped_loading(settings) ==
+             "Can't read pull requests in acme/shop: the GitHub sign-in is not allowed to"
+
+    # GitHub failing for another reason is said differently.
+    File.rm!(Path.join(dir, "pulls_not_found"))
     File.write!(Path.join(dir, "pulls_down"), "")
 
     ExUnit.CaptureLog.capture_log(fn ->
@@ -238,6 +251,8 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     end)
 
     assert Enum.count(asked(dir), &String.contains?(&1, "/pulls?")) == 100
+    # What was read is saved, though nothing is marked read.
+    assert [%{n: 100}] = Store.query("SELECT count(*) AS n FROM gh_prs", [])
     assert Store.get_meta("github_prs_backfill:acme/shop") == nil
     assert Store.get_meta("github_prs_through:acme/shop") == nil
 
