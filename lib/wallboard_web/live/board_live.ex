@@ -2149,14 +2149,20 @@ defmodule WallboardWeb.BoardLive do
   defp on_own(%{own: [_ | _] = names}), do: " · on " <> Enum.join(names, ", ")
   defp on_own(_), do: nil
 
-  attr :runners, :list, required: true
+  # The runners that ran its jobs but that nothing reports, nil for none.
+  defp unreported(%{s: %{runners_unreported: u}}), do: u
+  defp unreported(_), do: nil
 
-  # A repository's own runners, each with its state and what it runs, or
-  # why its state is not known. Nothing when it has none.
+  attr :runners, :list, required: true
+  attr :unreported, :map, default: nil
+
+  # A repository's own runners, each with its state and what it runs, and
+  # one line for those that ran its jobs but whose state nothing reports.
+  # Nothing when it has none.
   @doc false
   def runners_table(assigns) do
     ~H"""
-    <%= if @runners != [] do %>
+    <%= if @runners != [] or @unreported do %>
       <h3 class="kicker gap-top">Your runners</h3>
       <table class="dtable runners">
         <tr :for={x <- @runners}>
@@ -2164,13 +2170,19 @@ defmodule WallboardWeb.BoardLive do
           <td class={"runner-#{x.state}"}>{Runners.word(x.state)}</td>
           <td>{runner_note(x)}</td>
         </tr>
+        <tr :if={@unreported}>
+          <td>{if @runners == [], do: "", else: "#{@unreported.count} more"}</td>
+          <td class="runner-unknown">{Runners.word(:unknown)}</td>
+          <td>
+            {@unreported.count} {if @unreported.count == 1, do: "runner", else: "runners"} ran this repository's jobs in the last day. {@unreported.why}.
+          </td>
+        </tr>
       </table>
     <% end %>
     """
   end
 
   defp runner_note(%{state: :busy, job: job}) when is_binary(job), do: job
-  defp runner_note(%{why: why}) when is_binary(why), do: why
   defp runner_note(%{from: :github}), do: "from GitHub"
   defp runner_note(%{from: :collector}), do: "from the collector on that machine"
   defp runner_note(_), do: nil
@@ -2284,7 +2296,7 @@ defmodule WallboardWeb.BoardLive do
               <div :if={@r.s.running == []} class="empty-box small">Nothing running</div>
               <.run_card :for={x <- @r.s.running} r={x} />
 
-              <.runners_table runners={runners(@r)} />
+              <.runners_table runners={runners(@r)} unreported={unreported(@r)} />
 
               <h3 class="kicker gap-top">Merge queue</h3>
               <div :if={@r.s.queue == []} class="empty-box small">Empty</div>

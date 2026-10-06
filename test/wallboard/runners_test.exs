@@ -14,12 +14,32 @@ defmodule Wallboard.RunnersTest do
   @now ~U[2026-10-05 17:05:00Z]
 
   describe "whose machine ran a job" do
-    test "GitHub's group, the self-hosted label, another group, an old row's name" do
+    test "GitHub's group, the self-hosted label, a runner GitHub lists, an old row's name" do
       assert Runners.kind(%{runner_group_name: "GitHub Actions"}) == :github
       assert Runners.kind(%{"labels" => ["self-hosted", "macOS"]}) == :own
       # As saved: labels joined by commas.
       assert Runners.kind(%{labels: "self-hosted,Linux"}) == :own
-      assert Runners.kind(%{runner_group_name: "Default", labels: "kyroco-gate"}) == :own
+      # As the Air's jobs carry them.
+      assert Runners.kind(%{
+               runner_name: "kyroco-air-1",
+               runner_group_name: "Default",
+               labels: ["self-hosted", "Linux", "ARM64", "kyroco-gate"]
+             }) == :own
+
+      # Another group alone does not make it yours: GitHub's paid larger
+      # runners sit in groups too.
+      larger = %{
+        runner_name: "ubuntu-22-16core_6b1d",
+        runner_group_name: "Default",
+        labels: ["ubuntu-22.04-16core"]
+      }
+
+      assert Runners.kind(larger) == :unknown
+      # A runner GitHub lists as one of the repository's own is yours.
+      box = %{runner_name: "box", runner_group_name: "Default", labels: "kyroco-gate"}
+      assert Runners.kind(box) == :unknown
+      assert Runners.kind(box, ["box"]) == :own
+
       # Saved before the group was kept: GitHub's machines are known by name.
       assert Runners.kind(%{runner_name: "GitHub Actions 1000041223", labels: "ubuntu-latest"}) ==
                :github
@@ -33,14 +53,14 @@ defmodule Wallboard.RunnersTest do
     test "a run's jobs from GitHub: which of your runners ran them and what each runs now" do
       jobs = GitHub.parse_jobs(Fixtures.read!("github/jobs_runners.json"))
 
-      assert jobs.own == ["acme-mini-1", "acme-mini-2"]
-      assert jobs.busy == %{"acme-mini-2" => "Browser tests"}
+      assert Runners.own_names(jobs.runners) == ["acme-mini-1", "acme-mini-2"]
+      assert Runners.busy(jobs.runners) == %{"acme-mini-2" => "Browser tests"}
       assert {jobs.total, jobs.done} == {4, 2}
     end
 
     test "a run GitHub alone ran has none of your runners" do
       jobs = GitHub.parse_jobs(Fixtures.read!("github/jobs_completed.json"))
-      assert jobs.own == [] and jobs.busy == %{}
+      assert Runners.own_names(jobs.runners) == [] and Runners.busy(jobs.runners) == %{}
     end
 
     test "the archive saves each job's runner group and reads it back" do
@@ -97,27 +117,34 @@ defmodule Wallboard.RunnersTest do
 
     test "from a collector when GitHub will not list them" do
       [state] = Runners.states(:hidden, %{"acme-mini-1" => :busy}, ["acme-mini-1"], %{})
-      assert {state.state, state.from, state.why} == {:busy, :collector, nil}
+      assert {state.state, state.from} == {:busy, :collector}
+      assert Runners.unreported(:hidden, %{"acme-mini-1" => :busy}, ["acme-mini-1"]) == nil
 
       # A runner a collector reports that this repository's jobs never ran
       # on, and GitHub does not list for it, works for another repository.
       assert Runners.states(:hidden, %{"other-box" => :online}, [], %{}) == []
     end
 
-    test "when neither can tell, the state is not known, never made up, and says why" do
-      [hidden] = Runners.states(:hidden, %{}, ["acme-mini-1"], %{"acme-mini-1" => "Build"})
-      assert {hidden.state, hidden.from, hidden.job} == {:unknown, nil, nil}
+    test "when neither can tell, no state is made up: they are counted on one line, with why" do
+      # Not one row each: they have no state to show.
+      assert Runners.states(:hidden, %{}, ["acme-mini-1"], %{"acme-mini-1" => "Build"}) == []
+
+      hidden = Runners.unreported(:hidden, %{}, ["acme-mini-1", "acme-mini-1"])
+      assert hidden.count == 1
       assert hidden.why =~ "Your GitHub login cannot list this repository's runners"
 
-      # GitHub lists the repository's runners but not this one, which may be
-      # the organization's.
-      [_, _, _, org] = Runners.states(@listed, %{}, ["org-box"], %{})
-      assert {org.name, org.state} == {"org-box", :unknown}
-      assert org.why =~ "may belong to the organization"
+      # GitHub lists the repository's runners but not these: runners made
+      # for one job each are gone, or they are the organization's.
+      seen = for n <- 1..40, do: "arc-runner-#{n}"
+      states = Runners.states(@listed, %{}, seen, %{})
+      assert length(states) == 3
+      assert Runners.count_line(states) == "1 online, 1 busy, 1 offline"
+      gone = Runners.unreported(@listed, %{}, seen)
+      assert gone.count == 40
+      assert gone.why =~ "they may be gone, or belong to the organization"
 
-      [unread] = Runners.states(nil, %{}, ["acme-mini-1"], %{})
-      assert unread.state == :unknown and unread.why =~ "Not read from GitHub yet"
-      assert Runners.count_line([unread]) == "1 not known"
+      assert Runners.unreported(nil, %{}, ["acme-mini-1"]).why =~ "Not read from GitHub yet"
+      assert Runners.unreported(@listed, %{}, ["acme-mini-1"]) == nil
     end
   end
 
@@ -175,7 +202,10 @@ defmodule Wallboard.RunnersTest do
             run(2, name: "Nightly", ago_min: 20),
             run(3, name: "Docs", ago_min: 40)
           ],
-          %{jobs: %{1 => jobs}, own_by_run: %{1 => jobs.own, 2 => ["acme-mini-1"]}}
+          %{
+            jobs: %{1 => jobs},
+            own_by_run: %{1 => Runners.own_names(jobs.runners), 2 => ["acme-mini-1"]}
+          }
         )
 
       [running] = r.s.running
@@ -193,9 +223,11 @@ defmodule Wallboard.RunnersTest do
       # Only the two runs on your own machines carry a mark.
       assert html |> String.split("own-tag") |> length() == 3
 
-      # The column counts the runners it saw; GitHub was not asked yet.
-      assert html =~ "Runners"
-      assert html =~ "2 not known"
+      # Nothing reports their state yet (GitHub was not asked), so the
+      # column counts none: a count of runners whose state is not known
+      # says nothing at a glance.
+      refute html =~ "Runners"
+      assert r.s.runners_unreported.count == 2
     end
 
     test "a repository with no runners of its own looks as it did" do
@@ -213,26 +245,44 @@ defmodule Wallboard.RunnersTest do
       {:ok, listed} = GitHub.parse_runners(Fixtures.read!("github/runners.json"))
 
       r =
-        repo([run(1, status: :in_progress, ago_min: 0)], %{
+        repo([run(1, status: :in_progress, ago_min: 0), run(3, ago_min: 50)], %{
           jobs: %{1 => jobs},
-          own_by_run: %{1 => jobs.own},
+          own_by_run: %{
+            1 => Runners.own_names(jobs.runners),
+            # Two runners made for one job each, gone since.
+            3 => ["arc-runner-1", "arc-runner-2"]
+          },
           runners: listed
         })
 
-      html = render_component(&WallboardWeb.BoardLive.runners_table/1, runners: r.s.runners)
+      table = fn r ->
+        render_component(&WallboardWeb.BoardLive.runners_table/1,
+          runners: r.s.runners,
+          unreported: r.s.runners_unreported
+        )
+      end
+
+      html = table.(r)
       assert html =~ "Your runners"
       assert html =~ ~r/acme-mini-2.*busy.*Browser tests/s
       assert html =~ ~r/acme-mini-1.*online.*from GitHub/s
       assert html =~ ~r/acme-linux-1.*offline/s
+      # The two gone ones are one line, not a row each.
+      refute html =~ "arc-runner"
+      assert html =~ "2 runners ran this repository's jobs in the last day"
+      assert html =~ "they may be gone"
 
+      # The column counts only runners with a state.
       column = render_component(&WallboardWeb.BoardLive.git_column/1, r: r, now: @now)
       assert column =~ "1 online, 1 busy, 1 offline"
+      refute column =~ "not known"
 
       hidden =
         repo([run(2, ago_min: 5)], %{own_by_run: %{2 => ["acme-mini-1"]}, runners: :hidden})
 
-      html = render_component(&WallboardWeb.BoardLive.runners_table/1, runners: hidden.s.runners)
+      html = table.(hidden)
       assert html =~ "state not known"
+      assert html =~ "1 runner ran this repository's jobs in the last day"
       assert html =~ "cannot list this repository"
       refute html =~ "online"
     end
@@ -258,9 +308,15 @@ defmodule Wallboard.RunnersTest do
           job.(2, 1800, %{runner_name: "GitHub Actions 2", labels: "ubuntu-latest"}),
           # Your own: 61 seconds bills as 2 minutes, 120 as 2.
           job.(3, 61, %{runner_name: "acme-mini-1", labels: "self-hosted,macOS"}),
-          job.(4, 120, %{runner_name: "acme-mini-1", runner_group_name: "Default"}),
-          # Neither: counted apart, in no one's column.
-          job.(5, 360, %{runner_name: "build-box", labels: "ubuntu-latest"})
+          job.(4, 120, %{runner_name: "acme-mini-1", labels: "self-hosted"}),
+          # Neither: counted apart, in no one's column. A larger runner of
+          # GitHub's sits in a group but is billed: not counted as avoided.
+          job.(5, 180, %{runner_name: "build-box", labels: "ubuntu-latest"}),
+          job.(6, 180, %{
+            runner_name: "ubuntu-22-16core_6b1d",
+            runner_group_name: "Default",
+            labels: "ubuntu-22.04-16core"
+          })
         ])
 
       settings = Settings.merge(Settings.defaults(), %{github: %{repos: ["acme/shop"]}})

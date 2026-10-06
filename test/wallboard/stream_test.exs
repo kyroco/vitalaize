@@ -1013,7 +1013,8 @@ defmodule Wallboard.StreamTest do
       [repo] = socket.assigns.git
 
       render_component(&WallboardWeb.BoardLive.runners_table/1,
-        runners: repo.s.runners
+        runners: repo.s.runners,
+        unreported: repo.s.runners_unreported
       )
     end
 
@@ -1057,7 +1058,8 @@ defmodule Wallboard.StreamTest do
       assert RunnerStates.states() == %{}
 
       html = board_runners(states)
-      assert html =~ ~r/air-1.*state not known/s
+      assert html =~ "state not known"
+      assert html =~ "1 runner ran this repository's jobs in the last day"
       refute html =~ "offline"
       refute html =~ "online"
     end

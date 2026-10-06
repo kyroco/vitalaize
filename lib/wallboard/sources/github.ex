@@ -140,7 +140,8 @@ defmodule Wallboard.Sources.GitHub do
          queue: repo.queue,
          prs: repo.prs,
          jobs: jobs,
-         own_by_run: own_by_run(gh.repo, runs, jobs, prev, now),
+         own_by_run:
+           own_by_run(gh.repo, runs, jobs, prev, now, Runners.listed_names(runners.listed)),
          runners: runners.listed,
          runners_checked_at: runners.checked_at
        }}
@@ -234,8 +235,9 @@ defmodule Wallboard.Sources.GitHub do
   # Which of your own runners ran each run, by run id: what this poll's
   # jobs say, what the last poll knew (a run's last jobs can start after the
   # last poll that saw it running), and what the archive saved, for every
-  # run still in the last day's list.
-  defp own_by_run(repo, runs, jobs, prev, now) do
+  # run still in the last day's list. `listed` is the names of the runners
+  # GitHub lists for the repository.
+  defp own_by_run(repo, runs, jobs, prev, now, listed) do
     ids = MapSet.new(runs, & &1.id)
 
     known =
@@ -248,12 +250,12 @@ defmodule Wallboard.Sources.GitHub do
         |> Store.job_runners(DateTime.to_unix(now) - 24 * 3600)
         |> Enum.filter(&MapSet.member?(ids, &1.run_id))
         |> Enum.group_by(& &1.run_id)
-        |> Map.new(fn {id, rows} -> {id, Runners.own_names(rows)} end)
+        |> Map.new(fn {id, rows} -> {id, Runners.own_names(rows, listed)} end)
       else
         %{}
       end
 
-    live = for {id, %{own: own}} <- jobs, into: %{}, do: {id, own}
+    live = for {id, %{runners: rs}} <- jobs, into: %{}, do: {id, Runners.own_names(rs, listed)}
 
     [known, saved, live]
     |> Enum.reduce(%{}, &Map.merge(&2, &1, fn _id, a, b -> Enum.uniq(a ++ b) end))
@@ -372,17 +374,16 @@ defmodule Wallboard.Sources.GitHub do
           done: Enum.count(jobs, &(&1["status"] == "completed")),
           current_job: current && current["name"],
           current_step: step,
-          # Your own runners among the jobs, and what each runs now.
-          own: Runners.own_names(jobs),
-          busy:
-            for(
-              j <- jobs,
-              j["status"] == "in_progress",
-              is_binary(j["runner_name"]),
-              Runners.kind(j) == :own,
-              into: %{},
-              do: {j["runner_name"], j["name"]}
-            )
+          # The jobs a runner has taken, with what says whose runner it is
+          # (see Wallboard.Runners); that also needs the repository's runner
+          # list, which is read apart.
+          runners:
+            for j <- jobs, is_binary(j["runner_name"]) do
+              Map.new(
+                ~w(name status runner_name runner_group_name labels),
+                &{String.to_atom(&1), j[&1]}
+              )
+            end
         }
 
       _ ->
@@ -507,9 +508,12 @@ defmodule Wallboard.Sources.GitHub do
       |> Enum.map(&running_run(&1, facts.jobs[&1.id], typical, now))
       |> Enum.map(&Map.put(&1, :own, own[&1.id] || []))
 
+    listed = Runners.listed_names(facts[:runners])
+    seen = own |> Map.values() |> List.flatten()
+
     busy =
-      for {_id, %{busy: b}} <- facts.jobs, reduce: %{} do
-        acc -> Map.merge(acc, b)
+      for {_id, %{runners: rs}} <- facts.jobs, reduce: %{} do
+        acc -> Map.merge(acc, Runners.busy(rs, listed))
       end
 
     completed =
@@ -549,8 +553,8 @@ defmodule Wallboard.Sources.GitHub do
         completed
         |> Enum.take(6)
         |> Enum.map(&(recent_run(&1, gh) |> Map.put(:own, own[&1.id] || []))),
-      runners:
-        Runners.states(facts[:runners], reported, own |> Map.values() |> List.flatten(), busy),
+      runners: Runners.states(facts[:runners], reported, seen, busy),
+      runners_unreported: Runners.unreported(facts[:runners], reported, seen),
       prs: facts.prs,
       lanes: rows,
       # How many more workflows ran in the window than the rows shown.
