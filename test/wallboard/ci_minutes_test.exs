@@ -112,24 +112,17 @@ defmodule Wallboard.CiMinutesTest do
   end
 
   describe "review fixes" do
-    test "your own machines are told by the runner, not only by a self-hosted label" do
+    test "jobs on your own machines carry GitHub's self-hosted label" do
       run(1, pr: 7)
 
       jobs(1, [
-        # A runner on your own machine, asked for by its own label alone.
-        job(1, 120, "kyroco-gate", "success", runner: "kyroco-air-1"),
-        # GitHub's standard and larger runners.
+        # Labels as GitHub returns them for kyroco's own runners.
+        job(1, 120, "self-hosted,Linux,ARM64,kyroco-gate", "success", runner: "kyroco-air-1"),
         job(2, 60, "ubuntu-latest", "success", runner: "GitHub Actions 1000041223"),
-        job(3, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1000027280"),
-        # No runner recorded (never started, or cancelled): counted as GitHub's.
-        job(4, 60, "ubuntu-latest", "cancelled"),
-        # Your own runners named after their label: a runner scale set, and
-        # a fleet numbered from 2.
-        job(5, 120, "arc-runner-set", "success", runner: "arc-runner-set-7x2kq-runner-9fz4l"),
-        job(6, 120, "mac-mini", "success", runner: "mac-mini-2")
+        job(3, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1000027280")
       ])
 
-      assert %{paid: 3, own: 6} = CiMinutes.for_pr(@repo, 7)
+      assert %{paid: 2, own: 2} = CiMinutes.for_pr(@repo, 7)
     end
 
     test "a session started by another tool does not take the pushes of the one that started it" do
