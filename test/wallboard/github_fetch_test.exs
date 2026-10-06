@@ -231,6 +231,44 @@ defmodule Wallboard.GitHubFetchTest do
       assert {busy.state, busy.job} == {:busy, "Browser tests"}
     end
 
+    test "a runner GitHub listed before and lists no more still makes a job yours", %{dir: dir} do
+      start_supervised!({Store, path: ":memory:"})
+      [rockets, _] = repos(@rockets)
+
+      # GitHub listed acme-gone once; it ran a job with no self-hosted label
+      # and is gone from the list now, as a runner made for one job is.
+      :ok = Store.put_runner_names("acme/rockets", ["acme-gone"], 0)
+
+      jobs =
+        GitHubCollector.parse_jobs(
+          Jason.encode!(%{
+            jobs: [
+              %{
+                id: 9,
+                run_id: 7,
+                name: "Build",
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-10-05T17:00:00Z",
+                completed_at: "2026-10-05T17:02:00Z",
+                runner_name: "acme-gone",
+                runner_group_name: "Default",
+                labels: ["acme-mac"]
+              }
+            ]
+          }),
+          "acme/rockets",
+          7
+        )
+
+      :ok = Store.put_jobs("acme/rockets", 7, jobs)
+      File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
+      runs(dir, [{7, "completed"}])
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, DateTime.add(@now, 5 * 86_400))
+      assert facts.own_by_run == %{7 => ["acme-gone"]}
+    end
+
     test "a run that started and finished between polls gets its runners from the archive",
          %{dir: dir} do
       start_supervised!({Store, path: ":memory:"})
