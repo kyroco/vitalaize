@@ -117,9 +117,10 @@ defmodule Wallboard.Settings do
       pushover_token: nil
     },
     # Limits on use, each over a "day" or a "week" (see
-    # Wallboard.Sources.Budget). nil turns a limit off. Passing one shows on
-    # the board and sends one alert per limit per period, on each channel
-    # switched on here that is also set up under alerts.
+    # Wallboard.Sources.Budget). nil turns a limit off, and every limit needs
+    # the archive. Passing one shows on the board and sends one alert per
+    # limit per period, on each channel switched on here that is also set up
+    # under alerts, tried again each check until a channel takes it.
     budget: %{
       claude_dollars: nil,
       claude_dollars_per: "day",
@@ -831,13 +832,16 @@ defmodule Wallboard.Settings do
       {"Budget",
        [
          {[:budget, :claude_dollars], "Claude spend limit (dollars)", :limit, false,
-          "At API list prices, as on Trends. Empty means no limit"},
+          "At API list prices, as on Trends. Every limit needs the archive on. " <>
+            "Empty means no limit"},
          {[:budget, :claude_dollars_per], "Claude spend limit is per", {:choice, ["day", "week"]},
           false, "A week starts on Monday"},
-         {[:budget, :claude_tokens], "Claude token limit", :limit, false, "Empty means no limit"},
+         {[:budget, :claude_tokens], "Claude token limit", :limit, false,
+          "Counts cache reads and writes too, which are most of it. Empty means no limit"},
          {[:budget, :claude_tokens_per], "Claude token limit is per", {:choice, ["day", "week"]},
           false, nil},
-         {[:budget, :codex_tokens], "Codex token limit", :limit, false, "Empty means no limit"},
+         {[:budget, :codex_tokens], "Codex token limit", :limit, false,
+          "Counts cache reads and writes too, which are most of it. Empty means no limit"},
          {[:budget, :codex_tokens_per], "Codex token limit is per", {:choice, ["day", "week"]},
           false, nil},
          {[:budget, :by_messages], "Budget alerts by Messages", :boolean, false, nil},

@@ -18,8 +18,8 @@ defmodule Wallboard.PullRequestsTest do
     assert length(prs) == 6
     assert pr.number == 35
 
-    assert {pr.branch, pr.head_repo, pr.base, pr.default_branch} ==
-             {@branch, "acme/shop", "main", "main"}
+    assert {pr.branch, pr.head_repo, pr.base_repo, pr.base, pr.default_branch} ==
+             {@branch, "acme/shop", "acme/shop", "main", "main"}
 
     assert pr.merged_at == @merged
     assert pr.created_at == @merged - 122
@@ -202,6 +202,28 @@ defmodule Wallboard.PullRequestsTest do
 
       assert pr.sessions == []
     end
+
+    test "a repository renamed on GitHub, still tracked by its old name, keeps its branch sessions" do
+      # Settings say acme/old-shop; GitHub answers for it as acme/shop.
+      renamed = %{repo: "acme/old-shop", head_repo: "acme/shop", base_repo: "acme/shop"}
+
+      [pr] =
+        PullRequests.link(
+          [pr(41, "feat", @merged, renamed)],
+          [session("on-feat", %{repo: "acme/old-shop", branch: "feat", cost: 2.0})]
+        )
+
+      assert {Enum.map(pr.sessions, & &1.session_id), pr.cost} == {["on-feat"], 2.0}
+
+      # A fork of the renamed repository still claims nothing.
+      [fork] =
+        PullRequests.link(
+          [pr(42, "feat", @merged, %{renamed | head_repo: "someone/shop"})],
+          [session("on-feat", %{repo: "acme/old-shop", branch: "feat"})]
+        )
+
+      assert fork.sessions == []
+    end
   end
 
   describe "from the database" do
@@ -335,6 +357,41 @@ defmodule Wallboard.PullRequestsTest do
       pr = Enum.find(merged, &(&1.number == 35))
       assert pr.sessions |> Enum.map(& &1.session_id) |> Enum.sort() == ["fixer", "opener"]
       assert {pr.cost, pr.tokens, pr.codex_tokens} == {2.0, 120.0, 300.0}
+    end
+
+    test "a pull request saved under two spellings of its repository counts once" do
+      # The tracked name was retyped from acme/shop to Acme/Shop, and the
+      # next round saved #7 again under the new spelling.
+      for repo <- ["acme/shop", "Acme/Shop"] do
+        :ok =
+          Store.put_prs([
+            %{
+              repo: repo,
+              number: 7,
+              branch: "feat",
+              head_repo: "acme/shop",
+              base: "main",
+              merged_at: @merged
+            }
+          ])
+      end
+
+      put_session("on-feat", %{git_branch: "feat", repo: "acme/shop", cost: 2.0})
+
+      settings = Settings.merge(%{github: %{repo: "Acme/Shop"}}, %{})
+      assert [pr] = PullRequests.merged(settings, @merged - 86_400)
+      assert {pr.number, pr.cost} == {7, 2.0}
+    end
+
+    test "a period with no merged pull request says so the same way on every Shipped card" do
+      t = Trends.build(full_settings(), 7, ~U[2026-10-05 13:00:00Z])
+      subs = for c <- t.cards, c.group == :shipped, do: {c.key, c.sub}
+
+      assert subs == [
+               merged_prs: "no merged PRs",
+               pr_cost: "no merged PRs",
+               pr_tokens: "no merged PRs"
+             ]
     end
 
     test "the Shipped cards and the comparison, per merged pull request" do

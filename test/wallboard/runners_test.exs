@@ -393,5 +393,74 @@ defmodule Wallboard.RunnersTest do
       assert card.(:minutes_avoided).value == 4
       assert card.(:minutes_avoided).sub == "2 jobs on your machines"
     end
+
+    test "a self-hosted label in any letter case is yours everywhere, as GitHub matches it" do
+      assert Runners.kind(%{labels: "Self-Hosted,Linux"}) == :own
+      assert Runners.kind(%{"labels" => ["SELF-HOSTED"]}) == :own
+
+      start_supervised!({Store, path: ":memory:"})
+      now = DateTime.utc_now()
+      done = DateTime.to_unix(now) - 3600
+      :ok = Store.put_runs([saved_run(done)])
+
+      :ok =
+        Store.put_jobs("acme/shop", 1, [
+          %{
+            repo: "acme/shop",
+            job_id: 1,
+            run_id: 1,
+            completed_at: done,
+            duration_s: 90,
+            runner_name: "acme-mini-1",
+            labels: "Self-Hosted,Linux"
+          }
+        ])
+
+      settings = Settings.merge(Settings.defaults(), %{github: %{repos: ["acme/shop"]}})
+      t = Trends.build(settings, 7, now)
+      card = fn key -> Enum.find(t.cards, &(&1.key == key)) end
+
+      # The Git tab's rule, runner hours and CI minutes give one answer.
+      assert_in_delta card.(:own_runner_hours).value, 90 / 3600, 1.0e-9
+      assert card.(:minutes_avoided).value == 2
+      assert card.(:minutes_avoided).sub == "1 jobs on your machines"
+    end
+
+    test "paid minutes avoided leave out public repositories, where GitHub bills nothing" do
+      start_supervised!({Store, path: ":memory:"})
+      now = DateTime.utc_now()
+      done = DateTime.to_unix(now) - 3600
+
+      for repo <- ["acme/shop", "acme/site"] do
+        :ok = Store.put_runs([%{saved_run(done) | repo: repo}])
+
+        :ok =
+          Store.put_jobs(repo, 1, [
+            %{
+              repo: repo,
+              job_id: 1,
+              run_id: 1,
+              completed_at: done,
+              duration_s: 120,
+              runner_name: "acme-mini-1",
+              labels: "self-hosted"
+            }
+          ])
+      end
+
+      public = Jason.encode!(%{private: false, default_branch: "main", day: "x"})
+      :ok = Store.put_meta(Wallboard.Archive.CiMinutes.meta_key("acme/site"), public)
+
+      settings =
+        Settings.merge(Settings.defaults(), %{github: %{repos: ["acme/shop", "acme/site"]}})
+
+      t = Trends.build(settings, 7, now)
+      card = fn key -> Enum.find(t.cards, &(&1.key == key)) end
+
+      # Only the private repository's 2 minutes would have been billed.
+      assert card.(:minutes_avoided).value == 2
+      # CI minutes still show every minute on your own machines.
+      assert card.(:ci_minutes).sub =~ "4 on your own machines"
+    end
   end
 end

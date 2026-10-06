@@ -238,8 +238,9 @@ defmodule Wallboard.Store do
     # The repository's default branch when the pull request was read.
     "ALTER TABLE gh_prs ADD COLUMN default_branch TEXT",
     # The runner group of the machine that ran a job: "GitHub Actions" for
-    # GitHub's own machines, another name for your own (see
-    # Wallboard.Runners). Jobs saved before this column have none.
+    # GitHub's standard machines, another name for your own or for GitHub's
+    # larger runners (see Wallboard.Runners). Jobs saved before this column
+    # have none.
     "ALTER TABLE gh_jobs ADD COLUMN runner_group_name TEXT",
     # The runners GitHub has listed as each repository's own, so a job on
     # one counts as yours in Trends as it does on the Git tab, after the
@@ -251,7 +252,11 @@ defmodule Wallboard.Store do
       seen_at INTEGER NOT NULL,
       PRIMARY KEY (repo, name)
     )
-    """
+    """,
+    # The repository the pull request merges into, as GitHub named it in the
+    # same reply as head_repo: after a rename both carry the new name while
+    # `repo` keeps the one in settings. Empty for rows saved before.
+    "ALTER TABLE gh_prs ADD COLUMN base_repo TEXT"
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -271,7 +276,7 @@ defmodule Wallboard.Store do
     completed_at queue_s duration_s runner_name labels failed_step runner_group_name)a
 
   @pr_columns ~w(repo number title branch base head_sha author created_at closed_at merged_at
-    url head_repo default_branch)a
+    url head_repo default_branch base_repo)a
 
   @request_columns ~w(machine session_id request_id at model effort input_tokens output_tokens
     cache_read_tokens cache_write_tokens cost subagent)a

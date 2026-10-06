@@ -11,13 +11,15 @@ defmodule Wallboard.Sources.Budget do
   The archive saves a busy session on this machine once it has been quiet
   for `archive.settle_seconds`, so a long run with no pause is counted at
   its next pause. With the archive off there is nothing to add up, and no
-  limit is checked.
+  limit is checked; the board says so when a limit is set.
 
   When a total passes its limit, the board shows it and one alert goes out
   on each budget channel that is switched on and set up under alerts. Each
-  limit alerts once per period and amount: what has alerted is saved in the
-  database, so a restart does not send it again, and raising a limit that
-  was passed alerts again only when the new amount is passed.
+  limit alerts once per period and amount: once a channel has taken the
+  alert, that is saved in the database, so a restart does not send it
+  again, and raising a limit that was passed alerts again only when the new
+  amount is passed. Until a channel takes it (none is set up, or every one
+  failed) nothing is saved, and the next check tries again.
   """
 
   alias Wallboard.Archive.Trends
@@ -34,7 +36,8 @@ defmodule Wallboard.Sources.Budget do
   # Poller hooks (see Wallboard.Poller)
 
   def poll(settings, _prev, memory, now) do
-    {:ok, %{over: check(settings, now, &Alerts.send_text/4)}, memory}
+    over = check(settings, now, &Alerts.send_text_and_wait/4)
+    {:ok, %{over: over, needs_archive: needs_archive?(settings)}, memory}
   end
 
   def fingerprint(facts), do: facts
@@ -45,16 +48,28 @@ defmodule Wallboard.Sources.Budget do
   The limits passed in their current period, in settings order, each as
   %{key, label, per, limit, total, since}. Sends the alert for each one
   that has not alerted yet in its period at its amount, through
-  `send.(text, what, channels, settings)`.
+  `send.(text, what, channels, settings)`, which returns the channels that
+  took it. It counts as alerted only when that list is not empty.
   """
   def check(settings, now, send) do
     over = if settings.archive.enabled, do: over(settings, now), else: []
 
-    for item <- over, first_time?(item) do
-      send.(alert_text(item), "budget, #{item.label}", channels(settings), settings)
+    for item <- over, not alerted?(item) do
+      case send.(alert_text(item), "budget, #{item.label}", channels(settings), settings) do
+        [] -> :ok
+        [_ | _] -> :ok = Store.put_meta(alert_key(item), "1")
+      end
     end
 
     over
+  end
+
+  @doc "True when a limit is set but the archive is off, so no limit is checked."
+  def needs_archive?(settings) do
+    budget = Map.get(settings, :budget, %{})
+
+    not settings.archive.enabled and
+      Enum.any?(@limits, fn {key, _, _} -> is_number(budget[key]) and budget[key] > 0 end)
   end
 
   @doc "The limits passed in their current period, without alerting."
@@ -121,16 +136,11 @@ defmodule Wallboard.Sources.Budget do
 
   defp amount(_tokens, n), do: Trends.thousands(n)
 
-  # Saved before the alert goes, so a send that fails or a crash part way
-  # never sends it twice. A failed send is in the log.
-  defp first_time?(item) do
-    key = "budget_alert:#{item.key}:#{item.per}:#{item.since}:#{item.limit}"
+  # Saved only once a channel took the alert, so a limit passed while no
+  # channel works alerts at the first check one does. A crash between the
+  # send and the save sends it again; that beats never sending it. Each
+  # failed send is in the log.
+  defp alerted?(item), do: Store.get_meta(alert_key(item)) != nil
 
-    if Store.get_meta(key) do
-      false
-    else
-      :ok = Store.put_meta(key, "1")
-      true
-    end
-  end
+  defp alert_key(item), do: "budget_alert:#{item.key}:#{item.per}:#{item.since}:#{item.limit}"
 end

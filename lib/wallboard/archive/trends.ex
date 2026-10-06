@@ -26,7 +26,7 @@ defmodule Wallboard.Archive.Trends do
   change costs each tool, in tokens, since Codex has no dollar price.
   """
 
-  alias Wallboard.Archive.{CiMinutes, PullRequests}
+  alias Wallboard.Archive.{CiMinutes, GitHubCollector, PullRequests}
   alias Wallboard.Store
 
   @doc "The cards for the last `days` days, ending today."
@@ -125,12 +125,33 @@ defmodule Wallboard.Archive.Trends do
     end
   end
 
-  @doc "Words for the Shipped heading until every repository's pull requests are saved."
+  @doc """
+  Words for the Shipped heading: why a repository's pull requests cannot be
+  read, when the last read failed, or "Loading…" until every repository's
+  are saved.
+  """
   def shipped_loading(settings) do
-    if settings
-       |> Wallboard.Settings.repo_names()
-       |> Enum.any?(&(!Store.get_meta("github_prs_backfill:" <> &1))),
-       do: "Loading…"
+    repos = Wallboard.Settings.repo_names(settings)
+    minutes = max(div(get_in(settings, [:archive, :github_poll_seconds]) || 300, 60), 1)
+
+    case Enum.flat_map(repos, &prs_problem(&1, minutes)) do
+      [] -> if Enum.any?(repos, &(!Store.get_meta("github_prs_backfill:" <> &1))), do: "Loading…"
+      problems -> Enum.join(problems, "; ")
+    end
+  end
+
+  defp prs_problem(repo, minutes) do
+    case Store.get_meta(GitHubCollector.prs_error_key(repo)) do
+      "forbidden" ->
+        ["Can't read pull requests in #{repo}: the GitHub sign-in is not allowed to"]
+
+      "failed" ->
+        every = if minutes == 1, do: "every minute", else: "every #{minutes} minutes"
+        ["Can't read pull requests in #{repo} right now, trying again #{every}"]
+
+      _ ->
+        []
+    end
   end
 
   defp codex?(settings), do: get_in(settings, [:codex, :enabled]) == true
@@ -444,13 +465,14 @@ defmodule Wallboard.Archive.Trends do
       },
       # Beside CI minutes: your own runners' minutes, which GitHub does not
       # bill, counted the way it would have (each job rounded up to a whole
-      # minute; see CiMinutes).
+      # minute; see CiMinutes), and not on a public repository, where its
+      # standard runners are free.
       %{
         key: :minutes_avoided,
         group: :github,
         label: "Paid minutes avoided",
         fmt: :count,
-        value: & &1.ci_own,
+        value: & &1.ci_avoided,
         sub: &"#{thousands(&1.own_jobs)} jobs on your machines"
       }
     ]
@@ -469,6 +491,7 @@ defmodule Wallboard.Archive.Trends do
     [
       "#{thousands(d.ci_agent + d.codex_ci_agent)} from agent sessions",
       d.ci_free > 0 && "#{thousands(d.ci_free)} free on public repositories",
+      d.ci_unknown > 0 && "#{thousands(d.ci_unknown)} not known on public repositories",
       d.ci_own > 0 && "#{thousands(d.ci_own)} on your own machines"
     ]
     |> Enum.filter(& &1)
@@ -524,6 +547,8 @@ defmodule Wallboard.Archive.Trends do
     ci_paid: 0,
     ci_free: 0,
     ci_own: 0,
+    ci_avoided: 0,
+    ci_unknown: 0,
     ci_agent: 0,
     # Merged pull requests, those with any session found, and those with a
     # Claude or a Codex session; then their sessions, Claude dollars and
@@ -702,11 +727,13 @@ defmodule Wallboard.Archive.Trends do
   def per(_amount, prs) when prs in [0, nil], do: nil
   def per(amount, prs), do: amount / prs
 
+  defp sessions_per_pr(%{merged_prs: 0}), do: "no merged PRs"
   defp sessions_per_pr(%{matched_prs: 0}), do: "no sessions matched"
 
   defp sessions_per_pr(d),
     do: "#{:erlang.float_to_binary(d.pr_sessions / d.matched_prs, decimals: 1)} sessions per PR"
 
+  defp matched(_n, 0, _what), do: "no merged PRs"
   defp matched(n, of, what), do: "#{thousands(n)} of #{thousands(of)} matched to #{what}"
 
   defp turn_minutes(_ms, 0), do: "no turns"

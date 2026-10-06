@@ -13,6 +13,9 @@ defmodule Wallboard.KeyStore.Memory do
   def place, do: "the test keychain"
 
   @impl true
+  def where(_name, _opts), do: "the test keychain"
+
+  @impl true
   def put(name, key, _opts) do
     case :persistent_term.get({__MODULE__, :refuse}, false) do
       true -> {:error, "the test keychain refuses"}
@@ -22,9 +25,10 @@ defmodule Wallboard.KeyStore.Memory do
 
   @impl true
   def fetch(name, _opts) do
-    case Map.fetch(all(), name) do
-      {:ok, key} -> {:ok, key}
-      :error -> :none
+    case {:persistent_term.get({__MODULE__, :unreadable}, false), Map.fetch(all(), name)} do
+      {true, _} -> {:error, "the test keychain could not be read"}
+      {false, {:ok, key}} -> {:ok, key}
+      {false, :error} -> :none
     end
   end
 
@@ -39,12 +43,16 @@ defmodule Wallboard.KeyStore.Memory do
   @doc "Every key held, by name."
   def all, do: :persistent_term.get(@key, %{})
 
-  @doc "Forgets every key, and takes writes again."
+  @doc "Forgets every key, and takes writes and reads again."
   def clear do
     :persistent_term.put(@key, %{})
     :persistent_term.put({__MODULE__, :refuse}, false)
+    :persistent_term.put({__MODULE__, :unreadable}, false)
   end
 
   @doc "Makes every write and delete fail from here on, until `clear/0`."
   def refuse, do: :persistent_term.put({__MODULE__, :refuse}, true)
+
+  @doc "Makes every read fail from here on, until `clear/0`."
+  def unreadable, do: :persistent_term.put({__MODULE__, :unreadable}, true)
 end

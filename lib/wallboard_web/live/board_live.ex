@@ -583,7 +583,7 @@ defmodule WallboardWeb.BoardLive do
           mailbox={length(@mailbox)}
         />
         <.needs_banner needs={@needs} />
-        <.budget_banner over={budget_over(@budget)} />
+        <.budget_banner over={budget_over(@budget)} needs_archive={budget_needs_archive?(@budget)} />
         <.tiles
           repos={@git}
           meta={@github_meta}
@@ -841,12 +841,26 @@ defmodule WallboardWeb.BoardLive do
   def budget_over(%{over: over}), do: over
   def budget_over(_), do: []
 
-  attr :over, :list, required: true
+  @doc false
+  # True when a budget limit is set but the archive is off, so none is checked.
+  def budget_needs_archive?(%{needs_archive: true}), do: true
+  def budget_needs_archive?(_), do: false
 
-  # The budget limits passed in their day or week (see Wallboard.Sources.Budget).
+  attr :over, :list, required: true
+  attr :needs_archive, :boolean, default: false
+
+  # The budget limits passed in their day or week (see Wallboard.Sources.Budget),
+  # or, with the archive off, why none is checked.
   @doc false
   def budget_banner(assigns) do
     ~H"""
+    <section :if={@needs_archive} class="budget-banner" aria-label="Budget limits">
+      <span class="bb-kicker">Budget</span>
+      <span class="bb-items">
+        Budget limits are set, but the archive is off, so none is checked.
+        Set archive enabled to true in settings.exs.
+      </span>
+    </section>
     <section :if={@over != []} class="budget-banner" aria-label="Over budget">
       <span class="bb-kicker">Over budget</span>
       <span class="bb-items">
@@ -2043,26 +2057,40 @@ defmodule WallboardWeb.BoardLive do
       "#{thousands(ci.runs)} #{if ci.runs == 1, do: "run", else: "runs"}" <>
         if(ci.failed > 0, do: ", #{thousands(ci.failed)} failed", else: ""),
       ci.free > 0 && "#{thousands(ci.free)} free on a public repository",
+      Map.get(ci, :unknown, 0) > 0 &&
+        "#{thousands(ci.unknown)} not known on a public repository",
       ci.own > 0 && "#{thousands(ci.own)} on your own machines"
     ]
     |> Enum.filter(& &1)
     |> Enum.join(" · ")
   end
 
-  # " · 22 CI min" after a pull request with saved runs; a public
-  # repository's are free.
-  defp pr_ci(s, pr) do
-    case s[:pr_ci] && s.pr_ci[{pr["repo"], pr["number"]}] do
-      %{runs: runs, free: free} when runs > 0 and free > 0 ->
-        " · #{thousands(free)} CI min, free on a public repository"
+  defp pr_ci(s, pr), do: pr_ci_note(s[:pr_ci] && s.pr_ci[{pr["repo"], pr["number"]}])
 
-      %{runs: runs, paid: paid} when runs > 0 ->
-        " · #{thousands(paid)} CI min"
+  @doc """
+  " · 22 CI min" after a pull request with saved runs. On a public
+  repository GitHub's standard runners are free, its macOS larger runners
+  billed, and a job in another runner group not known (see `CiMinutes`).
+  """
+  def pr_ci_note(%{runs: runs, paid: paid, free: free} = ci) when runs > 0 do
+    unknown = Map.get(ci, :unknown, 0)
 
-      _ ->
-        ""
-    end
+    main =
+      cond do
+        free > 0 and paid > 0 ->
+          "#{thousands(paid)} CI min, and #{thousands(free)} free on a public repository"
+
+        free > 0 ->
+          "#{thousands(free)} CI min, free on a public repository"
+
+        true ->
+          "#{thousands(paid)} CI min"
+      end
+
+    " · " <> main <> if(unknown > 0, do: ", #{thousands(unknown)} not known", else: "")
   end
+
+  def pr_ci_note(_), do: ""
 
   attr :label, :string, required: true
   attr :value, :any, required: true
