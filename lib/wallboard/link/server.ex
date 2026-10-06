@@ -32,6 +32,14 @@ defmodule Wallboard.Link.Server do
   @resume_chunk 1_000
   @max_items 256
   @max_runners 100
+  # The most a request may cost and the most any count may be: far past
+  # anything a real session makes, and low enough that no sum the board
+  # takes of them can overflow.
+  @max_cost 10_000.0
+  @max_count Bitwise.bsl(1, 40)
+  # How far past the hub's own clock a time may be, for a collector whose
+  # clock runs fast.
+  @ahead_s 86_400
 
   @doc false
   # Called by the gRPC library for each Stream call. Its own list of
@@ -249,7 +257,7 @@ defmodule Wallboard.Link.Server do
   # received, so the collector does not send it for ever.
   defp row(%Proto.Event{} = e) do
     if e.session_id =~ ~r/\A[A-Za-z0-9_-]{1,100}\z/ and byte_size(e.file) <= 1024 and
-         String.valid?(e.file) and length(e.items) <= @max_items and
+         String.valid?(e.file) and length(e.items) <= @max_items and time?(e.at) and
          Enum.all?(e.items, &sound?/1) do
       [
         %{
@@ -277,14 +285,29 @@ defmodule Wallboard.Link.Server do
     end
   end
 
-  # A cost is the one number in an event that is not a whole number. One
-  # that is no number at all (the wire format allows "not a number" and
-  # infinity) or is below zero could not have come from the filter, and
-  # would break every sum it took part in.
-  defp sound?(%Proto.Item{body: {:request, %Proto.Request{cost: cost}}}),
-    do: is_float(cost) and cost >= 0
+  # Every number in an item must be one the filter could have built, or it
+  # would break every sum it took part in. A cost is the one number that is
+  # not a whole number: one that is no number at all (the wire format
+  # allows "not a number" and infinity), below zero or past the most a
+  # request may cost is refused. So is a count past the most a count may
+  # be, and a time before 1970 or more than a day ahead.
+  defp sound?(%Proto.Item{body: {:request, %Proto.Request{cost: cost} = request}}),
+    do: is_float(cost) and cost >= 0 and cost <= @max_cost and counts?(request)
 
+  defp sound?(%Proto.Item{body: {:status, %Proto.Status{since: since}}}), do: time?(since)
+  defp sound?(%Proto.Item{body: {_kind, body}}), do: counts?(body)
   defp sound?(_item), do: true
+
+  # Every whole number in a message and in the messages inside it.
+  defp counts?(%_{} = message),
+    do: message |> Map.from_struct() |> Map.values() |> Enum.all?(&counts?/1)
+
+  defp counts?(list) when is_list(list), do: Enum.all?(list, &counts?/1)
+  defp counts?(n) when is_integer(n), do: n >= 0 and n <= @max_count
+  defp counts?(_other), do: true
+
+  # 0 is "no time known".
+  defp time?(at), do: at >= 0 and at <= System.os_time(:second) + @ahead_s
 
   defp kind(%Proto.Event{file: file}) when file != "", do: "file"
 
