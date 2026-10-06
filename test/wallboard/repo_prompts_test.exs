@@ -107,6 +107,12 @@ defmodule Wallboard.RepoPromptsTest do
     Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :events, machine, [row]})
   end
 
+  # A round of the watcher's, made now rather than on its timer.
+  defp tick do
+    send(Process.whereis(RepoPrompts), :tick)
+    :sys.get_state(RepoPrompts)
+  end
+
   # Everything sent so far has been taken in, and GitHub has answered.
   defp settled do
     Enum.reduce_while(1..200, nil, fn _, _ ->
@@ -115,6 +121,7 @@ defmodule Wallboard.RepoPromptsTest do
       if state.checks == %{} do
         {:halt, :ok}
       else
+        # A pause between looks at a condition, not a wait for a timer.
         Process.sleep(10)
         {:cont, nil}
       end
@@ -668,13 +675,13 @@ defmodule Wallboard.RepoPromptsTest do
 
     test "nothing shows while GitHub cannot be asked, and it is asked again later", c do
       answer(c, "acme/billing-api", :unknown)
-      start_hub(c, tick_ms: 30)
+      start_hub(c)
       streamed("air", "s1", "acme/billing-api")
       settled()
       assert Mailbox.items() == []
 
       answer(c, "acme/billing-api", {:visible, "acme/billing-api"})
-      Process.sleep(150)
+      tick()
       settled()
       assert [%{id: "repo:acme/billing-api", actions: [{"track", _}, _]}] = Mailbox.items()
     end
@@ -711,8 +718,9 @@ defmodule Wallboard.RepoPromptsTest do
 
     test "are looked at again on every round", c do
       on_github = checkout(c, "billing", "https://github.com/acme/billing-api")
-      start_hub(c, hub: fn -> "the-hub" end, local: fn -> [on_github] end, tick_ms: 30)
-      Process.sleep(100)
+      start_hub(c, hub: fn -> "the-hub" end, local: fn -> [on_github] end)
+      # Its first round comes as it starts; this is another.
+      tick()
       settled()
       assert [%{id: "repo:acme/billing-api"}] = Mailbox.items()
       assert asked(c) == ["acme/billing-api"]
@@ -776,14 +784,14 @@ defmodule Wallboard.RepoPromptsTest do
     Store.put_meta("repo_prompts", Jason.encode!(%{ignored: ["acme/kept"], asks: []}))
     :ok = stop_supervised(Store)
 
-    start_prompts(c, tick_ms: 30)
+    start_prompts(c, [])
     streamed("air", "s1", "acme/billing-api")
-    Process.sleep(80)
+    tick()
     assert Mailbox.items() == []
     assert asked(c) == []
 
     start_supervised!({Store, path: Path.join(c.dir, "wallboard.db")})
-    Process.sleep(100)
+    tick()
     assert RepoPrompts.ignored() == ["acme/kept"]
   end
 end
