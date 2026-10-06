@@ -53,14 +53,14 @@ defmodule Wallboard.RunnersTest do
     test "a run's jobs from GitHub: which of your runners ran them and what each runs now" do
       jobs = GitHub.parse_jobs(Fixtures.read!("github/jobs_runners.json"))
 
-      assert Runners.own_names(jobs.runners) == ["acme-mini-1", "acme-mini-2"]
-      assert Runners.busy(jobs.runners) == %{"acme-mini-2" => "Browser tests"}
+      assert Runners.own_names(jobs.list) == ["acme-mini-1", "acme-mini-2"]
+      assert Runners.busy(jobs.list) == %{"acme-mini-2" => "Browser tests"}
       assert {jobs.total, jobs.done} == {4, 2}
     end
 
     test "a run GitHub alone ran has none of your runners" do
       jobs = GitHub.parse_jobs(Fixtures.read!("github/jobs_completed.json"))
-      assert Runners.own_names(jobs.runners) == [] and Runners.busy(jobs.runners) == %{}
+      assert Runners.own_names(jobs.list) == [] and Runners.busy(jobs.list) == %{}
     end
 
     test "the archive saves each job's runner group and reads it back" do
@@ -204,7 +204,7 @@ defmodule Wallboard.RunnersTest do
           ],
           %{
             jobs: %{1 => jobs},
-            own_by_run: %{1 => Runners.own_names(jobs.runners), 2 => ["acme-mini-1"]}
+            own_by_run: %{1 => Runners.own_names(jobs.list), 2 => ["acme-mini-1"]}
           }
         )
 
@@ -248,7 +248,7 @@ defmodule Wallboard.RunnersTest do
         repo([run(1, status: :in_progress, ago_min: 0), run(3, ago_min: 50)], %{
           jobs: %{1 => jobs},
           own_by_run: %{
-            1 => Runners.own_names(jobs.runners),
+            1 => Runners.own_names(jobs.list),
             # Two runners made for one job each, gone since.
             3 => ["arc-runner-1", "arc-runner-2"]
           },
@@ -288,6 +288,25 @@ defmodule Wallboard.RunnersTest do
     end
   end
 
+  # The run the Trends tests' jobs belong to, finished at `at`.
+  defp saved_run(at) do
+    %{
+      repo: "acme/shop",
+      run_id: 1,
+      attempt: 1,
+      workflow: "ci.yml",
+      name: "CI",
+      event: "push",
+      branch: "main",
+      status: "completed",
+      conclusion: "success",
+      created_at: at - 600,
+      started_at: at - 600,
+      updated_at: at,
+      duration_s: 600
+    }
+  end
+
   describe "Trends, with GitHub's list" do
     test "a job without the label counts as yours when GitHub listed its runner, as on the Git tab" do
       start_supervised!({Store, path: ":memory:"})
@@ -295,6 +314,9 @@ defmodule Wallboard.RunnersTest do
       done = DateTime.to_unix(now) - 3600
 
       # As a workflow with `runs-on: acme-mac` asks: no self-hosted label.
+      # The run is saved too: CI minutes count by the run's attempt.
+      :ok = Store.put_runs([saved_run(done)])
+
       :ok =
         Store.put_jobs("acme/shop", 1, [
           %{
@@ -338,6 +360,8 @@ defmodule Wallboard.RunnersTest do
           fields
         )
       end
+
+      :ok = Store.put_runs([saved_run(done)])
 
       :ok =
         Store.put_jobs("acme/shop", 1, [

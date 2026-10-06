@@ -115,7 +115,7 @@ defmodule Wallboard.StreamTest do
 
   # Gives the collector what pairing would: its certificate and the hub's
   # address, in its own folder.
-  defp pair(c, machine \\ "papa") do
+  defp pair(c, machine \\ "papa", hub \\ %{}) do
     {:ok, files} = Authority.issue(c.link, machine)
     into = c.collector.collector.dir
     File.mkdir_p!(into)
@@ -125,7 +125,7 @@ defmodule Wallboard.StreamTest do
 
     File.write!(
       Path.join(into, "hub.json"),
-      Jason.encode!(%{host: "127.0.0.1", link_port: c.port, machine: machine})
+      Jason.encode!(Map.merge(%{host: "127.0.0.1", link_port: c.port, machine: machine}, hub))
     )
   end
 
@@ -937,6 +937,37 @@ defmodule Wallboard.StreamTest do
     dir = c.collector.collector.dir
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
     assert Process.alive?(w.sender)
+
+    # Longer than its longest wait between tries: it has stopped for good.
+    client = :sys.get_state(w.sender).client
+    Process.sleep(500)
+    assert %{phase: :removed} = Wallboard.Link.Client.status(client)
+    assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
+  end
+
+  test "a collector removed while it was off is told so once it is back, and stops trying",
+       c do
+    start_hub(c)
+    # The board, with its pairing door, on a port of its own.
+    once({Wallboard.Pairing.Door, dir: c.link, link_port: c.port})
+
+    web =
+      once({Bandit, plug: WallboardWeb.Router, ip: :loopback, port: 0, startup_log: false},
+        id: :web
+      )
+
+    {:ok, {_, board}} = ThousandIsland.listener_info(web)
+    pair(c, "papa", %{port: board})
+    w = start_collector(c)
+    dir = c.collector.collector.dir
+    wait_until(fn -> Map.has_key?(Hub.connected(), "papa") end)
+
+    # The machine goes off, and is removed on the hub meanwhile.
+    kill_collector(w)
+    {:ok, [_]} = Authority.revoke(c.link, "papa")
+
+    w = start_collector(c)
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
 
     # Longer than its longest wait between tries: it has stopped for good.
     client = :sys.get_state(w.sender).client

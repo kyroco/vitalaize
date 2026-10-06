@@ -21,6 +21,7 @@ session and request ids are all replaced, the same way in every file.
 | github/deploy_*.json | `gh api repos/acme/shop/actions/workflows/<file>/runs?per_page=10` |
 | github/jobs_completed.json | `gh api repos/acme/shop/actions/runs/36487639186/jobs` |
 | github/graphql.json | `gh api graphql` for the merge queue and open pull requests |
+| github/pulls_closed.json | `gh api "repos/acme/shop/pulls?state=closed&sort=updated&direction=desc&per_page=6"`, captured 2026-10-05, trimmed to the fields the board reads; titles, branches and the author are made up |
 | aws/db_stopped.json | `aws rds describe-db-instances --db-instance-identifier shop-dev-db --profile dev-readonly`, with dev asleep, trimmed to the name and status |
 | aws/list_services.json | `aws ecs list-services --cluster shop-dev --profile dev-readonly` |
 | aws/services_asleep.json | `aws ecs describe-services` for those services, with dev asleep, trimmed to name, status and task counts |

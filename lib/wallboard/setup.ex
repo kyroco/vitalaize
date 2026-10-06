@@ -67,7 +67,8 @@ defmodule Wallboard.Setup do
     before = Settings.load!()
 
     with :ok <- role_is_ours(values),
-         {:ok, saved} <- Settings.change(values) do
+         {:ok, saved} <- Settings.change(values),
+         {:ok, saved} <- Settings.keep_keys(saved) do
       {:ok, saved!(before, saved, opts)}
     end
   end
@@ -239,10 +240,31 @@ defmodule Wallboard.Setup do
   settings: the old upload hooks, and the certificate and hub address
   pairing saved. Returns what it did as sentences. The service is the
   caller's to stop first (the VitalAIze app does, and `vitalaize remove`).
+
+  With `keys: true`, the keys typed in Settings go too
+  (`Wallboard.KeyStore`): the app asks for that when the settings are
+  being deleted, since on a Mac the keys are not in the settings folder.
   """
   def remove(opts \\ []) do
     settings = settings_or_defaults()
-    retire_old_hooks(settings, opts) ++ forget_hub(settings)
+
+    retire_old_hooks(settings, opts) ++
+      forget_hub(settings) ++ if(opts[:keys], do: forget_keys(), else: [])
+  end
+
+  defp forget_keys do
+    place = Wallboard.KeyStore.place()
+
+    for {name, label} <- Settings.kept_keys(), Wallboard.KeyStore.fetch(name) != :none do
+      case Wallboard.KeyStore.delete(name) do
+        :ok ->
+          "Took the #{label} out of #{place}."
+
+        {:error, why} ->
+          "Could not take the #{label} out of #{place} (#{why}). " <>
+            "Delete the VitalAIze item there by hand."
+      end
+    end
   end
 
   # A settings file that does not load must not keep VitalAIze on the
@@ -519,7 +541,9 @@ defmodule Wallboard.Setup do
     # In a terminal a list is typed on one line, with commas.
     if help, do: say(io, "  (#{String.replace(help, "One per line. ", "")})")
 
-    case gets(io, "#{label}#{hint(type)} [#{display(type, current)}]: ") do
+    prompt = "#{label}#{hint(type)} [#{display(type, current)}]: "
+
+    case if(type == :key, do: gets_hidden(io, prompt), else: gets(io, prompt)) do
       nil ->
         values
 
@@ -547,7 +571,7 @@ defmodule Wallboard.Setup do
 
   defp display(:folders, ""), do: "found by itself"
   defp display(_type, ""), do: "none"
-  defp display(:secret, _), do: "set"
+  defp display(type, _) when type in [:secret, :key], do: "set"
   defp display(:boolean, "true"), do: "yes"
   defp display(:boolean, _), do: "no"
 
@@ -702,6 +726,48 @@ defmodule Wallboard.Setup do
     end
   end
 
+  # The same, with what is typed not shown where the terminal allows it:
+  # for a key, so it is not left on the screen. Only the terminal can stop
+  # showing it: asking Erlang for no echo is answered :ok and changes
+  # nothing, and Erlang's raw mode hides it but cannot be left, so every
+  # later answer would be typed blind and a Backspace kept as a character.
+  # So echo is turned off on the terminal itself for this one line, the
+  # way a password prompt does. A program with no terminal (a service, a
+  # job with no login) has none to change, and reads the line as it is.
+  # Public only for its test, which types into a real terminal.
+  @doc false
+  def gets_hidden(:stdio = io, prompt) do
+    hidden? = stty("-echo")
+
+    try do
+      gets(io, prompt)
+    after
+      if hidden? do
+        stty("echo")
+        IO.puts(io, "")
+      end
+    end
+  end
+
+  def gets_hidden(io, prompt), do: gets(io, prompt)
+
+  # Changes this program's terminal. The programs Erlang starts have no
+  # terminal of their own, so stty is told which one by its device. False
+  # when there is none, or it could not be changed.
+  defp stty(mode) do
+    flag = if match?({:unix, :darwin}, :os.type()), do: "-f", else: "-F"
+
+    with {name, 0} <- System.cmd("ps", ["-o", "tty=", "-p", System.pid()], stderr_to_stdout: true),
+         tty when tty not in ["", "?", "??"] <- String.trim(name),
+         {_, 0} <- System.cmd("stty", [flag, "/dev/" <> tty, mode], stderr_to_stdout: true) do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
   # ---------------------------------------------------------------------------
   # For the VitalAIze app
 
@@ -727,7 +793,9 @@ defmodule Wallboard.Setup do
     * `["retire"]`: takes out the old upload hooks (`retire_old_hooks/2`)
       and answers `lines`, what it did.
     * `["remove"]`: `remove/1`, and answers `lines`. It works beside a
-      settings file that does not load.
+      settings file that does not load. `["remove", "keys"]` takes the
+      keys typed in Settings out of the key store too, for a Remove that
+      deletes the settings.
   """
   def json(args, opts \\ [])
 
@@ -751,6 +819,8 @@ defmodule Wallboard.Setup do
                 {kind, options} =
                   case type do
                     {:choice, options} -> {"choice", options}
+                    # Drawn like any secret: dots when set, type to replace.
+                    :key -> {"secret", []}
                     other -> {Atom.to_string(other), []}
                   end
 
@@ -851,8 +921,13 @@ defmodule Wallboard.Setup do
 
   def json(["remove"], opts), do: emit(opts, %{ok: true, lines: remove(opts)})
 
+  def json(["remove", "keys"], opts),
+    do: emit(opts, %{ok: true, lines: remove(Keyword.put(opts, :keys, true))})
+
   def json(_other, _opts),
-    do: {:error, "Usage: --json show | save | forget | pair [address] | hubs | retire | remove"}
+    do:
+      {:error,
+       "Usage: --json show | save | forget | pair [address] | hubs | retire | remove [keys]"}
 
   defp quiet_address("", opts) do
     case opts[:discover].() do

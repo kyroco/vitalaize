@@ -8,6 +8,7 @@ defmodule Wallboard.Link.Client do
        tls: %{cert_pem: ..., key_pem: ..., ca_pem: ...},
        hello: Wallboard.Collector.Filter.hello(...),
        buffer: "/path/to/link.buffer",
+       door: %{host: "192.168.1.20", port: 4747},
        listener: pid}
 
   `push/2` takes an event from `Wallboard.Collector.Filter` and returns
@@ -42,6 +43,19 @@ defmodule Wallboard.Link.Client do
     * `{:down, wait_ms}`: the stream is gone; the next try is in `wait_ms`
     * `:removed`: the hub revoked this machine; the client has stopped
 
+  ## Removed while it was away
+
+  A machine the hub removed while it was off, or while it was connecting,
+  is refused in the TLS handshake, which says only that it failed. So
+  when three tries in a row end before the hub has said anything, and
+  every third such try after that, the client asks the hub's pairing door
+  (`door`, the board's address) whether its certificate still works
+  (`Wallboard.Pairing.check/2`). It asks in a process of its own, so a
+  slow door holds nothing up. On an answer of "removed" that the hub
+  signed, it stops as if the hub had said `Disconnected`. Any other
+  outcome changes nothing, and it keeps trying. Without a `door` it never
+  asks.
+
   ## Pace
 
   The client sends at most 50 events every 100 ms, and never has more than
@@ -57,6 +71,7 @@ defmodule Wallboard.Link.Client do
   alias GRPC.Client.Adapters.Mint, as: Adapter
   alias Wallboard.Collector.Proto
   alias Wallboard.Link.{Authority, Backoff, Buffer}
+  alias Wallboard.Pairing
 
   @defaults %{
     tick_ms: 100,
@@ -71,6 +86,10 @@ defmodule Wallboard.Link.Client do
     shed_restart_ms: 30_000,
     connect_ms: 10_000
   }
+
+  # Tries in a row that fail before the hub says anything, before the door
+  # is asked whether this machine was removed (see the module doc).
+  @ask_every 3
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -123,7 +142,8 @@ defmodule Wallboard.Link.Client do
 
   @impl true
   def init(opts) do
-    tls = Authority.collector_tls(Keyword.fetch!(opts, :tls))
+    pems = Keyword.fetch!(opts, :tls)
+    tls = Authority.collector_tls(pems)
 
     # The gRPC library logs an error and a "retrying" warning of its own for
     # every try that fails, though it is this module that retries. One calm
@@ -135,6 +155,9 @@ defmodule Wallboard.Link.Client do
       host: Keyword.fetch!(opts, :host),
       port: Keyword.fetch!(opts, :port),
       tls: tls,
+      # The PEM texts too, and the board's address, to ask the door with.
+      pems: pems,
+      door: opts[:door],
       hello: Keyword.fetch!(opts, :hello),
       listener: opts[:listener],
       buffer: Buffer.open(Keyword.fetch!(opts, :buffer), Keyword.take(opts, [:max_bytes])),
@@ -155,7 +178,13 @@ defmodule Wallboard.Link.Client do
       # The machine's runners as last given, and as last sent on this
       # stream (nil: not yet).
       runners: nil,
-      runners_sent: nil
+      runners_sent: nil,
+      # Whether the hub has said anything on this try, and how many tries
+      # in a row it said nothing.
+      answered: false,
+      failed: 0,
+      # The process asking the door, while it asks.
+      asking: nil
     }
 
     send(self(), :connect)
@@ -206,7 +235,12 @@ defmodule Wallboard.Link.Client do
     {pid, mon} = spawn_monitor(fn -> session(parent, ref, target) end)
 
     {:noreply,
-     %{s | phase: :connecting, conn: %{ref: ref, pid: pid, mon: mon, stream: nil, channel: nil}}}
+     %{
+       s
+       | phase: :connecting,
+         conn: %{ref: ref, pid: pid, mon: mon, stream: nil, channel: nil},
+         answered: false
+     }}
   end
 
   def handle_info({:link_up, ref, channel, stream}, %{conn: %{ref: ref}} = s) do
@@ -231,7 +265,7 @@ defmodule Wallboard.Link.Client do
   end
 
   def handle_info({:link_message, ref, %Proto.FromHub{} = message}, %{conn: %{ref: ref}} = s) do
-    s = %{s | heard: now()}
+    s = %{s | heard: now(), answered: true, failed: 0}
     {:noreply, hub(message.body, ack(s, message))}
   end
 
@@ -257,6 +291,23 @@ defmodule Wallboard.Link.Client do
 
   def handle_info(:pump, s), do: {:noreply, pump(%{s | pump: nil})}
 
+  def handle_info({:checked, ref, said}, %{asking: %{ref: ref, mon: mon}} = s) do
+    Process.demonitor(mon, [:flush])
+    s = %{s | asking: nil}
+
+    case said do
+      {:ok, :removed} when s.phase != :removed ->
+        {:noreply, removed(s, "the hub says it removed this machine while it was away.")}
+
+      _ ->
+        {:noreply, s}
+    end
+  end
+
+  # The asking process died without an answer: the next round asks again.
+  def handle_info({:DOWN, mon, :process, _, _}, %{asking: %{mon: mon}} = s),
+    do: {:noreply, %{s | asking: nil}}
+
   # The buffer shed a while ago and has not emptied since. Waiting longer
   # only keeps the files it refused waiting, so get a Resume now.
   def handle_info(:shed_restart, %{shed: true, phase: phase} = s)
@@ -269,6 +320,7 @@ defmodule Wallboard.Link.Client do
   @impl true
   def terminate(_reason, s) do
     hang_up(s)
+    if s.asking, do: Process.exit(s.asking.pid, :kill)
     Buffer.close(s.buffer)
   end
 
@@ -310,14 +362,16 @@ defmodule Wallboard.Link.Client do
     %{s | back_soon: true}
   end
 
-  defp hub({:disconnected, _}, s) do
-    Logger.warning("Link: the hub removed this machine. It will not connect again.")
+  defp hub({:disconnected, _}, s), do: removed(s, "the hub removed this machine.")
+
+  defp hub(_, s), do: s
+
+  defp removed(s, why) do
+    Logger.warning("Link: #{why} It will not connect again.")
     hang_up(s)
     notify(s, :removed)
     %{s | phase: :removed, conn: nil}
   end
-
-  defp hub(_, s), do: s
 
   # The reader has gone back: what waits may be sent.
   defp release(%{phase: :holding} = s), do: pump(%{s | phase: :live})
@@ -473,7 +527,9 @@ defmodule Wallboard.Link.Client do
     if s.pump, do: Process.cancel_timer(s.pump)
     Process.send_after(self(), :connect, wait)
 
-    %{
+    failed = if s.answered, do: 0, else: s.failed + 1
+
+    ask_door(%{
       s
       | phase: :waiting,
         conn: nil,
@@ -481,9 +537,23 @@ defmodule Wallboard.Link.Client do
         back_soon: false,
         pump: nil,
         in_flight: 0,
-        runners_sent: nil
-    }
+        runners_sent: nil,
+        failed: failed
+    })
   end
+
+  # Tries keep failing before the hub says a word: perhaps it removed this
+  # machine while it was away, which the handshake does not say.
+  defp ask_door(%{door: %{} = door, asking: nil, failed: failed} = s)
+       when failed > 0 and rem(failed, @ask_every) == 0 do
+    ref = make_ref()
+    parent = self()
+    pems = s.pems
+    {pid, mon} = spawn_monitor(fn -> send(parent, {:checked, ref, Pairing.check(door, pems)}) end)
+    %{s | asking: %{ref: ref, pid: pid, mon: mon}}
+  end
+
+  defp ask_door(s), do: s
 
   defp hang_up(%{conn: nil}), do: :ok
 

@@ -121,8 +121,9 @@ Pictures: [as found](mac-app-checks/pictures/fresh-hub/04-features.jpg),
 | Show Korium numbers | Turned on | Kept |
 | Show and save Codex sessions | Turned on | Kept |
 | Dev: awake or asleep; Prod: same build as dev? | Set, not opened | On the review |
-| Show the New Relic page | Turned on, then off before the install | On: Account ID and the 1Password reference appear |
-| Account ID, 1Password reference for the API key | Typed | Kept |
+| Show the New Relic page | Turned on, and left on for the install | On: Account ID, New Relic API key and Or where it is in 1Password appear. With no checks in the settings, the board never calls New Relic |
+| Account ID, Or where it is in 1Password | Typed | Kept |
+| New Relic API key | Typed | Shows dots as it is typed. After the install it is in the run's throwaway keychain, the board's log says it read the key from there, and no file, list or log of the run holds it. Reconfigure with the field left empty keeps it |
 | Phone number | Typed, then emptied before the install | On the review as "to +15550100 by SMS"; empty, the review says texts are off |
 | Send as | Set, not opened | On the review |
 | Back, Continue | Clicked | Keeps everything typed |
@@ -246,7 +247,8 @@ Pictures: [top](mac-app-checks/pictures/fresh-hub/10-settings.jpg),
 | Phone number (Messages) | Typed and emptied, not saved | See the last section |
 | Send as, Region | Set, not opened | In use |
 | Slack webhook, ntfy topic, ntfy server, Pushover user key, Pushover app token | Typed, saved | In use |
-| Account number, Where the API key is in 1Password | Typed, saved | In use |
+| Account number, Or where it is in 1Password | Typed, saved | In use, with no restart |
+| New Relic API key | Typed, saved | Kept in the run's throwaway keychain, never the login keychain of whoever runs it. The screen then shows dots; the key is in no file of the run's home, picture or list of a screen, and is still kept after Remove and a new setup |
 | Port they stream to | Typed, saved | In use |
 | Claude folders, Codex folders, Repositories | Typed, saved | In use |
 | Long-running after, Keep an idle session on Live for, Days to save on first start, Save a session after it is quiet for | Typed, saved | In use |
@@ -274,7 +276,7 @@ Pictures: [the sheet](mac-app-checks/pictures/fresh-hub/13-remove-sheet.jpg),
 
 | Control | Script | What happened |
 |---|---|---|
-| Also delete the database and settings | Turned on | The data folder is gone after Remove; left off, the database and settings stay |
+| Also delete the database and settings | Turned on | The data folder is gone after Remove, and the New Relic key typed in Settings is out of the keychain; left off, the database, settings and key stay |
 | Cancel | Clicked | The sheet goes, the board still runs |
 | Remove | Pressed, not clicked | The board stops, the login item is gone, and the screen says what was done and whether the data was kept |
 | Set up again | Clicked | The setup from step 1, filled in from the settings that were kept. Run through, the board comes back with the kept database and settings ([picture](mac-app-checks/pictures/fresh-hub/14-set-up-again.jpg)) |
@@ -373,6 +375,8 @@ can do. Do these on a Mac where VitalAIze is set up, in this order.
    answer.
 11. **Things that reach outside this Mac**, which the run leaves off on purpose:
    a phone number (a text is sent when a session needs you), the New Relic page
-   (the key is read from 1Password when the board starts), the board password
+   with a real key typed in Settings (it should be in Keychain Access under
+   VitalAIze, the page should fill within a minute with no restart, and it
+   should still fill after a restart), the board password
    from another device (it should ask for `?token=` once), and a board started
    by hand that is really running when "Stop that board" is on.

@@ -141,7 +141,8 @@ button { font: inherit; }
 .badge-working { background: color-mix(in srgb, var(--ok) 16%, transparent); color: color-mix(in srgb, var(--ok) 70%, var(--text)); }
 .badge-idle { background: var(--border); color: var(--text-body); }
 
-.run-card { background: var(--surface); border: 1px solid var(--info-light); border-radius: var(--radius); padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; flex: none; }
+.run-card { background: var(--surface); border: 1px solid var(--info-light); border-radius: var(--radius); padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; flex: none; font: inherit; color: inherit; text-align: left; width: 100%; cursor: pointer; }
+.run-card .bar, .run-card .bar-fill, .run-card .rc-step { display: block; }
 .run-card .spin { color: var(--info); flex: none; align-self: center; animation: spin 1.6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .rc-name { font-size: 17px; font-weight: 700; color: var(--text); white-space: nowrap; }
@@ -155,7 +156,7 @@ button { font: inherit; }
 .list.recent { flex: 0 1 auto; min-height: 0; overflow: hidden; }
 .recent-row + .recent-row { border-top: 1px solid var(--track); }
 .gate-passed { color: var(--ok); } .gate-failed { color: var(--accent); } .gate-running { color: var(--warn-deep); } .gate-none { color: var(--text-muted); }
-.recent-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 0; }
+.recent-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 0; font: inherit; color: inherit; text-align: left; width: 100%; background: none; border: 0; cursor: pointer; }
 .recent-row .icon { font-size: 14px; font-weight: 700; text-align: center; }
 .rr-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rr-name { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -293,6 +294,23 @@ button { font: inherit; }
 .detail-scrim { position: absolute; inset: 0; z-index: 10; background: color-mix(in srgb, var(--text) 35%, transparent); display: flex; align-items: center; justify-content: center; padding: 40px; }
 .detail { background: var(--page); border-radius: var(--radius); width: 100%; height: 100%; padding: 22px 28px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .detail-small { width: 520px; height: auto; }
+.badge-run-ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: color-mix(in srgb, var(--ok) 70%, var(--text)); }
+.badge-run-bad { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.badge-run-info { background: color-mix(in srgb, var(--info) 14%, transparent); color: var(--info); }
+.badge-run-muted { background: var(--border); color: var(--text-body); }
+.run-commit code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.info-ink { color: var(--info); }
+.job-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.job-line { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 90px; align-items: center; gap: 12px; min-height: 44px; padding: 8px 14px; font-size: 14px; color: var(--text-body); }
+.job-line + .job-line { border-top: 1px solid var(--track); }
+.job-icon { font-weight: 700; text-align: center; display: flex; justify-content: center; }
+.job-icon .spin { animation: spin 1.6s linear infinite; }
+.job-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.job-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-failed { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-step { font-size: 12px; color: var(--info); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-runner { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.job-time { font-size: 13px; text-align: right; white-space: nowrap; }
 .detail-title { margin: 0; font-size: 24px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .close { border: 0; background: none; font-size: 32px; line-height: 1; padding: 4px 12px; margin: -8px -12px -8px 0; color: var(--text-muted); cursor: pointer; }
 .detail-meta { display: flex; flex-wrap: wrap; align-items: center; column-gap: 14px; row-gap: 4px; font-size: 13px; color: var(--text-body); }
@@ -301,6 +319,7 @@ button { font: inherit; }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat-note { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-note-wrap { white-space: normal; }
 .detail-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .detail-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 /* A repository's details: every workflow's recent runs, two across. */
@@ -321,6 +340,9 @@ button { font: inherit; }
 .runner-online { color: var(--ok); }
 .runner-offline { color: var(--accent); }
 .runner-unknown { color: var(--text-muted); }
+.tap-row { cursor: pointer; }
+.tap-row td { height: 44px; }
+.row-link { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-note { margin: 0; font-size: 13px; color: var(--text-body); }
 .detail-prompt { margin: 0; font-size: 13px; color: var(--text-body); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
@@ -362,6 +384,8 @@ button { font: inherit; }
 .dot8.g-claude, .g-claude .sp { background: var(--series-claude); }
 .dot8.g-korium, .g-korium .sp { background: var(--series-korium); }
 .dot8.g-github, .g-github .sp { background: var(--series-github); }
+/* Merged pull requests are GitHub's numbers too. */
+.dot8.g-shipped, .g-shipped .sp { background: var(--series-github); }
 .dot8.g-codex, .g-codex .sp { background: var(--series-codex); }
 /* Claude and Codex side by side: two bars a day with a 2px gap, one scale.
    Every bar has its value on hover or tap, and the totals above name each

@@ -14,6 +14,9 @@ scenario_fresh_hub() {
   check "the wizard's repositories are in use" setting_is github.repos "kyroco/vitalaize
 acme/rockets"
   check "a workflow left at None is none, not a made-up name" setting_is github.dev_deploy ""
+  check "the New Relic key typed in the wizard is in the keychain" test "$(kept_key new_relic)" = NRAK-UITEST0WIZARD0KEY00000001
+  check "the board read it from there" wait_until 30 grep -q "New Relic key loaded into memory from the keychain" "$H/Library/Logs/VitalAIze/board.log"
+  check "and it is in no file, list or log of the run" nowhere_else NRAK-UITEST0WIZARD0KEY00000001
 
   drive hub-status
   check "a new port saved in Settings is where the board answers" answers "$PORT2"
@@ -25,11 +28,16 @@ acme/rockets"
   check "the name typed in Reconfigure is in use" setting_is brand.name "Acme Three"
   check "a setting the wizard does not ask about is still as saved" setting_is rotate_seconds "45"
   check "Reconfigure's Send as is in use" setting_is alerts.via "iMessage"
+  check "Reconfigure with the key field left empty keeps the key" test "$(kept_key new_relic)" = NRAK-UITEST0WIZARD0KEY00000001
 
   drive hub-settings-all
   check "the time zone saved in Settings is in use" setting_is timezone "America/Chicago"
   check "the ntfy server too" setting_is alerts.ntfy_server "http://localhost:9"
   check "the region too" setting_is new_relic.region "eu"
+  check "the New Relic key typed in Settings is in the keychain" test "$(kept_key new_relic)" = NRAK-UITEST0SETTINGS0KEY000001
+  check "and shows as set, not as itself" setting_is new_relic.api_key "••••••••"
+  check "and is in no file, picture or list of the run" nowhere_else NRAK-UITEST0SETTINGS0KEY000001
+  check "its 1Password address is saved beside it" setting_is new_relic.api_key_ref "op://Private/Acme/key"
   check "the hub takes collectors" setting_is link.enabled "true"
   check "on the port typed" setting_is link.port "4761"
   check "the repositories too" setting_is github.repos "acme/rockets"
@@ -53,9 +61,11 @@ acme/rockets"
   check "set up again, the board answers" answers "$PORT2"
   check "the name typed in the new setup is in use" setting_is brand.name "Acme Again"
   check "a setting saved before Remove is still in use" setting_is timezone "America/Chicago"
+  check "the New Relic key saved before Remove is still kept" test "$(kept_key new_relic)" = NRAK-UITEST0SETTINGS0KEY000001
   check "one the setup asks about and was left alone, too" setting_is github.branch "trunk"
   check "the history from before Remove is still in the database" test "$(sqlite3 "$DATA/wallboard.db" 'select x from uitest_marker')" = history
   drive hub-remove-all
   check "after Remove with delete the login item is gone" item_gone "$LABEL"
   check "after Remove with delete the data folder is gone" test ! -d "$DATA"
+  check "and the New Relic key is out of the keychain" test -z "$(kept_key new_relic)"
 }
