@@ -52,13 +52,16 @@ defmodule Wallboard.Archive.PullRequests do
     prs =
       Store.query(
         """
-        SELECT repo, number, title, url, branch, head_repo, base, default_branch, created_at,
-          merged_at
+        SELECT repo, number, title, url, branch, head_repo, base_repo, base, default_branch,
+          created_at, merged_at
         FROM gh_prs WHERE merged_at >= ?1 ORDER BY merged_at, repo, number
         """,
         [from]
       )
       |> Enum.filter(&MapSet.member?(tracked, String.downcase(&1.repo)))
+      # A tracked name retyped in other letter case saves its pull requests
+      # again under the new spelling: one pull request, counted once.
+      |> Enum.uniq_by(&{String.downcase(&1.repo), &1.number})
 
     link(prs, sessions(prs))
   end
@@ -77,13 +80,17 @@ defmodule Wallboard.Archive.PullRequests do
         Map.update(acc, {String.downcase(pr.repo), pr.base}, pr.merged_at, &max(&1, pr.merged_at))
       end)
 
+    # Not a fork's branch: the head and base repository agree, both from the
+    # same GitHub reply, so a repository renamed while settings keep its old
+    # name still counts. Rows saved before base_repo use the settings name.
     by_branch =
       prs
       |> Enum.filter(fn pr ->
         repo = String.downcase(pr.repo)
 
         is_binary(pr.branch) and is_binary(pr[:head_repo]) and
-          String.downcase(pr.head_repo) == repo and pr.branch != pr[:default_branch] and
+          String.downcase(pr.head_repo) == String.downcase(pr[:base_repo] || pr.repo) and
+          pr.branch != pr[:default_branch] and
           Map.get(merged_into, {repo, pr.branch}, 0) <= pr.merged_at
       end)
       |> Enum.group_by(&{String.downcase(&1.repo), &1.branch})
@@ -104,7 +111,7 @@ defmodule Wallboard.Archive.PullRequests do
       sum = fn list, f -> list |> Enum.map(fn {s, share} -> f.(s) * share end) |> Enum.sum() end
 
       pr
-      |> Map.drop([:base, :head_repo, :default_branch])
+      |> Map.drop([:base, :head_repo, :base_repo, :default_branch])
       |> Map.merge(%{
         sessions:
           Enum.map(linked, fn {s, share} ->
