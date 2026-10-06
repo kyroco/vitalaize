@@ -490,10 +490,11 @@ defmodule Wallboard.Link.Authority do
   Only a machine certificate this authority signed is answered for, and
   only when `proof` is a signature of `text` made with that certificate's
   own key, so nobody without the key learns anything: anything else is
-  `{:error, :bad_proof}`. `:removed` is a revoked certificate, or one the
-  list of machines does not hold; the handshake refuses both for good. A
-  list that cannot be read just now is `{:error, :unreadable}`, which says
-  nothing either way.
+  `{:error, :bad_proof}`. `:removed` is only a certificate the owner
+  revoked. One the list of machines does not hold is `{:error, :unknown}`:
+  an older copy of the list may have been put back, and the certificate
+  works again once the right one is. A list that cannot be read just now
+  is `{:error, :unreadable}`. Neither says anything either way.
   """
   def standing(dir, cert_der, text, proof)
       when is_binary(cert_der) and is_binary(text) and is_binary(proof) do
@@ -505,15 +506,12 @@ defmodule Wallboard.Link.Authority do
          true <- :public_key.pkix_is_issuer(cert_der, ca_der),
          true <- :public_key.pkix_verify(cert_der, cert_key(ca_der)),
          true <- :public_key.verify(text, :sha256, proof, cert_key(cert_der)) do
-      case read_index(dir) do
-        {:ok, index} ->
-          case index[serial] do
-            %{"machine" => ^name, "revoked_at" => nil} -> {:ok, serial, :working}
-            _ -> {:ok, serial, :removed}
-          end
-
-        :unreadable ->
-          {:error, :unreadable}
+      # The handshake's own lookup, so the door and the link never disagree.
+      case machine(dir, cert_der) do
+        {:ok, ^name} -> {:ok, serial, :working}
+        {:error, :revoked} -> {:ok, serial, :removed}
+        {:error, :unreadable} -> {:error, :unreadable}
+        _ -> {:error, :unknown}
       end
     else
       _ -> {:error, :bad_proof}

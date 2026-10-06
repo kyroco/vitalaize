@@ -74,7 +74,10 @@ defmodule Wallboard.Pairing do
   not hold, and a challenge lasts a minute. The answer carries the serial
   number and the hub's signature, and the collector believes "removed"
   only with a signature from a hub certificate of its own hub's authority.
-  The question and the answer cross the network as plain HTTP, like the
+  The door says "removed" only for a machine the owner revoked. One the
+  list of machines does not hold, as after an older copy of the list is
+  put back, gets no answer either way and keeps trying, and works again
+  once the right list is back. The question and the answer cross the network as plain HTTP, like the
   rest of the door: anyone on the network who watches sees the machine's
   certificate (its name) and the answer, but cannot fake one.
 
