@@ -18,7 +18,8 @@ defmodule Wallboard.Alerts do
   With none of them set up, alerts are off.
 
   A budget limit that is passed (see `Wallboard.Sources.Budget`) sends its
-  alert the same way, on the channels its settings pick.
+  alert by the same channels, on the ones its settings pick, but waits to
+  learn which of them took it (`send_text_and_wait/4`).
   """
 
   require Logger

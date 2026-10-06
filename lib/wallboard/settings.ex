@@ -117,9 +117,10 @@ defmodule Wallboard.Settings do
       pushover_token: nil
     },
     # Limits on use, each over a "day" or a "week" (see
-    # Wallboard.Sources.Budget). nil turns a limit off. Passing one shows on
-    # the board and sends one alert per limit per period, on each channel
-    # switched on here that is also set up under alerts.
+    # Wallboard.Sources.Budget). nil turns a limit off, and every limit needs
+    # the archive. Passing one shows on the board and sends one alert per
+    # limit per period, on each channel switched on here that is also set up
+    # under alerts, tried again each check until a channel takes it.
     budget: %{
       claude_dollars: nil,
       claude_dollars_per: "day",
