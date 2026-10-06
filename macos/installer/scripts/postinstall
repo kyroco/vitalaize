@@ -1,8 +1,32 @@
 #!/bin/sh
-# Opens VitalAIze for the person at the Mac once it is installed, so setup
-# starts right away. The installer runs this as root, so the app is opened
-# as the signed-in person. Installs from the command line (`installer
-# -pkg`) are left alone.
+# Runs as root once the new app is in place.
+#
+# First it restarts the board or collector of each person on this Mac whose
+# VitalAIze is running from the app just installed. That one still runs the
+# old version, whose files the installer has just replaced, so its pages
+# would come without their style sheet, scripts and icons. A restart is a
+# plain stop request: launchd starts it again, now from the new files. One
+# that is not running is left stopped, and one that runs from another copy
+# of the app is left alone. This runs on installs from the command line
+# too, where nobody may be at the screen.
+#
+# Then it opens VitalAIze for the person at the Mac, so setup starts right
+# away, as that person. Installs from the command line (`installer -pkg`)
+# do not open it.
+
+# The board and the collector are one login item, under the name the app
+# gives it (macos/Wallboard/Setup.swift).
+label=ai.kyroco.wallboard
+# The installer passes the folder it installed into, /Applications.
+app="${2:-/Applications}"
+app="${app%/}/VitalAIze.app"
+
+for uid in $(/usr/bin/dscl . -list /Users UniqueID | /usr/bin/awk '$2 >= 500 { print $2 }'); do
+  info=$(/bin/launchctl print "gui/$uid/$label" 2>/dev/null) || continue
+  printf '%s\n' "$info" | /usr/bin/grep -q '^[[:space:]]*state = running$' || continue
+  printf '%s\n' "$info" | /usr/bin/grep -qF "program = $app/" || continue
+  /bin/launchctl kickstart -k "gui/$uid/$label" || true
+done
 
 [ -n "$COMMAND_LINE_INSTALL" ] && exit 0
 
@@ -12,5 +36,5 @@ if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "loginwindow" ]; then
 fi
 
 uid=$(/usr/bin/id -u "$user")
-/bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" /usr/bin/open -a "/Applications/VitalAIze.app" || true
+/bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" /usr/bin/open -a "$app" || true
 exit 0
