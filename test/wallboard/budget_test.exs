@@ -7,6 +7,21 @@ defmodule Wallboard.BudgetTest do
   alias Wallboard.Sources.Budget
   alias WallboardWeb.BoardLive
 
+  # Stands in for the :budget poller: answers the board's snapshot with
+  # the facts it was given.
+  defmodule FakePoller do
+    use GenServer
+
+    def start_link(facts), do: GenServer.start_link(__MODULE__, facts, name: :budget)
+
+    @impl true
+    def init(facts), do: {:ok, facts}
+
+    @impl true
+    def handle_call(:snapshot, _from, facts),
+      do: {:reply, %{facts: facts, meta: %{fetched_at: nil, error: nil, interval: 60_000}}, facts}
+  end
+
   setup do
     start_supervised!({Store, path: ":memory:"})
     :ok
@@ -169,6 +184,23 @@ defmodule Wallboard.BudgetTest do
 
       assert {:noreply, socket} = BoardLive.handle_info({:source, :budget, facts, %{}}, socket)
       assert BoardLive.budget_over(socket.assigns.budget) == facts.over
+    end
+
+    test "a board opened while a limit is passed shows the strip at once" do
+      item = %{key: :claude_dollars, label: "Claude spend", per: "day", limit: 150, total: 162.0}
+      start_supervised!({FakePoller, %{over: [item]}})
+
+      assert {:ok, socket} =
+               BoardLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}})
+
+      html =
+        socket.assigns
+        |> BoardLive.render()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "Over budget"
+      assert html =~ "Claude spend today $162 of $150"
     end
 
     test "the strip names each passed limit, and is not there with none" do
