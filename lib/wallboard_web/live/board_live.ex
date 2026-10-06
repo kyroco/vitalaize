@@ -583,7 +583,7 @@ defmodule WallboardWeb.BoardLive do
           mailbox={length(@mailbox)}
         />
         <.needs_banner needs={@needs} />
-        <.budget_banner over={budget_over(@budget)} />
+        <.budget_banner over={budget_over(@budget)} needs_archive={budget_needs_archive?(@budget)} />
         <.tiles
           repos={@git}
           meta={@github_meta}
@@ -841,12 +841,26 @@ defmodule WallboardWeb.BoardLive do
   def budget_over(%{over: over}), do: over
   def budget_over(_), do: []
 
-  attr :over, :list, required: true
+  @doc false
+  # True when a budget limit is set but the archive is off, so none is checked.
+  def budget_needs_archive?(%{needs_archive: true}), do: true
+  def budget_needs_archive?(_), do: false
 
-  # The budget limits passed in their day or week (see Wallboard.Sources.Budget).
+  attr :over, :list, required: true
+  attr :needs_archive, :boolean, default: false
+
+  # The budget limits passed in their day or week (see Wallboard.Sources.Budget),
+  # or, with the archive off, why none is checked.
   @doc false
   def budget_banner(assigns) do
     ~H"""
+    <section :if={@needs_archive} class="budget-banner" aria-label="Budget limits">
+      <span class="bb-kicker">Budget</span>
+      <span class="bb-items">
+        Budget limits are set, but the archive is off, so none is checked.
+        Set archive enabled to true in settings.exs.
+      </span>
+    </section>
     <section :if={@over != []} class="budget-banner" aria-label="Over budget">
       <span class="bb-kicker">Over budget</span>
       <span class="bb-items">

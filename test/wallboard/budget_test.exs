@@ -61,10 +61,25 @@ defmodule Wallboard.BudgetTest do
       )
   end
 
-  # Records each alert instead of sending it.
+  # Records each alert instead of sending it, and answers that every channel
+  # took it.
   defp recorder do
     test = self()
-    fn text, what, channels, _settings -> send(test, {:sent, text, what, channels}) end
+
+    fn text, what, channels, _settings ->
+      send(test, {:sent, text, what, channels})
+      channels
+    end
+  end
+
+  # Records each alert and answers that no channel took it.
+  defp failing do
+    test = self()
+
+    fn text, what, channels, _settings ->
+      send(test, {:sent, text, what, channels})
+      []
+    end
   end
 
   test "Claude spend today over its limit is shown, and under it is not" do
@@ -175,6 +190,45 @@ defmodule Wallboard.BudgetTest do
     assert_received {:sent, _, _, _}
   end
 
+  test "an alert no channel took is sent again at the next check, until one does" do
+    put("a", "claude", noon(today()), 162.0, 1)
+    s = settings(%{claude_dollars: 150}, %{ntfy_topic: "t"})
+
+    # Every channel failed: not marked, so the next check tries again.
+    assert [_] = Budget.check(s, noon(today()), failing())
+    assert_received {:sent, _, _, [:ntfy]}
+    assert [_] = Budget.check(s, noon(today()), failing())
+    assert_received {:sent, _, _, [:ntfy]}
+
+    # A channel works again: it goes, and then it is quiet.
+    assert [_] = Budget.check(s, noon(today()), recorder())
+    assert_received {:sent, "VitalAIze: Claude spend today passed" <> _, _, [:ntfy]}
+    assert [_] = Budget.check(s, noon(today()), recorder())
+    refute_received {:sent, _, _, _}
+  end
+
+  test "a limit passed with no channel set up alerts once a channel is set up" do
+    put("a", "claude", noon(today()), 162.0, 1)
+
+    # No channel: nothing can take it, so nothing is marked.
+    assert [_] = Budget.check(settings(%{claude_dollars: 150}), noon(today()), recorder())
+    assert_received {:sent, _, _, []}
+
+    s = settings(%{claude_dollars: 150}, %{ntfy_topic: "t"})
+    assert [_] = Budget.check(s, noon(today()), recorder())
+    assert_received {:sent, _, _, [:ntfy]}
+  end
+
+  test "the real send counts a refused channel as not taken" do
+    put("a", "claude", noon(today()), 162.0, 1)
+    # Nothing listens on port 1, so the ntfy post fails at once.
+    s = settings(%{claude_dollars: 150}, %{ntfy_topic: "t", ntfy_server: "http://127.0.0.1:1"})
+
+    assert [_] = Budget.check(s, noon(today()), &Wallboard.Alerts.send_text_and_wait/4)
+    assert [_] = Budget.check(s, noon(today()), recorder())
+    assert_received {:sent, _, _, [:ntfy]}
+  end
+
   test "budget alerts go only on the channels switched on for them" do
     alerts = %{slack_webhook: "https://hooks.slack.com/x", ntfy_topic: "t"}
 
@@ -223,6 +277,22 @@ defmodule Wallboard.BudgetTest do
       assert html =~ "Claude spend today $162.00 of $150"
     end
 
+    test "a board opened with a limit set and the archive off says why none is checked" do
+      start_supervised!({FakePoller, %{over: [], needs_archive: true}})
+
+      assert {:ok, socket} =
+               BoardLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}})
+
+      html =
+        socket.assigns
+        |> BoardLive.render()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "Budget limits are set, but the archive is off, so none is checked."
+      refute html =~ "Over budget"
+    end
+
     test "the strip names each passed limit, and is not there with none" do
       put("a", "claude", noon(today()), 162.0, 1)
       put("x", "codex", noon(today()), 0.0, 60_000)
@@ -245,6 +315,25 @@ defmodule Wallboard.BudgetTest do
     off = Settings.merge(settings(%{claude_dollars: 1}), %{archive: %{enabled: false}})
     assert Budget.check(off, noon(today()), recorder()) == []
     refute_received {:sent, _, _, _}
+  end
+
+  test "a limit set with the archive off is named on the board" do
+    off = fn budget -> Settings.merge(settings(budget), %{archive: %{enabled: false}}) end
+
+    assert {:ok, facts, nil} = Budget.poll(off.(%{codex_tokens: 5}), nil, nil, noon(today()))
+    assert facts == %{over: [], needs_archive: true}
+    assert BoardLive.budget_needs_archive?(facts)
+
+    # No limit, or the archive on: nothing to say.
+    refute Budget.needs_archive?(off.(%{}))
+    refute Budget.needs_archive?(settings(%{codex_tokens: 5}))
+    refute BoardLive.budget_needs_archive?(nil)
+
+    html = render_component(&BoardLive.budget_banner/1, over: [], needs_archive: true)
+    assert html =~ "Budget limits are set, but the archive is off, so none is checked."
+    refute html =~ "Over budget"
+
+    refute render_component(&BoardLive.budget_banner/1, over: []) =~ "archive is off"
   end
 
   describe "the settings page" do
