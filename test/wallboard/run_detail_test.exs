@@ -192,6 +192,7 @@ defmodule Wallboard.RunDetailTest do
     cond do
       done?.() -> :ok
       tries == 0 -> flunk("still waiting after five seconds")
+      # A pause between looks at a condition, not a wait for a timer.
       true -> Process.sleep(50) && wait_until(done?, tries - 1)
     end
   end
@@ -392,7 +393,12 @@ defmodule Wallboard.RunDetailTest do
 
     one |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
     two |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
-    Process.sleep(300)
+    # Both screens wait on the one read, which is under way.
+    wait_until(fn ->
+      %{waiting: waiting} = :sys.get_state(Wallboard.RunJobs)
+      length(asked(dir)) == 1 and Enum.map(Map.values(waiting), &length/1) == [2]
+    end)
+
     File.write!(Path.join(dir, "go"), "")
 
     assert render_async(one, 5_000) =~ "failed at: Run mix test"
@@ -729,7 +735,13 @@ defmodule Wallboard.RunDetailTest do
       view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
     end
 
-    Process.sleep(500)
+    # Four reads under way and two in line. None of the four can end
+    # before "go", so no fifth can start.
+    wait_until(fn ->
+      %{running: running, queue: queue} = :sys.get_state(Wallboard.RunJobs)
+      map_size(running) == 4 and :queue.len(queue) == 2 and length(asked(dir)) == 4
+    end)
+
     assert length(asked(dir)) == 4
 
     File.write!(Path.join(dir, "go"), "")
