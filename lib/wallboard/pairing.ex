@@ -15,7 +15,7 @@ defmodule Wallboard.Pairing do
     * this module: what both ends share (how the code is worked out) and
       the collector's side, `pair/1`
     * `Wallboard.Pairing.Door`: the hub's side, the list of requests
-    * `WallboardWeb.PairController`: the door itself, three small addresses
+    * `WallboardWeb.PairController`: the door itself, four small addresses
       on the board's own port
     * `Wallboard.Mailbox.NewMachine`: the mailbox item with Approve and Refuse
 
@@ -70,12 +70,13 @@ defmodule Wallboard.Pairing do
   machine only that the handshake failed. So a machine whose tries keep
   failing asks the door (`check/2`) whether its certificate still works.
   The door answers only a machine that signs its challenge with the
-  certificate's key, so nobody else learns which machines are approved,
-  and a challenge lasts a minute. The answer carries the serial number and
-  the hub's signature, and the collector believes "removed" only with a
-  signature from a hub certificate of its own hub's authority. Anyone on
-  the network sees the answer, as they see the rest of the door's plain
-  HTTP, but cannot fake one.
+  certificate's key, so nobody can ask about a machine whose key they do
+  not hold, and a challenge lasts a minute. The answer carries the serial
+  number and the hub's signature, and the collector believes "removed"
+  only with a signature from a hub certificate of its own hub's authority.
+  The question and the answer cross the network as plain HTTP, like the
+  rest of the door: anyone on the network who watches sees the machine's
+  certificate (its name) and the answer, but cannot fake one.
 
   ## Where "safe enough" ends
 
@@ -200,7 +201,9 @@ defmodule Wallboard.Pairing do
   end
 
   @doc """
-  What a paired collector holds in `dir`, ready for `Wallboard.Link.Client`:
+  What a paired collector holds in `dir`, ready for `Wallboard.Link.Client`
+  (all but the board's address it asks the door on, which
+  `Wallboard.Collector.Sender.paired/1` adds):
   `{:ok, %{tls: %{cert_pem, key_pem, ca_pem}, host, port, machine}}`, or
   `:error` when it has not paired (or the files cannot be read).
   """

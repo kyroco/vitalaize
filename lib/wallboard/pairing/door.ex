@@ -104,9 +104,11 @@ defmodule Wallboard.Pairing.Door do
   `{:ok, %{answer, signature, hub_pem}}`, where `answer` is `"approved"` or
   `"removed"` and `signature` is the hub's, over
   `Wallboard.Pairing.answer_text/3`. `{:error, :bad_request}` for a
-  challenge this door did not make or that ran out, a certificate that is
-  not one of this hub's machines, or a proof not made with its key: such
-  a caller learns nothing. `{:error, :busy}` when the list of machines
+  challenge this door did not make or that ran out, a certificate this
+  hub's authority did not make for a machine, or a proof not made with
+  its key: such a caller learns nothing. A machine certificate the list of
+  machines does not hold is answered "removed", since the handshake
+  refuses it for good. `{:error, :busy}` when the list of machines
   cannot be read just now, or the address asked too often.
   """
   def check(from, challenge, cert_pem, proof),
