@@ -20,8 +20,7 @@ defmodule Wallboard.RunJobs do
   alias Wallboard.Sources.GitHub
   alias Wallboard.Store
 
-  # How many runs' jobs are kept, and how many reads may go at once.
-  @keep 1_000
+  # How many reads may go at once.
   @at_once 4
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -38,6 +37,8 @@ defmodule Wallboard.RunJobs do
     {:ok,
      %{
        retry_ms: Keyword.get(opts, :retry_ms, 60_000),
+       # How many runs' jobs are kept; the oldest go first.
+       keep: Keyword.get(opts, :keep, 1_000),
        kept: %{},
        kept_order: :queue.new(),
        failed: %{},
@@ -127,7 +128,7 @@ defmodule Wallboard.RunJobs do
   defp keep(s, key, rows) do
     s = %{s | kept: Map.put(s.kept, key, rows), kept_order: :queue.in(key, s.kept_order)}
 
-    if map_size(s.kept) > @keep do
+    if map_size(s.kept) > s.keep do
       {{:value, old}, order} = :queue.out(s.kept_order)
       %{s | kept: Map.delete(s.kept, old), kept_order: order}
     else

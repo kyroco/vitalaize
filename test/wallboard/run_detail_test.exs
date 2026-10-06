@@ -22,7 +22,10 @@ defmodule Wallboard.RunDetailTest do
     File.write!(Path.join(dir, "gh"), """
     #!/bin/sh
     echo "$2" >> "$WALLBOARD_TEST_GH/asked"
-    while [ ! -f "$WALLBOARD_TEST_GH/go" ]; do sleep 0.05; done
+    while [ ! -f "$WALLBOARD_TEST_GH/go" ]; do
+      [ -d "$WALLBOARD_TEST_GH" ] || exit 1
+      sleep 0.05
+    done
     case "$2" in
       *"/jobs?"*) cat "$WALLBOARD_TEST_GH/jobs.json" ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -182,6 +185,15 @@ defmodule Wallboard.RunDetailTest do
       ),
       job(3, "Deploy", "completed", "skipped")
     ]
+  end
+
+  # Waits up to five seconds for `done?` to come true.
+  defp wait_until(done?, tries \\ 100) do
+    cond do
+      done?.() -> :ok
+      tries == 0 -> flunk("still waiting after five seconds")
+      true -> Process.sleep(50) && wait_until(done?, tries - 1)
+    end
   end
 
   defp asked(dir) do
@@ -606,6 +618,93 @@ defmodule Wallboard.RunDetailTest do
     refute html =~ "waiting for a runner"
     assert html =~ "Jobs · 2"
     assert length(asked(dir)) == 2
+  end
+
+  test "a later attempt's finished jobs are never shown as an earlier attempt's", %{dir: dir} do
+    use_settings(true)
+    start_supervised!({Store, path: ":memory:"})
+
+    # The board still shows attempt 1 as failed; attempt 2 has already passed.
+    File.write!(
+      Path.join(dir, "jobs.json"),
+      jobs_json([
+        job(1, "Build", "completed", "success", started: 890, completed: 760),
+        job(2, "Tests", "completed", "success", attempt: 2, started: 300, completed: 100)
+      ])
+    )
+
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "failure")]))
+    view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    html = render_async(view, 5_000)
+
+    refute html =~ "Jobs · 2"
+    assert html =~ "running it again"
+    assert Store.run_jobs(@repo, 101, 1) == nil
+  end
+
+  test "at most four reads go at once, the rest wait their turn", %{dir: dir} do
+    use_settings(false)
+    ids = Enum.to_list(101..106)
+    view = open_board()
+    send_facts(view, facts(Enum.map(ids, &run_json(&1, "completed", "success"))))
+
+    for id <- ids do
+      view |> element(~s|button.recent-row[phx-value-id="#{id}"]|) |> render_click()
+      view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
+    end
+
+    Process.sleep(500)
+    assert length(asked(dir)) == 4
+
+    File.write!(Path.join(dir, "go"), "")
+    wait_until(fn -> length(asked(dir)) == 6 end)
+    assert asked(dir) |> Enum.uniq() |> length() == 6
+  end
+
+  test "only the newest runs' jobs are kept once the limit is reached", %{dir: dir} do
+    stop_supervised!(Wallboard.RunJobs)
+    start_supervised!({Wallboard.RunJobs, keep: 1})
+    use_settings(false)
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+
+    send_facts(
+      view,
+      facts([run_json(101, "completed", "failure"), run_json(102, "completed", "success")])
+    )
+
+    for id <- [101, 102, 102, 101] do
+      view |> element(~s|button.recent-row[phx-value-id="#{id}"]|) |> render_click()
+      render_async(view, 5_000)
+      view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
+    end
+
+    # 102 was still kept the second time; 101 had made way for it.
+    assert asked(dir) |> Enum.map(&(&1 =~ "/101/")) == [true, false, true]
+  end
+
+  test "failures are forgotten once their wait is over", %{dir: dir} do
+    stop_supervised!(Wallboard.RunJobs)
+    start_supervised!({Wallboard.RunJobs, retry_ms: 0})
+    use_settings(false)
+    File.write!(Path.join(dir, "jobs.json"), "not json")
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+
+    send_facts(
+      view,
+      facts([run_json(101, "completed", "failure"), run_json(102, "completed", "success")])
+    )
+
+    for id <- [101, 102] do
+      view |> element(~s|button.recent-row[phx-value-id="#{id}"]|) |> render_click()
+      assert render_async(view, 5_000) =~ "Could not read the jobs"
+      view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
+    end
+
+    assert map_size(:sys.get_state(Wallboard.RunJobs).failed) == 1
   end
 
   test "a run made again while its panel is open reads the new attempt's jobs", %{dir: dir} do
