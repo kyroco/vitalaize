@@ -1155,13 +1155,15 @@ enum Setup {
         try? fm.removeItem(at: agentPlist)
         // The old upload hooks and this Mac's certificate for its hub, by
         // the board's own code, while the data folder is still there. With
-        // the settings deleted, the keys typed in Settings go too: they are
-        // in the keychain, not in the data folder.
+        // the settings deleted, the keys typed in the app go too: they are
+        // in the keychain, not in the data folder. Its lines say what
+        // became of each key.
         if let data = engine(deleteData ? ["remove", "keys"] : ["remove"]),
            let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok {
             answer.lines?.forEach(say)
         } else {
             say("Could not take out this Mac's certificate or look for old upload hooks. The log is at \(logFile.path).")
+            say("A New Relic API key kept in the keychain may still be there, as the item \"VitalAIze new_relic\". Look in Keychain Access and delete it there to take it out too.")
         }
         if deleteData, let folder = dataFolder {
             say("Deleting \(folder)")

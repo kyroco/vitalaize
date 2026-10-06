@@ -3,6 +3,7 @@
 wait 40 "The board is running"
 press "Remove VitalAIze…"
 wait 5 "Remove VitalAIze from this Mac?"
+expect "and any New Relic API key kept in the keychain"
 snap 13-remove-sheet
 click "Cancel"
 gone 5 "Remove VitalAIze from this Mac?"
@@ -13,6 +14,8 @@ press "Remove"
 wait 60 "VitalAIze was removed from this Mac"
 expect "Stopping the board"
 expect "Its database and settings are still in"
+expect "Left the New Relic API key in the keychain, as the item"
+expect "VitalAIze new_relic"
 snap 14-removed
 click "Set up again"
 wait 90 "What this Mac does"

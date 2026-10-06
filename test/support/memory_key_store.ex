@@ -13,6 +13,9 @@ defmodule Wallboard.KeyStore.Memory do
   def place, do: "the test keychain"
 
   @impl true
+  def where(_name, _opts), do: "the test keychain"
+
+  @impl true
   def put(name, key, _opts) do
     case :persistent_term.get({__MODULE__, :refuse}, false) do
       true -> {:error, "the test keychain refuses"}

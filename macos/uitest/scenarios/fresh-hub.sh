@@ -56,6 +56,7 @@ acme/rockets"
   check "Remove took the setup record away" test ! -f "$DATA/install.json"
   check "Remove kept a copy of the setup record" ls "$DATA"/backups/*/install.json
   check "Remove kept a copy of the login item" ls "$DATA"/backups/*/"$LABEL.plist"
+  check "Remove kept the New Relic key, as its screen said" test "$(kept_key new_relic)" = NRAK-UITEST0SETTINGS0KEY000001
 
   drive hub-again
   check "set up again, the board answers" answers "$PORT2"

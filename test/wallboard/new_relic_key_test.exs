@@ -328,6 +328,32 @@ defmodule Wallboard.NewRelicKeyTest do
     end
   end
 
+  # Stands in for systemctl: a board running as a systemd user service,
+  # which stops when systemd.sh turns it off.
+  defp linux_service do
+    run = fn program, args ->
+      case {Path.basename(program), args} do
+        {"systemctl", ["--user", "show", _, "-p", "Environment"]} ->
+          {"Environment=WALLBOARD_SETTINGS=#{System.get_env("WALLBOARD_SETTINGS")}\n", 0}
+
+        {"systemctl", ["--user", "is-active", _]} ->
+          if Process.get(:service_off), do: {"inactive\n", 3}, else: {"active\n", 0}
+
+        {"systemctl", ["--user", "is-enabled", _]} ->
+          if Process.get(:service_off), do: {"disabled\n", 1}, else: {"enabled\n", 0}
+
+        {"systemd.sh", ["off"]} ->
+          Process.put(:service_off, true)
+          {"", 0}
+
+        _ ->
+          {"", 0}
+      end
+    end
+
+    [os: {:unix, :linux}, run: run]
+  end
+
   describe "a key typed in vitalaize setup on Linux" do
     test "is in a file only this user can read, and used by the board", c do
       Application.put_env(:wallboard, :key_store, Wallboard.KeyStore.File)
@@ -574,10 +600,17 @@ defmodule Wallboard.NewRelicKeyTest do
       settings_file(c.dir)
       {:ok, _, %{"ok" => true}} = app_save(%{"new_relic.api_key" => @key})
 
-      # Remove: the settings stay, and so does the key they point to.
+      # Remove: the settings stay, and so does the key they point to, and
+      # the person is told where it is.
       out = io([])
       assert :ok = Setup.json(["remove"], mac() ++ [out: out])
+      "VITALAIZE_JSON" <> json = String.trim(output(out))
+      assert %{"ok" => true, "lines" => lines} = Jason.decode!(json)
+
+      assert "Left the New Relic API key in the test keychain. Delete it there to take it out too." in lines
+
       assert Memory.all() == %{"new_relic" => @key}
+      refute json =~ @key
 
       # Remove with the database and settings deleted: the key goes too, and
       # the person is told.
@@ -589,10 +622,54 @@ defmodule Wallboard.NewRelicKeyTest do
       assert Memory.all() == %{}
       refute json =~ @key
 
-      # With none kept, nothing is said about it.
+      # With none kept, nothing is said about it either way.
+      for args <- [["remove", "keys"], ["remove"]] do
+        out = io([])
+        assert :ok = Setup.json(args, mac() ++ [out: out])
+        refute output(out) =~ "New Relic"
+      end
+    end
+
+    test "a keychain that will not let the key go is said, and nothing says it went", c do
+      settings_file(c.dir)
+      {:ok, _, %{"ok" => true}} = app_save(%{"new_relic.api_key" => @key})
+      Memory.refuse()
+
       out = io([])
       assert :ok = Setup.json(["remove", "keys"], mac() ++ [out: out])
-      refute output(out) =~ "New Relic"
+      "VITALAIZE_JSON" <> json = String.trim(output(out))
+      assert %{"ok" => true, "lines" => lines} = Jason.decode!(json)
+
+      assert ("Could not take the New Relic API key out of the test keychain " <>
+                "(the test keychain refuses). Delete the VitalAIze item there by hand.") in lines
+
+      refute Enum.any?(lines, &(&1 =~ "Took the New Relic"))
+      assert Memory.all() == %{"new_relic" => @key}
+    end
+
+    test "vitalaize remove on Linux says the key file stays, and where", c do
+      Application.put_env(:wallboard, :key_store, Wallboard.KeyStore.File)
+      settings_file(c.dir)
+      assert :ok = KeyStore.put("new_relic", @key)
+      file = Path.join([c.dir, "keys", "new_relic"])
+
+      term = io(["yes"])
+      home = Path.join(c.dir, "home")
+
+      assert :ok =
+               Setup.remove_here(
+                 linux_service() ++ [io: term, home: home, env: fn _ -> nil end, root: c.dir]
+               )
+
+      text = output(term)
+      assert text =~ "Stopped VitalAIze."
+      assert text =~ "Left the New Relic API key in #{file}. Delete it there to take it out too."
+      # Deleting the folders named does not take the key with it, so the
+      # rest is not promised.
+      refute text =~ "the rest"
+      assert text =~ "to take away its settings and its program"
+      refute text =~ @key
+      assert File.read!(file) == @key
     end
   end
 
@@ -610,6 +687,48 @@ defmodule Wallboard.NewRelicKeyTest do
       assert :ok = KeyStore.File.delete("new_relic", opts)
       assert :ok = KeyStore.File.delete("new_relic", opts)
       assert KeyStore.File.fetch("new_relic", opts) == :none
+    end
+
+    test "a key file others can read, such as one restored from a backup, is closed to them first",
+         c do
+      opts = [dir: Path.join(c.dir, "keys")]
+      file = Path.join(c.dir, "keys/new_relic")
+      assert :ok = KeyStore.File.put("new_relic", @key, opts)
+      File.chmod!(file, 0o644)
+
+      log = capture_log(fn -> assert KeyStore.File.fetch("new_relic", opts) == {:ok, @key} end)
+      assert Bitwise.band(File.stat!(file).mode, 0o777) == 0o600
+      assert log =~ "#{file} could be read by other users of this machine. Made it 0600"
+      refute log =~ @key
+
+      # Once private, it is read with nothing said.
+      log = capture_log(fn -> assert KeyStore.File.fetch("new_relic", opts) == {:ok, @key} end)
+      refute log =~ "other users"
+    end
+
+    test "a key file others can read that cannot be closed to them is not used", c do
+      opts = [dir: Path.join(c.dir, "keys")]
+      file = Path.join(c.dir, "keys/new_relic")
+      assert :ok = KeyStore.File.put("new_relic", @key, opts)
+      File.chmod!(file, 0o640)
+
+      # As when another user owns it.
+      refused = opts ++ [chmod: fn _, _ -> {:error, :eperm} end]
+      assert {:error, why} = KeyStore.File.fetch("new_relic", refused)
+
+      assert why ==
+               "#{file} can be read by other users of this machine, and could not be made " <>
+                 "private (not owner). Run chmod 600 #{file} to use it."
+
+      refute why =~ @key
+      assert Bitwise.band(File.stat!(file).mode, 0o777) == 0o640
+    end
+
+    test "each store says where a key is" do
+      assert KeyStore.File.where("new_relic", dir: "/x/keys") == "/x/keys/new_relic"
+
+      assert KeyStore.Keychain.where("new_relic", []) ==
+               ~s(the keychain, as the item "VitalAIze new_relic")
     end
 
     test "a keychain named with a quote or a backslash is refused, never swapped for the person's own" do
