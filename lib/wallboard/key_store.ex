@@ -33,6 +33,12 @@ defmodule Wallboard.KeyStore do
   @doc "Where keys are kept, in words for a message: \"the keychain\"."
   @callback place() :: String.t()
 
+  @doc """
+  Where the key kept under `name` is, in words that let a person find it:
+  the keychain item, or the file's path.
+  """
+  @callback where(name :: String.t(), opts :: keyword) :: String.t()
+
   @name ~r/\A[a-z][a-z0-9_]{0,63}\z/
 
   def put(name, key, opts \\ []) when is_binary(key),
@@ -43,6 +49,9 @@ defmodule Wallboard.KeyStore do
 
   @doc "Where this machine keeps keys, in words for a message."
   def place(opts \\ []), do: store(opts).place()
+
+  @doc "Where the key kept under `name` is, in words that let a person find it."
+  def where(name, opts \\ []), do: store(opts).where(name, opts)
 
   @doc """
   The store this machine uses: the `:store` option, then the `:key_store`
@@ -87,6 +96,9 @@ defmodule Wallboard.KeyStore.Keychain do
 
   @impl true
   def place, do: "the keychain"
+
+  @impl true
+  def where(name, _opts), do: ~s(the keychain, as the item "#{@service} #{name}")
 
   @impl true
   def put(name, key, opts) do
@@ -174,14 +186,29 @@ defmodule Wallboard.KeyStore.File do
   board's data folder (beside its database, see
   `Wallboard.Settings.db_path/1`), each mode 0600, in a folder of mode
   0700. A new key is written beside the old one and then put in its
-  place, so a key is never half written. The `:dir` option names another
-  folder (tests).
+  place, so a key is never half written.
+
+  A key file others can read, such as one restored from a backup, is made
+  0600 again before it is read, with a warning in the log. When that
+  cannot be done (another user owns it), the key is not read at all, and
+  the message says to delete the file and type the key again.
+
+  Options: `:dir` names another folder (tests); `:settings`, the settings
+  to find the data folder in, for a caller that may have none loaded;
+  `:chmod`, in place of `File.chmod/2` (tests).
   """
 
   @behaviour Wallboard.KeyStore
 
+  require Logger
+
+  @again "Delete it, then type the key again in Settings or vitalaize setup."
+
   @impl true
   def place, do: "a file only you can read"
+
+  @impl true
+  def where(name, opts), do: Path.join(dir(opts), name)
 
   @impl true
   def put(name, key, opts) do
@@ -209,18 +236,53 @@ defmodule Wallboard.KeyStore.File do
   def fetch(name, opts) do
     path = Path.join(dir(opts), name)
 
-    case File.read(path) do
-      {:ok, text} ->
-        case String.trim(text) do
-          "" -> :none
-          key -> {:ok, key}
-        end
+    with :ok <- private(path, opts) do
+      case File.read(path) do
+        {:ok, text} ->
+          case String.trim(text) do
+            "" -> :none
+            key -> {:ok, key}
+          end
 
-      {:error, :enoent} ->
-        :none
+        {:error, :enoent} ->
+          :none
 
-      {:error, reason} ->
-        {:error, "#{path} could not be read (#{:file.format_error(reason)})"}
+        {:error, reason} ->
+          {:error, "#{path} could not be read (#{:file.format_error(reason)})"}
+      end
+    end
+  end
+
+  # A key file open to the group or to others is closed to them before
+  # the key is read. A missing file is fetch's to answer.
+  defp private(path, opts) do
+    with {:ok, %{mode: mode}} <- File.stat(path),
+         true <- Bitwise.band(mode, 0o077) != 0 do
+      chmod = opts[:chmod] || (&File.chmod/2)
+
+      case chmod.(path, 0o600) do
+        :ok ->
+          Logger.warning(
+            "#{path} could be read by other users of this machine. Made it 0600, " <>
+              "so only you can read it."
+          )
+
+          :ok
+
+        # This user's own chmod just failed, so the way back is one that
+        # needs no more than that: the file is in their own keys folder.
+        {:error, :eperm} ->
+          {:error,
+           "#{path} can be read by other users of this machine, and it belongs to another " <>
+             "user, so it could not be made private. #{@again}"}
+
+        {:error, reason} ->
+          {:error,
+           "#{path} can be read by other users of this machine, and could not be made " <>
+             "private (#{:file.format_error(reason)}). #{@again}"}
+      end
+    else
+      _ -> :ok
     end
   end
 
@@ -242,7 +304,7 @@ defmodule Wallboard.KeyStore.File do
         dir
 
       _ ->
-        Wallboard.Settings.get()
+        (opts[:settings] || Wallboard.Settings.get())
         |> get_in([:archive, :path])
         |> Wallboard.Settings.db_path()
         |> Path.dirname()

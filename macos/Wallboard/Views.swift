@@ -621,7 +621,7 @@ struct StatusView: View {
                 Text("Remove VitalAIze from this Mac?").font(.headline)
                 Text("This stops VitalAIze on this Mac and takes away its login item and its certificate for its hub. Upload hooks an earlier version added to Claude or Codex are taken out too, with a copy of each file kept beside it. Your Claude and Codex settings otherwise stay as they are.")
                     .foregroundStyle(.secondary)
-                Toggle("Also delete the database and settings in \(Setup.dataFolder ?? "")", isOn: $deleteData)
+                Toggle("Also delete the database and settings in \(Setup.dataFolder ?? ""), and any New Relic API key kept in the keychain", isOn: $deleteData)
                 HStack {
                     Spacer()
                     Button("Cancel") { confirmRemove = false }
