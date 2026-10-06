@@ -368,7 +368,10 @@ defmodule Wallboard.CiMinutesTest do
 
     test "a reused branch name: each pull request counts only its own runs there" do
       pr(5, "fix", "main", @t0, @t0 + 1000)
-      pr(9, "fix", "main", @t0 + 5000, nil)
+      # #9 is open, so the board has no row for it: its window starts when
+      # #5 closed all the same. A fork's #7 on a branch of the same name
+      # closed later and sets nothing.
+      pr(7, "fix", "main", @t0 + 2000, @t0 + 3000, head_repo: "someone/shop")
 
       run(1, pr: 5, branch: "fix", created_at: @t0 + 100)
       run(2, branch: "fix", event: "push", created_at: @t0 + 200)

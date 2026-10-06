@@ -181,12 +181,12 @@ defmodule Wallboard.Archive.CiMinutes do
 
   @doc """
   The minutes of one pull request, in the same shape as `for_session/1`:
-  the runs GitHub tags with its number, push runs on its branch, and its
-  merge queue runs. `repo` is "owner/name".
+  the runs GitHub tags with its number, push runs on its branch in its own
+  time (after the last other pull request on that branch closed, until it
+  closed) that GitHub tagged with no other, and its merge queue runs.
+  `repo` is "owner/name".
   """
   def for_pr(repo, number) when is_binary(repo) and is_integer(number) do
-    {since, until} = window(repo, number)
-
     branches =
       Store.query(
         """
@@ -198,18 +198,19 @@ defmodule Wallboard.Archive.CiMinutes do
       |> Enum.map(& &1.branch)
       |> Enum.reject(&(&1 in ["main", "master", repo_facts(repo)[:default_branch]]))
 
-    marks = Enum.map_join(Enum.with_index(branches, 6), ", ", fn {_, i} -> "?#{i}" end)
-
     # A later pull request can use the branch's name again: a run on it is
     # this one's only in its time, and not when GitHub tagged another.
     {on_branch, more} =
-      if branches == [],
-        do: {"", []},
-        else:
-          {"""
-            OR (r.branch IN (#{marks}) AND (r.pr IS NULL OR r.pr = ?2)
-             AND r.created_at > ?4 AND r.created_at <= ?5)
-           """, [since, until | branches]}
+      if branches == [] do
+        {"", []}
+      else
+        {since, until} = window(repo, number, branches)
+
+        {"""
+          OR (r.branch IN (#{marks(branches, 6)}) AND (r.pr IS NULL OR r.pr = ?2)
+           AND r.created_at > ?4 AND r.created_at <= ?5)
+         """, [since, until | branches]}
+      end
 
     "lower(r.repo) = lower(?1) AND (r.pr = ?2 OR r.branch LIKE ?3#{on_branch})"
     |> attempts([repo, number, "gh-readonly-queue/%/pr-#{number}-%" | more])
@@ -218,27 +219,36 @@ defmodule Wallboard.Archive.CiMinutes do
 
   def for_pr(_repo, _number), do: total([])
 
-  # When a run on a pull request's branch can be its own, `{since, until}`:
-  # after the last pull request before it on the same branch closed, until
-  # it closed. Open, or not saved: no end.
+  # When a run on `branches`, a pull request's own, can be its own,
+  # `{since, until}`: after the last other pull request on those branches
+  # closed (before this one opened, when this one is saved), until this one
+  # closed. The board saves only closed pull requests, so an open one has
+  # no row and no end. A fork's pull request only shares the name.
   @no_end 9_223_372_036_854_775_807
 
-  defp window(repo, number) do
-    Store.query(
-      """
-      SELECT coalesce(p.closed_at, p.merged_at) AS closed,
-        (SELECT max(coalesce(o.closed_at, o.merged_at)) FROM gh_prs o
-          WHERE lower(o.repo) = lower(p.repo) AND o.branch = p.branch AND o.number <> p.number
-            AND lower(coalesce(o.head_repo, o.repo)) = lower(coalesce(p.head_repo, p.repo))
-            AND coalesce(o.closed_at, o.merged_at) <= p.created_at) AS since
-      FROM gh_prs p WHERE lower(p.repo) = lower(?1) AND p.number = ?2
-      """,
-      [repo, number]
-    )
-    |> case do
-      [row | _] -> {row.since || 0, row.closed || @no_end}
-      [] -> {0, @no_end}
-    end
+  defp window(repo, number, branches) do
+    own =
+      Store.query(
+        """
+        SELECT created_at, coalesce(closed_at, merged_at) AS closed FROM gh_prs
+        WHERE lower(repo) = lower(?1) AND number = ?2
+        """,
+        [repo, number]
+      )
+      |> List.first(%{})
+
+    [%{since: since}] =
+      Store.query(
+        """
+        SELECT max(coalesce(closed_at, merged_at)) AS since FROM gh_prs
+        WHERE lower(repo) = lower(?1) AND number <> ?2 AND lower(head_repo) = lower(repo)
+          AND branch IN (#{marks(branches, 4)})
+          AND (?3 IS NULL OR coalesce(closed_at, merged_at) <= ?3)
+        """,
+        [repo, number, own[:created_at] | branches]
+      )
+
+    {since || 0, own[:closed] || @no_end}
   end
 
   @doc """
