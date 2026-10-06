@@ -34,7 +34,11 @@ defmodule Wallboard.Link do
   revoked certificate is refused the same way, and revoking a machine
   while it is connected sends it `Disconnected` and closes its stream. A
   machine revoked after its handshake and before the hub has listed its
-  stream is told `Disconnected` too, when the stream is refused.
+  stream is told `Disconnected` too, when the stream is refused. A machine
+  revoked while it was away is refused in the handshake, which does not
+  say why, so after a few failed tries it asks the board's pairing door
+  and stops on a "removed" the hub signed (`Wallboard.Pairing.check/2`).
+  The handshake rule stays whole: a revoked certificate never gets past it.
 
   The collector trusts only its hub's authority, and only a certificate
   made for a hub, so another machine's certificate cannot stand in for it.
