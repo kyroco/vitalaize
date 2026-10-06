@@ -153,7 +153,8 @@ ditto "$APP" "$PKG_ROOT/VitalAIze.app"
 pkgbuild --analyze --root "$PKG_ROOT" "$OUT/component.plist" >/dev/null
 # Install to /Applications even when another copy of the app sits elsewhere.
 /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "$OUT/component.plist"
-# postinstall opens VitalAIze once it is in place, so setup starts right away.
+# postinstall restarts a board running from the old copy, then opens VitalAIze
+# so setup starts right away.
 chmod +x "$ROOT/macos/installer/scripts/postinstall"
 # Clear file attributes so the package carries no "._" copies of the script.
 xattr -cr "$ROOT/macos/installer/scripts"

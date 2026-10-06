@@ -31,8 +31,9 @@ terminal you started it in. A collector writes to the same log as a board.
    on its last page, opening a new package only brings that old window forward
    and installs nothing.
 2. Open `VitalAIze-<version>.pkg` and go through its pages. VitalAIze opens.
-3. On a Mac that already had VitalAIze (0.2.0, or an older install), the first
-   screen says what it mended or restarted. It keeps a copy of every file it
+3. On a Mac that already had VitalAIze (0.2.0, or an older install), the
+   installer restarts the board if it was running, and the first screen says
+   what it mended. It keeps a copy of every file it
    changed in `backups/(date and time)/` in the data folder
    (`~/Library/Application Support/VitalAIze`).
 4. On a new Mac, pick **Hub and collector**, check what it found, and click
