@@ -413,7 +413,9 @@ defmodule Wallboard.Link.Session do
         source_mtime: nil,
         captured_at: now,
         deleted_at: nil,
-        source: "stream"
+        source: "stream",
+        # Read by the collector from the folder's git config, as owner/name.
+        repo: blank(sum.repo)
       }
 
       {session, rows}

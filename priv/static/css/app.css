@@ -375,6 +375,8 @@ button { font: inherit; }
 .dot8.g-claude, .g-claude .sp { background: var(--series-claude); }
 .dot8.g-korium, .g-korium .sp { background: var(--series-korium); }
 .dot8.g-github, .g-github .sp { background: var(--series-github); }
+/* Merged pull requests are GitHub's numbers too. */
+.dot8.g-shipped, .g-shipped .sp { background: var(--series-github); }
 .dot8.g-codex, .g-codex .sp { background: var(--series-codex); }
 /* Claude and Codex side by side: two bars a day with a 2px gap, one scale.
    Every bar has its value on hover or tap, and the totals above name each

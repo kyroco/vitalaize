@@ -14,7 +14,10 @@ defmodule Wallboard.Collector.Sender do
   Its folder (`Wallboard.Pairing.dir/1`, the collector's folder's `link`)
   holds what pairing leaves there: `cert.pem`, `key.pem` and `ca.pem`, and
   `hub.json` with the
-  hub's address, such as `{"host": "192.168.1.20", "link_port": 4748}`.
+  hub's address, such as `{"host": "192.168.1.20", "port": 4747, "link_port": 4748}`.
+  `port` is the board's own, where the client asks the pairing door
+  whether this machine was removed while it was away; a machine paired
+  before VitalAIze saved it asks on 4747, the board's usual port.
   Until all four are there nothing is sent, and the outbox keeps the
   events. The sender looks for them twice a second, so a collector paired
   for the first time while it runs starts sending without a restart. A
@@ -67,6 +70,9 @@ defmodule Wallboard.Collector.Sender do
   # How long "the hub is restarting" stands before a lost stream is said
   # as lost.
   @back_soon_seconds 120
+  # The board's usual port, for a collector paired before `hub.json` held
+  # the board's own.
+  @board_port 4747
 
   def start_link(opts) do
     # `name: nil` starts one without a name, for tests.
@@ -78,18 +84,31 @@ defmodule Wallboard.Collector.Sender do
 
   @doc """
   What pairing left in the collector's folder `dir`:
-  `{:ok, %{tls: %{cert_pem, key_pem, ca_pem}, host, port}}`, or `:error`
-  while any of it is missing or cannot be read.
+  `{:ok, %{tls: %{cert_pem, key_pem, ca_pem}, host, port, door}}`, where
+  `port` is the link's and `door` is the board's address `%{host, port}`,
+  or `:error` while any of it is missing or cannot be read.
   """
   def paired(dir) do
     with {:ok, cert} <- File.read(Path.join(dir, "cert.pem")),
          {:ok, key} <- File.read(Path.join(dir, "key.pem")),
          {:ok, ca} <- File.read(Path.join(dir, "ca.pem")),
          {:ok, text} <- File.read(Path.join(dir, "hub.json")),
-         {:ok, %{"host" => host, "link_port" => port}}
+         {:ok, %{"host" => host, "link_port" => port} = hub}
          when is_binary(host) and host != "" and is_integer(port) and port > 0 and port < 65_536 <-
            Jason.decode(text) do
-      {:ok, %{tls: %{cert_pem: cert, key_pem: key, ca_pem: ca}, host: host, port: port}}
+      board =
+        case hub["port"] do
+          board when is_integer(board) and board > 0 and board < 65_536 -> board
+          _ -> @board_port
+        end
+
+      {:ok,
+       %{
+         tls: %{cert_pem: cert, key_pem: key, ca_pem: ca},
+         host: host,
+         port: port,
+         door: %{host: host, port: board}
+       }}
     else
       _ -> :error
     end
@@ -213,6 +232,7 @@ defmodule Wallboard.Collector.Sender do
               tls: hub.tls,
               hello: hello,
               buffer: Path.join(state.dir, "link.buffer"),
+              door: hub.door,
               listener: self(),
               # Nothing leaves the client's buffer until the watcher has
               # gone back to the hub's place.

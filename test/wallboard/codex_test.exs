@@ -533,10 +533,10 @@ defmodule Wallboard.CodexTest do
     assert day.ks == 7
   end
 
-  test "tokens per 1,000 lines added, and nothing when no lines were added" do
+  test "tokens per merged pull request, and nothing when none merged" do
     alias Wallboard.Archive.Trends
-    assert Trends.per_kline(3_000_000, 1_500) == 2_000_000.0
-    assert Trends.per_kline(3_000_000, 0) == nil
+    assert Trends.per(3_000_000, 2) == 1_500_000.0
+    assert Trends.per(3_000_000, 0) == nil
   end
 
   test "GitHub says it is loading until its runs and their job times are saved" do

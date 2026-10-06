@@ -480,7 +480,111 @@ defmodule Wallboard.Link.Authority do
   defp sign(tbs, key), do: :public_key.pkix_sign(tbs, key)
 
   # ---------------------------------------------------------------------------
+  # Asking about a certificate outside the link
+
+  @doc """
+  Where a machine's certificate stands, for the pairing door's check (see
+  `Wallboard.Pairing.check/2`): `{:ok, serial, :working}` or
+  `{:ok, serial, :removed}`.
+
+  Only a machine certificate this authority signed is answered for, and
+  only when `proof` is a signature of `text` made with that certificate's
+  own key, so nobody without the key learns anything: anything else is
+  `{:error, :bad_proof}`. `:removed` is a revoked certificate, or one the
+  list of machines does not hold; the handshake refuses both for good. A
+  list that cannot be read just now is `{:error, :unreadable}`, which says
+  nothing either way.
+  """
+  def standing(dir, cert_der, text, proof)
+      when is_binary(cert_der) and is_binary(text) and is_binary(proof) do
+    ca_der = pem_der!(ca_pem(dir))
+
+    with {:ok, serial, name} <- read_cert(cert_der),
+         true <- machine_name?(name),
+         true <- @client_auth in extended_usage(cert_der),
+         true <- :public_key.pkix_is_issuer(cert_der, ca_der),
+         true <- :public_key.pkix_verify(cert_der, cert_key(ca_der)),
+         true <- :public_key.verify(text, :sha256, proof, cert_key(cert_der)) do
+      case read_index(dir) do
+        {:ok, index} ->
+          case index[serial] do
+            %{"machine" => ^name, "revoked_at" => nil} -> {:ok, serial, :working}
+            _ -> {:ok, serial, :removed}
+          end
+
+        :unreadable ->
+          {:error, :unreadable}
+      end
+    else
+      _ -> {:error, :bad_proof}
+    end
+  rescue
+    _ -> {:error, :bad_proof}
+  end
+
+  def standing(_dir, _cert, _text, _proof), do: {:error, :bad_proof}
+
+  @doc """
+  Signs `text` with the hub's own key, the one its link port serves.
+  Returns `{signature, hub_pem}`: the hub's certificate goes along, so a
+  collector can check the signature against the authority it trusts
+  (`hub_signed?/4`).
+  """
+  def hub_sign(dir, text) when is_binary(text) do
+    key = File.read!(path(dir, "hub.key")) |> :public_key.pem_decode() |> hd()
+    signature = :public_key.sign(text, :sha256, :public_key.pem_entry_decode(key))
+    {signature, File.read!(path(dir, "hub.pem"))}
+  end
+
+  @doc """
+  True when `signature` over `text` was made by a hub that the authority
+  `ca_pem` vouches for: `hub_pem` is a hub certificate it signed. Neither a
+  machine's certificate nor the authority's own passes, so another
+  collector cannot speak for the hub.
+  """
+  def hub_signed?(ca_pem, hub_pem, text, signature)
+      when is_binary(hub_pem) and is_binary(text) and is_binary(signature) do
+    with {:ok, ca_der} <- cert_bytes(ca_pem),
+         {:ok, der} <- cert_bytes(hub_pem),
+         true <- @server_auth in extended_usage(der),
+         true <- :public_key.pkix_is_issuer(der, ca_der),
+         true <- :public_key.pkix_verify(der, cert_key(ca_der)) do
+      :public_key.verify(text, :sha256, signature, cert_key(der))
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  def hub_signed?(_ca, _hub, _text, _signature), do: false
+
+  @doc "A signature of `text` with a machine's own key, given as PEM text."
+  def prove(key_pem, text) when is_binary(text) do
+    key = key_pem |> :public_key.pem_decode() |> hd()
+    :public_key.sign(text, :sha256, :public_key.pem_entry_decode(key))
+  end
+
+  @doc "A certificate's serial number as the list of machines writes it: `{:ok, serial}` or `:error`."
+  def serial(cert_der) do
+    with {:ok, serial, _name} <- read_cert(cert_der), do: {:ok, serial}
+  end
+
+  # ---------------------------------------------------------------------------
   # Reading
+
+  # What a certificate may be used for: a machine's says client, the hub's
+  # says server, the authority's says neither.
+  defp extended_usage(der) do
+    der
+    |> :public_key.pkix_decode_cert(:otp)
+    |> otp_certificate(:tbsCertificate)
+    |> otp_tbs_certificate(:extensions)
+    |> List.wrap()
+    |> Enum.find_value([], fn ext ->
+      if extension(ext, :extnID) == @ext_key_usage, do: extension(ext, :extnValue)
+    end)
+  end
 
   defp read_cert(der) do
     tbs = der |> :public_key.pkix_decode_cert(:otp) |> otp_certificate(:tbsCertificate)

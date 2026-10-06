@@ -27,11 +27,13 @@ defmodule WallboardWeb.Router do
 
   # A machine with no certificate yet asks for one here (see
   # Wallboard.Pairing). No cookies, no password: it has neither, and the
-  # door's own limits and the owner's Approve are what guard it.
+  # door's own limits and the owner's Approve are what guard it. A paired
+  # machine whose link keeps failing asks /check whether it was removed.
   scope "/pair", WallboardWeb do
     post "/start", PairController, :start
     post "/confirm", PairController, :confirm
     post "/wait", PairController, :wait
+    post "/check", PairController, :check
   end
 
   scope "/", WallboardWeb do

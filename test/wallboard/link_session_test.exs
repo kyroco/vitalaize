@@ -84,6 +84,20 @@ defmodule Wallboard.LinkSessionTest do
     assert DateTime.from_unix!(row.started_at) == read.started_at
   end
 
+  test "its saved row keeps the repository the collector read from the folder" do
+    row = fn repo ->
+      "collector/claude_session.jsonl"
+      |> events(%{file: @id <> ".jsonl", repo: fn _folder -> repo end})
+      |> fold()
+      |> Session.record(prices(), 0)
+      |> elem(0)
+    end
+
+    assert row.("acme/shop").repo == "acme/shop"
+    # A folder with no GitHub origin sends no repository.
+    assert row.(nil).repo == nil
+  end
+
   test "a session with nothing in it yet has no row, and no card until it says how it is" do
     assert Session.record(Session.new("papa", @id), prices(), 0) == nil
     assert Session.card(fold(main()), true, prices()) == nil
