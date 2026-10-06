@@ -119,10 +119,12 @@ defmodule Wallboard.CiMinutesTest do
         # Labels as GitHub returns them for kyroco's own runners.
         job(1, 120, "self-hosted,Linux,ARM64,kyroco-gate", "success", runner: "kyroco-air-1"),
         job(2, 60, "ubuntu-latest", "success", runner: "GitHub Actions 1000041223"),
-        job(3, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1000027280")
+        job(3, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1000027280"),
+        # GitHub's runner counter keeps climbing: its name says nothing.
+        job(4, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1001000000")
       ])
 
-      assert %{paid: 2, own: 2} = CiMinutes.for_pr(@repo, 7)
+      assert %{paid: 3, own: 2} = CiMinutes.for_pr(@repo, 7)
     end
 
     test "a session started by another tool does not take the pushes of the one that started it" do
