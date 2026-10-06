@@ -109,6 +109,21 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     assert days_read(dir) == ["2026-10-04", "2026-10-05"]
   end
 
+  test "a board upgraded with no record of its last round reads yesterday and today",
+       %{dir: dir, settings: settings} do
+    settings = put_in(settings.archive.backfill_days, 14)
+    Store.put_meta("github_backfill:acme/shop", "2026-09-20")
+    monday = ~U[2026-10-05 13:00:00Z]
+
+    assert {:ok, _, _} = GitHubCollector.round(settings, monday)
+    assert days_read(dir) == ["2026-10-04", "2026-10-05"]
+
+    # A record that is not a whole number counts as none.
+    Store.put_meta("github_runs_through:acme/shop", "abc")
+    assert {:ok, _, _} = GitHubCollector.round(settings, DateTime.add(monday, 300))
+    assert days_read(dir) == ["2026-10-04", "2026-10-05"]
+  end
+
   test "one round never reads further back than the backfill", %{dir: dir, settings: settings} do
     settings = put_in(settings.archive.backfill_days, 3)
     Store.put_meta("github_backfill:acme/shop", "2026-08-01")
