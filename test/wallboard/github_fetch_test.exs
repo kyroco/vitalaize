@@ -200,6 +200,20 @@ defmodule Wallboard.GitHubFetchTest do
       assert later.own_by_run == %{}
     end
 
+    test "a run held for an approval has its jobs read, and waits for that approval",
+         %{dir: dir} do
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+      runs(dir, [{1, "waiting"}])
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert "runs/1/jobs?per_page=100&page=1" in asked(dir)
+      assert %{list: [_ | _]} = facts.jobs[1]
+
+      assert [%{status: :waiting, step: "Waiting for approval"}] =
+               GitHub.summary(facts, rockets, @now).running
+    end
+
     test "a job without the self-hosted label is yours when GitHub lists its runner",
          %{dir: dir} do
       [rockets, _] = repos(@rockets)

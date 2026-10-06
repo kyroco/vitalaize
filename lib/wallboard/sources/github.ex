@@ -120,9 +120,10 @@ defmodule Wallboard.Sources.GitHub do
          {:ok, repo} <- parse_graphql(gql_json, gh.gate_check) do
       deploys = fetch_deploys(gh, prev, now)
 
+      # A run held for a deploy approval has jobs that ran already.
       jobs =
         runs
-        |> Enum.filter(&(&1.status == :in_progress))
+        |> Enum.filter(&(&1.status in [:in_progress, :waiting]))
         |> Map.new(fn run ->
           case GitHubCollector.fetch_jobs(gh.repo, run.id, timeout: 30_000) do
             {:ok, list} -> {run.id, jobs_summary(list)}
@@ -330,6 +331,8 @@ defmodule Wallboard.Sources.GitHub do
       case r["status"] do
         "completed" -> :completed
         "in_progress" -> :in_progress
+        # Held for an approval, such as a deploy's environment asks for.
+        "waiting" -> :waiting
         _ -> :queued
       end
 
@@ -540,7 +543,7 @@ defmodule Wallboard.Sources.GitHub do
 
     running =
       all
-      |> Enum.filter(&(&1.status in [:in_progress, :queued]))
+      |> Enum.filter(&(&1.status in [:in_progress, :waiting, :queued]))
       |> Enum.sort_by(&DateTime.to_unix(&1.started_at || now))
       |> Enum.map(&running_run(&1, facts.jobs[&1.id], typical, now))
       |> Enum.map(&Map.put(&1, :own, own[&1.id] || []))
@@ -760,6 +763,8 @@ defmodule Wallboard.Sources.GitHub do
     progress =
       cond do
         run.status == :queued -> 0
+        run.status == :waiting and jobs && jobs.total > 0 -> round(jobs.done * 100 / jobs.total)
+        run.status == :waiting -> 0
         typical_s && typical_s > 0 -> min(round(elapsed * 100 / typical_s), 97)
         jobs && jobs.total > 0 -> round(jobs.done * 100 / jobs.total)
         true -> 10
@@ -769,6 +774,9 @@ defmodule Wallboard.Sources.GitHub do
       cond do
         run.status == :queued ->
           "Waiting for a runner"
+
+        run.status == :waiting ->
+          "Waiting for approval"
 
         jobs && jobs.current_job ->
           [jobs.current_job, jobs.current_step]

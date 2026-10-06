@@ -294,7 +294,7 @@ defmodule Wallboard.RunDetailTest do
     assert html =~ "failed at: Run mix test"
     assert html =~ "by dana"
     assert html =~ "rerun by sam"
-    assert asked(dir) == ["repos/acme/api/actions/runs/101/jobs?per_page=100"]
+    assert asked(dir) == ["repos/acme/api/actions/runs/101/jobs?per_page=100&page=1"]
 
     # Saved in the archive for every screen, and not read again on a new
     # check, a close or a second tap.
@@ -553,6 +553,31 @@ defmodule Wallboard.RunDetailTest do
 
     html = view |> element(~s|button.run-card[phx-value-id="303"]|) |> render_click()
     assert html =~ "Waiting for a runner"
+  end
+
+  test "a deploy held for an approval says so, and shows the jobs that already ran" do
+    use_settings(false)
+
+    jobs = [
+      job(1, "Build", "completed", "success", run_id: 404, started: 600, completed: 400),
+      job(2, "Deploy to prod", "waiting", nil, run_id: 404, created: 390)
+    ]
+
+    view = open_board()
+
+    html =
+      send_facts(
+        view,
+        facts([run_json(404, "waiting", nil)], %{404 => GitHub.parse_jobs(jobs_json(jobs))})
+      )
+
+    assert html =~ "Waiting for approval"
+
+    html = view |> element(~s|button.run-card[phx-value-id="404"]|) |> render_click()
+    assert html =~ "waiting for approval"
+    assert html =~ "Jobs · 2"
+    assert html =~ ">Build<"
+    refute html =~ ~r/waiting for a runner/i
   end
 
   test "the panel closes by a tap outside, by its button, and by itself", %{dir: dir} do

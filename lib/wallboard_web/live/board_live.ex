@@ -2648,6 +2648,7 @@ defmodule WallboardWeb.BoardLive do
             running for <.ago at={@run.started_at} fmt="for" />
           </span>
           <span :if={@run.status == :queued}>waiting for a runner</span>
+          <span :if={@run.status == :waiting}>waiting for approval</span>
           <span :if={@run.started_at}>started <.ago at={@run.started_at} fmt="when" /></span>
           <span :if={(@run[:attempt] || 1) > 1}>attempt {@run.attempt}</span>
         </div>
@@ -2729,7 +2730,8 @@ defmodule WallboardWeb.BoardLive do
       <span class="job-runner">
         {cond do
           @j.runner_name not in [nil, ""] -> "on " <> @j.runner_name
-          @j.status in ["queued", "waiting", "pending"] -> "waiting for a runner"
+          @j.status == "waiting" -> "waiting for approval"
+          @j.status in ["queued", "pending"] -> "waiting for a runner"
           true -> ""
         end}<span :if={@own? and @j.runner_name not in [nil, ""]} class="own-tag"> · your machine</span>
       </span>
@@ -2761,7 +2763,7 @@ defmodule WallboardWeb.BoardLive do
   defp run_tone(%{status: :completed}), do: "muted"
   defp run_tone(_), do: "info"
 
-  defp run_state(%{status: :queued}), do: "Waiting"
+  defp run_state(%{status: s}) when s in [:queued, :waiting], do: "Waiting"
   defp run_state(%{status: :in_progress}), do: "Running"
   defp run_state(%{conclusion: c}), do: conclusion_word(c)
 
