@@ -5,6 +5,9 @@ defmodule Wallboard.Link.Hub do
 
   Start it with `{Wallboard.Link.Hub, dir: folder, port: port}`. It makes
   the certificate authority in `dir` when there is none, then listens.
+  With `board_port`, the port the board itself is running on, each
+  collector is told that port when it connects, so it asks the pairing
+  door in the right place after the owner changes it.
   `Wallboard.Store` must already be running: that is where events go.
 
   Other parts of the board hear about the link on the `"link"` topic of
@@ -53,7 +56,9 @@ defmodule Wallboard.Link.Hub do
     children = [
       %{
         id: :registry,
-        start: {GenServer, :start_link, [__MODULE__, {dir, limits}, [name: __MODULE__]]}
+        start:
+          {GenServer, :start_link,
+           [__MODULE__, {dir, limits, opts[:board_port]}, [name: __MODULE__]]}
       },
       listener(Keyword.get(opts, :port, 0),
         cred: GRPC.Credential.new(ssl: Authority.hub_tls(dir)),
@@ -121,6 +126,12 @@ defmodule Wallboard.Link.Hub do
   def connected, do: GenServer.call(__MODULE__, :connected)
 
   @doc """
+  Whether `pid` is the stream the hub holds for `machine` now. A stream
+  that a newer one of the same machine replaced is not.
+  """
+  def current?(machine, pid), do: GenServer.call(__MODULE__, {:current?, machine, pid})
+
+  @doc """
   Revokes a machine's certificate and closes its stream. It is told
   "disconnected" first, so it stops instead of trying again.
   """
@@ -162,12 +173,12 @@ defmodule Wallboard.Link.Hub do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def init({dir, limits}) do
+  def init({dir, limits, board_port}) do
     # Each machine's rate buckets (see Wallboard.Link.Server). Kept here so
     # they outlive a stream; each stream's own process reads and writes
     # them without waiting on this one.
     :ets.new(@buckets, [:named_table, :public, :set])
-    {:ok, %{dir: dir, limits: limits, streams: %{}}}
+    {:ok, %{dir: dir, limits: limits, board_port: board_port, streams: %{}}}
   end
 
   @impl true
@@ -176,6 +187,9 @@ defmodule Wallboard.Link.Hub do
   def handle_call(:connected, _from, s) do
     {:reply, Map.new(s.streams, fn {m, c} -> {m, Map.take(c, [:since, :hello])} end), s}
   end
+
+  def handle_call({:current?, machine, pid}, _from, s),
+    do: {:reply, match?(%{pid: ^pid}, s.streams[machine]), s}
 
   def handle_call({:attach, cert, stream, counter}, {pid, _}, s) do
     case Authority.machine(s.dir, cert) do
@@ -193,7 +207,7 @@ defmodule Wallboard.Link.Hub do
 
         Logger.info("Link: #{machine} connected.")
         broadcast({:link, :up, machine})
-        {:reply, {:ok, machine, s.limits, s.dir}, put_in(s.streams[machine], entry)}
+        {:reply, {:ok, machine, s.limits, s.dir, s.board_port}, put_in(s.streams[machine], entry)}
 
       {:error, reason} ->
         {:reply, {:error, reason}, s}

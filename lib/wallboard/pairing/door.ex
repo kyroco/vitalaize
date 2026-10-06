@@ -106,10 +106,11 @@ defmodule Wallboard.Pairing.Door do
   `Wallboard.Pairing.answer_text/3`. `{:error, :bad_request}` for a
   challenge this door did not make or that ran out, a certificate this
   hub's authority did not make for a machine, or a proof not made with
-  its key: such a caller learns nothing. A machine certificate the list of
-  machines does not hold is answered "removed", since the handshake
-  refuses it for good. `{:error, :busy}` when the list of machines
-  cannot be read just now, or the address asked too often.
+  its key: such a caller learns nothing. "removed" only for a machine the
+  owner revoked. `{:error, :busy}` when the list of machines cannot be
+  read just now or does not hold the certificate (an older copy of the
+  list may have been put back), or the address asked too often: the
+  collector keeps trying.
   """
   def check(from, challenge, cert_pem, proof),
     do: call({:check, from, challenge, cert_pem, proof})
@@ -344,7 +345,7 @@ defmodule Wallboard.Pairing.Door do
         {signature, hub_pem} = Authority.hub_sign(s.dir, text)
         {:ok, %{answer: answer, signature: signature, hub_pem: hub_pem}}
       else
-        {:error, reason} when reason in [:busy, :unreadable] -> {:error, :busy}
+        {:error, reason} when reason in [:busy, :unreadable, :unknown] -> {:error, :busy}
         _ -> {:error, :bad_request}
       end
 

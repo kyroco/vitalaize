@@ -169,11 +169,12 @@ should see at each step, follow the [test guide](docs/test-guide.md).
 
 If some of your GitHub Actions jobs run on your own machines (self-hosted
 runners), the Git tab says so: a run your machines worked on reads "on" and
-the runner's name. A job counts as yours when it carries the `self-hosted`
-label (in any letter case, as GitHub reads it) or its runner is in GitHub's
-list of the repository's runners; any other job outside GitHub's own runner
-group, such as one on GitHub's paid larger runners, is counted apart as not
-known.
+the runner's name, or how many of your runners it used when there are more
+than three, like "on 30 of your runners". A job counts as yours when it
+carries the `self-hosted` label (in any letter case, as GitHub reads it) or
+its runner is in GitHub's list of the repository's runners; any other job
+outside GitHub's own runner group, such as one on GitHub's paid larger
+runners, is counted apart as not known.
 
 GitHub always bills its larger runners, on public repositories too. CI
 minutes count its macOS larger runners (`macos-15-large`,

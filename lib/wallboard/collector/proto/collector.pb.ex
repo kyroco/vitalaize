@@ -334,6 +334,7 @@ defmodule Wallboard.Collector.Proto.FromHub do
   field(:disconnected, 4, type: Wallboard.Collector.Proto.Disconnected, oneof: 0)
   field(:answer, 5, type: Wallboard.Collector.Proto.Answer, oneof: 0)
   field(:stored, 6, type: Wallboard.Collector.Proto.Stored, oneof: 0)
+  field(:board, 7, type: Wallboard.Collector.Proto.Board, oneof: 0)
 end
 
 defmodule Wallboard.Collector.Proto.Resume do
@@ -397,6 +398,17 @@ defmodule Wallboard.Collector.Proto.Stored do
     syntax: :proto3
 
   field(:seq, 1, type: :uint64)
+end
+
+defmodule Wallboard.Collector.Proto.Board do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.Board",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:port, 1, type: :uint32)
 end
 
 defmodule Wallboard.Collector.Proto.Collector.Service do

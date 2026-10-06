@@ -21,7 +21,12 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     #!/bin/sh
     echo "$2" >> "$WALLBOARD_TEST_GH/asked"
     case "$2" in
+      *"/actions/runs/1/jobs?filter=all"*"page=2"*)
+        if [ -f "$WALLBOARD_TEST_GH/page_2_down" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1
+        elif [ -f "$WALLBOARD_TEST_GH/jobs_2.json" ]; then cat "$WALLBOARD_TEST_GH/jobs_2.json"
+        else echo '{"jobs": []}'; fi ;;
       *"/actions/runs/1/jobs?filter=all"*)
+        if [ -f "$WALLBOARD_TEST_GH/jobs_1.json" ]; then cat "$WALLBOARD_TEST_GH/jobs_1.json"; exit 0; fi
         echo '{"jobs": [#{job.(11, 1)}, #{job.(12, 2)}]}' ;;
       *"/actions/runs/1/jobs"*)
         echo '{"jobs": [#{job.(12, 2)}]}' ;;
@@ -348,6 +353,38 @@ defmodule Wallboard.GitHubCollectorRoundTest do
 
     assert [%{attempt: 1}, %{attempt: 2}] =
              Store.query("SELECT attempt FROM gh_jobs ORDER BY attempt", [])
+  end
+
+  test "a big matrix rerun's jobs are all saved, a page at a time",
+       %{dir: dir, settings: settings} do
+    job = fn id, attempt -> %{id: id, run_id: 1, run_attempt: attempt, labels: []} end
+    jobs = for(id <- 1..80, do: job.(id, 1)) ++ for(id <- 81..130, do: job.(id, 2))
+    {first, second} = Enum.split(jobs, 100)
+    File.write!(Path.join(dir, "jobs_1.json"), Jason.encode!(%{total_count: 130, jobs: first}))
+    File.write!(Path.join(dir, "jobs_2.json"), Jason.encode!(%{total_count: 130, jobs: second}))
+
+    assert {:ok, 1, 1} = GitHubCollector.round(settings, ~U[2026-09-30 18:00:00Z])
+    assert [%{n: 130}] = Store.query("SELECT count(*) AS n FROM gh_jobs", [])
+    assert Enum.any?(asked(dir), &(&1 =~ "/runs/1/jobs?filter=all&per_page=100&page=2"))
+  end
+
+  test "a run whose second page of jobs fails saves none of them, and is read again later",
+       %{dir: dir, settings: settings} do
+    jobs = for id <- 1..100, do: %{id: id, run_id: 1, run_attempt: 1, labels: []}
+    File.write!(Path.join(dir, "jobs_1.json"), Jason.encode!(%{total_count: 130, jobs: jobs}))
+    File.write!(Path.join(dir, "page_2_down"), "")
+
+    assert {:ok, 1, 0} = GitHubCollector.round(settings, ~U[2026-09-30 18:00:00Z])
+    assert [%{n: 0}] = Store.query("SELECT count(*) AS n FROM gh_jobs", [])
+    assert Store.runs_missing_jobs("acme/shop", 10) == [1]
+  end
+
+  test "a run whose jobs come back in a shape not known is not taken for one with none",
+       %{dir: dir, settings: settings} do
+    File.write!(Path.join(dir, "jobs_1.json"), ~s({"message": "something else"}))
+
+    assert {:ok, 1, 0} = GitHubCollector.round(settings, ~U[2026-09-30 18:00:00Z])
+    assert Store.runs_missing_jobs("acme/shop", 10) == [1]
   end
 
   test "a repository's visibility is read once a day, and a failed read keeps the last",

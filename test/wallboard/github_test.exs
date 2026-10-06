@@ -198,4 +198,51 @@ defmodule Wallboard.Sources.GitHubTest do
     assert r.progress == 50
     assert r.step == "Tests / Tests 3: Run tests, 2 of 4 jobs done"
   end
+
+  test "a run held for an approval shows the share of its jobs done, not the time it waited" do
+    # Held for an hour, where the workflow usually takes 8 minutes: by the
+    # time it would be full.
+    run = %{
+      id: 1,
+      name: "Deploy",
+      workflow: "deploy.yml",
+      title: "x",
+      event: "push",
+      branch: "main",
+      sha: "abc",
+      status: :waiting,
+      conclusion: nil,
+      started_at: DateTime.add(@now, -3600),
+      updated_at: @now,
+      pr: nil,
+      url: nil
+    }
+
+    done = %{
+      run
+      | id: 2,
+        status: :completed,
+        conclusion: "success",
+        started_at: DateTime.add(@now, -7000),
+        updated_at: DateTime.add(@now, -6520)
+    }
+
+    summary = fn jobs ->
+      [r] =
+        GitHub.summary(
+          %{facts() | runs: [run, done], deploys: [], jobs: jobs},
+          settings().github,
+          @now
+        ).running
+
+      r
+    end
+
+    r = summary.(%{1 => %{total: 4, done: 1, current_job: nil, current_step: nil}})
+    assert r.progress == 25
+    assert r.step == "Waiting for approval"
+
+    # Its jobs not read yet: nothing done.
+    assert summary.(%{}).progress == 0
+  end
 end

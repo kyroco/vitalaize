@@ -26,14 +26,19 @@ defmodule Wallboard.GitHubFetchTest do
         if [ -f "$WALLBOARD_TEST_GH/runs.json" ]; then cat "$WALLBOARD_TEST_GH/runs.json"
         else echo '{"workflow_runs":[]}'; fi ;;
       *"/actions/runs/"*"/jobs"*)
-        if [ -f "$WALLBOARD_TEST_GH/jobs.json" ]; then cat "$WALLBOARD_TEST_GH/jobs.json"
+        page=$(echo "$2" | sed -n 's/.*[?&]page=\\([0-9]*\\).*/\\1/p')
+        if [ -f "$WALLBOARD_TEST_GH/jobs_$page.json" ]; then cat "$WALLBOARD_TEST_GH/jobs_$page.json"
+        elif [ -f "$WALLBOARD_TEST_GH/jobs.json" ]; then cat "$WALLBOARD_TEST_GH/jobs.json"
         else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
       *"/actions/workflows/"*)
-        echo '{"workflow_runs":[]}' ;;
+        if [ -f "$WALLBOARD_TEST_GH/deploy_runs.json" ]; then cat "$WALLBOARD_TEST_GH/deploy_runs.json"
+        else echo '{"workflow_runs":[]}'; fi ;;
       *"/actions/runners?"*)
         if [ -f "$WALLBOARD_TEST_GH/runners.json" ]; then cat "$WALLBOARD_TEST_GH/runners.json"
         elif [ -f "$WALLBOARD_TEST_GH/runners_refused" ]; then
           echo "gh: Must have admin rights to Repository. (HTTP 403)" >&2; exit 1
+        elif [ -f "$WALLBOARD_TEST_GH/runners_limited" ]; then
+          echo "gh: API rate limit exceeded for user ID 1. (HTTP 403)" >&2; exit 1
         else echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi ;;
       *)
         echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -184,7 +189,7 @@ defmodule Wallboard.GitHubFetchTest do
       runs(dir, [{1, "in_progress"}])
       assert {:ok, first} = GitHub.fetch(rockets, nil, @now)
       assert first.own_by_run == %{1 => ["acme-mini-1", "acme-mini-2"]}
-      assert "runs/1/jobs?per_page=100" in asked(dir)
+      assert "runs/1/jobs?per_page=100&page=1" in asked(dir)
 
       # Finished: its jobs are no longer asked for, and it keeps them.
       runs(dir, [{1, "completed"}])
@@ -196,6 +201,65 @@ defmodule Wallboard.GitHubFetchTest do
       runs(dir, [{2, "completed"}])
       assert {:ok, later} = GitHub.fetch(rockets, done, DateTime.add(@now, 60))
       assert later.own_by_run == %{}
+    end
+
+    test "a run held for an approval has its jobs read, and waits for that approval",
+         %{dir: dir} do
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+      runs(dir, [{1, "waiting"}])
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert "runs/1/jobs?per_page=100&page=1" in asked(dir)
+      assert %{list: [_ | _]} = facts.jobs[1]
+
+      assert [%{status: :waiting, step: "Waiting for approval"}] =
+               GitHub.summary(facts, rockets, @now).running
+    end
+
+    test "a deploy held for an approval since before the last day has its jobs read",
+         %{dir: dir} do
+      lists(dir, ["gate.yml", "prod-deploy.yml"])
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+
+      # Held since two days ago: in the deploy list, not in the last day's runs.
+      File.write!(
+        Path.join(dir, "deploy_runs.json"),
+        Jason.encode!(%{
+          workflow_runs: [
+            %{
+              id: 77,
+              name: "Deploy",
+              path: ".github/workflows/prod-deploy.yml",
+              event: "push",
+              head_branch: "main",
+              head_sha: "abc77",
+              status: "waiting",
+              created_at: "2026-09-28T17:00:00Z",
+              run_started_at: "2026-09-28T17:00:00Z",
+              updated_at: "2026-09-28T17:20:00Z"
+            }
+          ]
+        })
+      )
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert "runs/77/jobs?per_page=100&page=1" in asked(dir)
+      assert %{list: [_ | _]} = facts.jobs[77]
+    end
+
+    test "a held deploy in both the last day's runs and the deploy list is read once",
+         %{dir: dir} do
+      lists(dir, ["gate.yml", "prod-deploy.yml"])
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+      runs(dir, [{1, "waiting"}])
+      File.cp!(Path.join(dir, "runs.json"), Path.join(dir, "deploy_runs.json"))
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert Enum.count(asked(dir), &(&1 == "runs/1/jobs?per_page=100&page=1")) == 1
+      assert %{list: [_ | _]} = facts.jobs[1]
     end
 
     test "a job without the self-hosted label is yours when GitHub lists its runner",
@@ -286,6 +350,70 @@ defmodule Wallboard.GitHubFetchTest do
     end
   end
 
+  describe "a big run's jobs" do
+    # 150 jobs, as GitHub gives them: 100 on the first page, 50 on the next.
+    defp big_run(dir) do
+      jobs =
+        for id <- 1..150,
+            do: %{id: id, run_id: 1, name: "test (#{id})", status: "completed", labels: []}
+
+      {first, second} = Enum.split(jobs, 100)
+      File.write!(Path.join(dir, "jobs_1.json"), Jason.encode!(%{total_count: 150, jobs: first}))
+      File.write!(Path.join(dir, "jobs_2.json"), Jason.encode!(%{total_count: 150, jobs: second}))
+    end
+
+    test "are all read while it runs, a page at a time", %{dir: dir} do
+      [rockets, _] = repos(@rockets)
+      big_run(dir)
+      runs(dir, [{1, "in_progress"}])
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert facts.jobs[1].total == 150
+      assert length(facts.jobs[1].list) == 150
+
+      calls = asked(dir)
+      assert "runs/1/jobs?per_page=100&page=1" in calls
+      assert "runs/1/jobs?per_page=100&page=2" in calls
+      refute "runs/1/jobs?per_page=100&page=3" in calls
+    end
+
+    test "stop at 10 pages: a run with more keeps its first 1,000", %{dir: dir} do
+      for page <- 1..11 do
+        jobs =
+          for n <- 1..100,
+              do: %{id: page * 1000 + n, run_id: 1, name: "t", status: "completed", labels: []}
+
+        File.write!(
+          Path.join(dir, "jobs_#{page}.json"),
+          Jason.encode!(%{total_count: 5000, jobs: jobs})
+        )
+      end
+
+      assert {:ok, rows} = GitHub.fetch_run_jobs("acme/rockets", 1)
+      assert length(rows) == 1000
+
+      calls = asked(dir)
+      assert "runs/1/jobs?per_page=100&page=10" in calls
+      refute "runs/1/jobs?per_page=100&page=11" in calls
+    end
+
+    test "a later page that fails fails the read, rather than give part of the jobs",
+         %{dir: dir} do
+      big_run(dir)
+      File.rm!(Path.join(dir, "jobs_2.json"))
+
+      assert {:error, _} = GitHub.fetch_run_jobs("acme/rockets", 1)
+    end
+
+    test "are all read for its panel once it finished", %{dir: dir} do
+      big_run(dir)
+
+      assert {:ok, rows} = GitHub.fetch_run_jobs("acme/rockets", 1)
+      assert length(rows) == 150
+      assert rows |> Enum.map(& &1.job_id) |> Enum.uniq() |> length() == 150
+    end
+  end
+
   describe "the repository's own runners" do
     test "are read with the deploys, and a failed read keeps the last list", %{dir: dir} do
       File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
@@ -316,6 +444,27 @@ defmodule Wallboard.GitHubFetchTest do
 
       assert Store.runner_names("acme/rockets") ==
                ["acme-linux-1", "acme-mini-1", "acme-mini-2"]
+    end
+
+    test "stay through GitHub's rate limit, and are asked for again at the usual time",
+         %{dir: dir} do
+      File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
+      [rockets, _] = repos(@rockets)
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      asked(dir)
+
+      File.rm!(Path.join(dir, "runners.json"))
+      File.write!(Path.join(dir, "runners_limited"), "")
+      later = DateTime.add(@now, rockets.deploy_poll_seconds)
+      assert {:ok, limited} = GitHub.fetch(rockets, facts, later)
+      assert "runners?per_page=100" in asked(dir)
+      assert limited.runners == facts.runners
+
+      # Not hidden for an hour: asked again at the deploys' next turn.
+      assert {:ok, _} =
+               GitHub.fetch(rockets, limited, DateTime.add(later, rockets.deploy_poll_seconds))
+
+      assert "runners?per_page=100" in asked(dir)
     end
 
     test "that GitHub refuses to list are not asked for again within the hour", %{dir: dir} do

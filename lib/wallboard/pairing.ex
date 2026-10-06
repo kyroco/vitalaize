@@ -74,7 +74,10 @@ defmodule Wallboard.Pairing do
   not hold, and a challenge lasts a minute. The answer carries the serial
   number and the hub's signature, and the collector believes "removed"
   only with a signature from a hub certificate of its own hub's authority.
-  The question and the answer cross the network as plain HTTP, like the
+  The door says "removed" only for a machine the owner revoked. One the
+  list of machines does not hold, as after an older copy of the list is
+  put back, gets no answer either way and keeps trying, and works again
+  once the right list is back. The question and the answer cross the network as plain HTTP, like the
   rest of the door: anyone on the network who watches sees the machine's
   certificate (its name) and the answer, but cannot fake one.
 
@@ -543,16 +546,43 @@ defmodule Wallboard.Pairing do
       {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
   end
 
-  # A folder only this user can read. Each file is written beside its
-  # place and moved over it, so it is never there half written or, for a
-  # moment, readable by others. The certificate of an earlier pairing goes
-  # first, so the folder never holds a certificate and a key that do not
-  # belong together.
+  @doc """
+  Keeps `port`, the board's port as the hub now runs it, in the
+  `hub.json` pairing left in `dir`, so the door is asked there after a
+  restart too. The rest of the file stays as it is. `:ok` when it is kept
+  or was already there, `:error` when there is no `hub.json` to read or
+  it cannot be written.
+  """
+  def keep_board_port(dir, port) do
+    with {:ok, text} <- File.read(Path.join(dir, "hub.json")),
+         {:ok, %{} = hub} <- Jason.decode(text),
+         :ok <-
+           if(hub["port"] == port,
+             do: :ok,
+             else: put(dir, [{"hub.json", Jason.encode!(Map.put(hub, "port", port))}])
+           ) do
+      :ok
+    else
+      _ -> :error
+    end
+  end
+
+  # A folder only this user can read. The certificate of an earlier
+  # pairing goes first, so the folder never holds a certificate and a key
+  # that do not belong together.
   defp save(dir, files) do
     File.mkdir_p!(dir)
     File.chmod!(dir, 0o700)
     File.rm(Path.join(dir, "cert.pem"))
+    put(dir, files)
+  rescue
+    e in [File.Error, File.RenameError] ->
+      {:error, {:folder, "#{dir}: #{:file.format_error(e.reason)}"}}
+  end
 
+  # Each file is written beside its place and moved over it, so it is
+  # never there half written or, for a moment, readable by others.
+  defp put(dir, files) do
     for {name, text} <- files do
       tmp = Path.join(dir, ".#{name}.#{System.unique_integer([:positive])}.tmp")
       File.write!(tmp, "")
