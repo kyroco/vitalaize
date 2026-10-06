@@ -198,6 +198,39 @@ defmodule Wallboard.GitHubFetchTest do
       assert later.own_by_run == %{}
     end
 
+    test "a job without the self-hosted label is yours when GitHub lists its runner",
+         %{dir: dir} do
+      [rockets, _] = repos(@rockets)
+
+      # As a workflow with `runs-on: acme-mac` asks: the jobs on acme-mini-1
+      # and acme-mini-2 carry only their own label.
+      jobs =
+        "github/jobs_runners.json"
+        |> Fixtures.read!()
+        |> Jason.decode!()
+        |> update_in(["jobs", Access.all(), "labels"], fn labels ->
+          if "self-hosted" in labels, do: ["acme-mac"], else: labels
+        end)
+
+      File.write!(Path.join(dir, "jobs.json"), Jason.encode!(jobs))
+      runs(dir, [{1, "in_progress"}])
+
+      # GitHub will not list the runners: nothing says they are yours.
+      File.write!(Path.join(dir, "runners_refused"), "")
+      assert {:ok, hidden} = GitHub.fetch(rockets, nil, @now)
+      assert hidden.own_by_run == %{}
+      assert GitHub.summary(hidden, rockets, @now).runners == []
+
+      # GitHub lists them: the run is marked, and the busy one shows its job.
+      File.rm!(Path.join(dir, "runners_refused"))
+      File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
+      assert {:ok, listed} = GitHub.fetch(rockets, nil, @now)
+      assert listed.own_by_run == %{1 => ["acme-mini-1", "acme-mini-2"]}
+
+      busy = Enum.find(GitHub.summary(listed, rockets, @now).runners, &(&1.name == "acme-mini-2"))
+      assert {busy.state, busy.job} == {:busy, "Browser tests"}
+    end
+
     test "a run that started and finished between polls gets its runners from the archive",
          %{dir: dir} do
       start_supervised!({Store, path: ":memory:"})
