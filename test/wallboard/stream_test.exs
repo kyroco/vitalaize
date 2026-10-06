@@ -158,7 +158,13 @@ defmodule Wallboard.StreamTest do
            outbox: outbox,
            watcher: watcher,
            tick_ms: 30,
-           processes: fn -> {:ok, Agent.get(world, &Map.get(&1, :ps, []))} end,
+           processes: fn ->
+             case Agent.get(world, &Map.get(&1, :ps, [])) do
+               # A look at the runners that does not come back.
+               {:hang, ms} -> Process.sleep(ms) && {:ok, []}
+               lines -> {:ok, lines}
+             end
+           end,
            client: [name: :"stream-client-#{System.unique_integer([:positive])}", backoff: @fast]
          ] ++ sender},
         id: :sender
@@ -1062,6 +1068,21 @@ defmodule Wallboard.StreamTest do
       assert html =~ "1 runner ran this repository's jobs in the last day"
       refute html =~ "offline"
       refute html =~ "online"
+    end
+
+    test "a look at the runners that hangs does not hold up the sessions' events", c do
+      # As a .runner some program keeps making hard to read would: the look
+      # does not answer for a minute.
+      processes(c, {:hang, 60_000})
+
+      start_hub(c)
+      pair(c)
+      w = start_collector(c, runners_ms: 30)
+
+      add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
+      look(w)
+      drained(w)
+      assert Store.collector_events("papa", @claude_id) != []
     end
 
     test "a hub that restarts hears the runners again, with nothing changed on the machine", c do
