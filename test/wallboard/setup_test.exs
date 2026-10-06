@@ -815,6 +815,7 @@ defmodule Wallboard.SetupTest do
     defp approve_when_asked do
       Task.async(fn ->
         Stream.repeatedly(fn ->
+          # A pause between looks at the mailbox, not a wait for a timer.
           Process.sleep(20)
           Door.pending()
         end)
@@ -954,7 +955,9 @@ defmodule Wallboard.SetupTest do
 
       File.cd!(started_in, fn ->
         assert %{token: "hunter2", rotate_seconds: 11} = Settings.load!()
-        watch = start_supervised!({Watch, name: :watch_moved, every_ms: 20, listener: self()})
+        # Its looks are made here, by hand, rather than on its timer.
+        watch =
+          start_supervised!({Watch, name: :watch_moved, every_ms: 3_600_000, listener: self()})
 
         # With the folder gone there is no settings file to find, and the
         # saved settings are looked for in the release's folder. Something
@@ -963,7 +966,12 @@ defmodule Wallboard.SetupTest do
         assert Settings.saved_path() == Path.join(release, "settings.json")
         File.write!(Path.join(release, "settings.json"), Jason.encode!(%{brand: %{name: "X"}}))
 
-        refute_receive {:settings, :reloaded}, 300
+        for _ <- 1..3 do
+          send(watch, :look)
+          :sys.get_state(watch)
+        end
+
+        refute_received {:settings, :reloaded}
         assert_received {:settings, :moved}
         assert %{token: "hunter2", rotate_seconds: 11} = Settings.get()
         assert Process.alive?(watch)
