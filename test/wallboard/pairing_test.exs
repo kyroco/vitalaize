@@ -960,9 +960,7 @@ defmodule Wallboard.PairingTest do
     end
 
     test "a machine that gave up before Approve keeps the certificate it holds", %{dir: dir} do
-      stop_supervised!(Door)
       link = Path.join(dir, "link")
-      start_supervised!({Door, dir: link, link_port: Hub.port(), limits: %{gone_ms: 400}})
 
       # The machine holds a certificate already, asks for another, and is
       # stopped. The owner approves a moment later.
