@@ -249,6 +249,46 @@ defmodule Wallboard.GitHubFetchTest do
       assert %{list: [_ | _]} = facts.jobs[77]
     end
 
+    test "a deploy only in the deploy list keeps its runners after it finishes", %{dir: dir} do
+      lists(dir, ["gate.yml", "prod-deploy.yml"])
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+
+      deploy = fn status ->
+        File.write!(
+          Path.join(dir, "deploy_runs.json"),
+          Jason.encode!(%{
+            workflow_runs: [
+              %{
+                id: 77,
+                name: "Deploy",
+                path: ".github/workflows/prod-deploy.yml",
+                event: "push",
+                head_branch: "main",
+                head_sha: "abc77",
+                status: status,
+                conclusion: if(status == "completed", do: "success"),
+                created_at: "2026-09-28T17:00:00Z",
+                run_started_at: "2026-09-28T17:00:00Z",
+                updated_at: "2026-09-30T17:50:00Z"
+              }
+            ]
+          })
+        )
+      end
+
+      # Approved two days after it was made, it runs on your machines.
+      deploy.("in_progress")
+      assert {:ok, first} = GitHub.fetch(rockets, nil, @now)
+      assert first.own_by_run == %{77 => ["acme-mini-1", "acme-mini-2"]}
+
+      # Finished, at the deploys' next turn: it keeps them.
+      deploy.("completed")
+      later = DateTime.add(@now, rockets.deploy_poll_seconds)
+      assert {:ok, done} = GitHub.fetch(rockets, first, later)
+      assert done.own_by_run == %{77 => ["acme-mini-1", "acme-mini-2"]}
+    end
+
     test "a held deploy in both the last day's runs and the deploy list is read once",
          %{dir: dir} do
       lists(dir, ["gate.yml", "prod-deploy.yml"])
