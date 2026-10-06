@@ -1121,6 +1121,31 @@ defmodule Wallboard.StreamTest do
     assert :sys.get_state(w.sender).client == client
   end
 
+  test "the board's port from an older pairing is not written over a newer one", c do
+    start_hub(c, board_port: 4800)
+    pair(c, "papa", %{port: 4747})
+    # The sender looks at its files only when the test says (`tick/1`).
+    w = start_collector(c, tick_ms: 3_600_000)
+    dir = c.collector.collector.dir
+    hub = fn -> dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() end
+    wait_until(fn -> tick(w) && hub.()["port"] == 4800 end)
+    client = :sys.get_state(w.sender).client
+
+    # Paired again meanwhile, with a board on another port. The file's time
+    # is kept to the second, so the new one is dated a second on.
+    pair(c, "quebec", %{port: 4900})
+    File.touch!(Path.join(dir, "hub.json"), System.os_time(:second) + 1)
+
+    # The old client's word comes in before the sender has looked again.
+    send(w.sender, {:wallboard_link, {:board_port, 4800}})
+    :sys.get_state(w.sender)
+    assert hub.()["port"] == 4900
+
+    # And its next look sees the new pairing and starts a new client.
+    tick(w)
+    refute :sys.get_state(w.sender).client == client
+  end
+
   test "a collector that is not paired sends nothing, and starts once it is", c do
     start_hub(c)
     w = start_collector(c)
