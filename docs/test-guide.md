@@ -193,6 +193,16 @@ again." The hub's log says "Link: <machine> was removed." The collector's log
 says "Collector: the hub removed this machine. Nothing more is sent." Its cards
 on the board turn stale.
 
+A machine disconnected while it is off is told too. Pair it again (below),
+turn its Wi-Fi off, and disconnect it the same way: its row stays in the list
+while it is away. Turn its Wi-Fi back on.
+
+**You should see:** within about half a minute the collector's log says "Link:
+the hub says it removed this machine while it was away. It will not connect
+again.", and the app shows the machine as removed, not as down. A machine paired
+before 0.4.0 asks on the board's usual port, 4747; on a board with another port
+it stays on down until it is paired again.
+
 To connect it again: **Pair again…** in the app. On Linux, run
 `bin/vitalaize setup` and, at "A hub's address to pair again, or Enter to keep
 this", type the hub's address. Enter alone keeps the pairing the hub just took

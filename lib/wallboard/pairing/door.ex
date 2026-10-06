@@ -30,6 +30,13 @@ defmodule Wallboard.Pairing.Door do
   asks again.
 
   Every change is announced on the mailbox's topic (`Wallboard.Mailbox`).
+
+  The door also answers a machine that already paired and whose link keeps
+  failing: is its certificate still good? (`challenge/1`, then `check/4`.)
+  The TLS handshake refuses a removed machine without saying why, so
+  without this a machine removed while it was off would try for ever. It
+  answers only a machine that proves it holds the certificate's key, and
+  signs the answer with the hub's key.
   """
 
   use GenServer
@@ -79,6 +86,32 @@ defmodule Wallboard.Pairing.Door do
   @doc "Refuses a request. `:ok`, or `{:error, :gone}`."
   def refuse(id), do: call({:refuse, id}, {:error, :unavailable})
 
+  @doc """
+  A challenge for `check/4`, good for a minute (`check_ms`): `{:ok, bytes}`,
+  or `{:error, :busy}` for an address that asked too often. The door keeps
+  no list of them. Each carries the moment it was made and a seal that
+  only this running door can make, so one it made before a restart is
+  simply refused.
+  """
+  def challenge(from), do: call({:challenge, from})
+
+  @doc """
+  Whether a machine's certificate still works, asked by a machine whose
+  link keeps failing (`Wallboard.Pairing.check/2`). `proof` is the
+  machine's signature of `Wallboard.Pairing.check_text/2` over a challenge
+  from `challenge/1`.
+
+  `{:ok, %{answer, signature, hub_pem}}`, where `answer` is `"approved"` or
+  `"removed"` and `signature` is the hub's, over
+  `Wallboard.Pairing.answer_text/3`. `{:error, :bad_request}` for a
+  challenge this door did not make or that ran out, a certificate that is
+  not one of this hub's machines, or a proof not made with its key: such
+  a caller learns nothing. `{:error, :busy}` when the list of machines
+  cannot be read just now, or the address asked too often.
+  """
+  def check(from, challenge, cert_pem, proof),
+    do: call({:check, from, challenge, cert_pem, proof})
+
   # A hub with the link turned off has no door: every call says so.
   defp call(message, down \\ {:error, :unavailable}) do
     GenServer.call(__MODULE__, message, 15_000)
@@ -99,6 +132,8 @@ defmodule Wallboard.Pairing.Door do
        link_port: Keyword.fetch!(opts, :link_port),
        hub_name: opts[:hub_name],
        limits: limits,
+       # Seals the challenges of `check/4`. Never leaves this process.
+       secret: :crypto.strong_rand_bytes(32),
        requests: %{},
        # Calls and starts in the minute that began at `since`.
        window: %{since: now(), calls: %{}, starts: %{}, all: 0}
@@ -283,6 +318,40 @@ defmodule Wallboard.Pairing.Door do
     end
   end
 
+  def handle_call({:challenge, from}, _from, s) do
+    s = roll(s)
+
+    reply =
+      with :ok <- spend(s, from, :call),
+           do: {:ok, seal(s.secret, :crypto.strong_rand_bytes(16), now())}
+
+    {:reply, reply, count(s, from, :call)}
+  end
+
+  def handle_call({:check, from, challenge, cert_pem, proof}, _from, s) do
+    s = roll(s)
+
+    reply =
+      with :ok <- spend(s, from, :call),
+           true <- fresh?(s, challenge) || {:error, :bad_request},
+           {:ok, der} <- Authority.cert_bytes(cert_pem),
+           text = Pairing.check_text(challenge, der),
+           {:ok, serial, standing} <- Authority.standing(s.dir, der, text, proof) do
+        answer = if standing == :working, do: "approved", else: "removed"
+        text = Pairing.answer_text(challenge, serial, answer)
+        {signature, hub_pem} = Authority.hub_sign(s.dir, text)
+        {:ok, %{answer: answer, signature: signature, hub_pem: hub_pem}}
+      else
+        {:error, reason} when reason in [:busy, :unreadable] -> {:error, :busy}
+        _ -> {:error, :bad_request}
+      end
+
+    {:reply, reply, count(s, from, :call)}
+  rescue
+    # The authority's folder could not be read just now.
+    _ -> {:reply, {:error, :busy}, count(s, from, :call)}
+  end
+
   @impl true
   def handle_info(:sweep, s) do
     Process.send_after(self(), :sweep, min(@sweep_ms, s.limits.confirm_ms))
@@ -408,6 +477,23 @@ defmodule Wallboard.Pairing.Door do
     if Enum.any?(drop, fn {_, r} -> r.state == :pending end), do: changed()
     %{s | requests: Map.new(keep)}
   end
+
+  # A challenge: a random number and the moment it was made, sealed with
+  # the door's secret.
+  defp seal(secret, random, at) do
+    body = <<random::binary-size(16), at::signed-64>>
+    body <> :crypto.mac(:hmac, :sha256, secret, body)
+  end
+
+  # One this door made, less than `check_ms` ago.
+  defp fresh?(s, <<body::binary-size(24), mac::binary-size(32)>>) do
+    <<_random::binary-size(16), at::signed-64>> = body
+
+    Plug.Crypto.secure_compare(:crypto.mac(:hmac, :sha256, s.secret, body), mac) and
+      (now() - at) in 0..s.limits.check_ms
+  end
+
+  defp fresh?(_s, _challenge), do: false
 
   defp changed, do: Mailbox.changed()
 

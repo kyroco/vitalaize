@@ -61,7 +61,21 @@ defmodule Wallboard.Pairing do
   owner), each one in a million. Each address may start six requests a
   minute and make 240 calls a minute; the door takes sixty new requests a
   minute in all. A request body over 4 KB is refused. The door takes these
-  three calls and nothing else: no session data goes through it.
+  three calls, and the check below, and nothing else: no session data goes
+  through it.
+
+  ## A machine removed while it was away
+
+  The link refuses a removed machine in its TLS handshake, which tells the
+  machine only that the handshake failed. So a machine whose tries keep
+  failing asks the door (`check/2`) whether its certificate still works.
+  The door answers only a machine that signs its challenge with the
+  certificate's key, so nobody else learns which machines are approved,
+  and a challenge lasts a minute. The answer carries the serial number and
+  the hub's signature, and the collector believes "removed" only with a
+  signature from a hub certificate of its own hub's authority. Anyone on
+  the network sees the answer, as they see the rest of the door's plain
+  HTTP, but cannot fake one.
 
   ## Where "safe enough" ends
 
@@ -97,7 +111,9 @@ defmodule Wallboard.Pairing do
     starts_per_minute: 6,
     calls_per_minute: 240,
     starts_per_minute_all: 60,
-    max_body_bytes: 4_096
+    max_body_bytes: 4_096,
+    # How long a challenge for `check/2` may be answered.
+    check_ms: 60_000
   }
 
   @doc "The door's limits."
@@ -133,6 +149,21 @@ defmodule Wallboard.Pairing do
     digits = n |> rem(1_000_000) |> Integer.to_string() |> String.pad_leading(6, "0")
     String.slice(digits, 0, 3) <> "-" <> String.slice(digits, 3, 3)
   end
+
+  @doc """
+  What a collector signs to ask the door whether its certificate still
+  works (`check/2`): the hub's challenge and the certificate itself.
+  """
+  def check_text(challenge, cert_der) when is_binary(challenge) and is_binary(cert_der),
+    do: framed(["vitalaize-pair-check-1", challenge, cert_der])
+
+  @doc """
+  What the hub signs in answer: the challenge, the certificate's serial
+  number, and `"approved"` or `"removed"`.
+  """
+  def answer_text(challenge, serial, answer)
+      when is_binary(challenge) and is_binary(serial) and is_binary(answer),
+      do: framed(["vitalaize-pair-answer-1", challenge, serial, answer])
 
   # Each part with its length in front, so two different lists of parts can
   # never run together into the same bytes.
@@ -263,8 +294,14 @@ defmodule Wallboard.Pairing do
           files = [
             {"key.pem", key_pem},
             {"ca.pem", opened.ca_pem},
+            # `port` is the board's own, where the door is (`check/2`).
             {"hub.json",
-             Jason.encode!(%{host: hub.host, link_port: opened.link_port, machine: name})},
+             Jason.encode!(%{
+               host: hub.host,
+               port: hub.port,
+               link_port: opened.link_port,
+               machine: name
+             })},
             # Last: `load/1` takes the folder as paired only with all four,
             # and a certificate must never sit beside an older key.
             {"cert.pem", cert_pem}
@@ -372,6 +409,65 @@ defmodule Wallboard.Pairing do
   end
 
   defp now, do: System.monotonic_time(:millisecond)
+
+  @doc """
+  Asks the hub's pairing door whether this machine's certificate still
+  works. The link's client asks when its tries keep failing: the TLS
+  handshake refuses a revoked certificate, and says only that it failed,
+  not why.
+
+  `door` is the board's address, `%{host, port}`. `tls` holds the
+  `cert_pem`, `key_pem` and `ca_pem` pairing saved. The door gives a
+  challenge, and this machine signs it with its key, so the door answers
+  only the machine that holds the certificate.
+
+  `{:ok, :removed}` only when the hub said so and signed it with a hub
+  certificate from the authority in `ca_pem`: someone on the network
+  cannot switch a collector off by answering in the hub's place.
+  `{:ok, :approved}` while the hub still takes the certificate, and
+  `{:error, reason}` when there is no answer to believe.
+  """
+  def check(door, %{cert_pem: cert_pem, key_pem: key_pem, ca_pem: ca_pem}) do
+    with {:ok, cert_der} <- Authority.cert_bytes(cert_pem),
+         {:ok, serial} <- Authority.serial(cert_der),
+         {:ok, %{"challenge" => hex}} when is_binary(hex) <- call(door, "check", %{}),
+         {:ok, challenge} when byte_size(challenge) in 1..256 <- Base.decode16(hex, case: :mixed) do
+      proof = Authority.prove(key_pem, check_text(challenge, cert_der))
+      asked = %{challenge: hex, cert: cert_pem, proof: Base.encode16(proof, case: :lower)}
+
+      with {:ok, reply} <- call(door, "check", asked),
+           do: answered(reply, ca_pem, challenge, serial)
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, {:hub, "the hub's answer could not be read"}}
+    end
+  end
+
+  # Believed only with the hub's signature over this very challenge and
+  # this certificate's serial number.
+  defp answered(
+         %{"answer" => answer, "signature" => hex, "hub" => hub_pem},
+         ca_pem,
+         challenge,
+         serial
+       )
+       when answer in ["approved", "removed"] and is_binary(hex) and is_binary(hub_pem) do
+    with {:ok, signature} <- Base.decode16(hex, case: :mixed),
+         true <-
+           Authority.hub_signed?(
+             ca_pem,
+             hub_pem,
+             answer_text(challenge, serial, answer),
+             signature
+           ) do
+      {:ok, if(answer == "removed", do: :removed, else: :approved)}
+    else
+      _ -> {:error, {:hub, "the answer is not signed by this machine's hub"}}
+    end
+  end
+
+  defp answered(_reply, _ca_pem, _challenge, _serial),
+    do: {:error, {:hub, "the hub's answer could not be read"}}
 
   # "192.168.1.20", "192.168.1.20:4747" or "http://192.168.1.20:4747".
   defp address(text) when is_binary(text) do
