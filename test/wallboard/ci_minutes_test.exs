@@ -349,9 +349,12 @@ defmodule Wallboard.CiMinutesTest do
       pr(2, "feature-a", "develop", @t0 - 7000, @t0 - 6000)
       # staging: took a merge and has no pull request of its own.
       pr(3, "hotfix", "staging", @t0 - 7000, @t0 - 6000)
-      # stack-base: merged into before its own pull request merges.
-      pr(4, "stack-base", "main", @t0 - 9000, nil)
+      # stack-base: merged into before its own pull request merges. The
+      # board saves only closed pull requests, so its open one, #4, is
+      # known only from GitHub's tag on a run of its branch.
       pr(5, "stack-top", "stack-base", @t0 - 7000, @t0 - 6000)
+      run(9, branch: "stack-base", created_at: @t0 - 8000, pr: 4)
+      jobs(9, [job(9, 60, "ubuntu-latest")])
 
       for {branch, id} <- Enum.with_index(~w(develop staging stack-base), 1) do
         run(id, branch: branch, created_at: @t0 + 600, event: "push")

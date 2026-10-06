@@ -403,9 +403,12 @@ defmodule Wallboard.Archive.CiMinutes do
   end
 
   # The long-lived branches of `repo` besides its default one, by the rule
-  # in the moduledoc: a pull request merged into the branch, and the branch
-  # has no pull request of its own that is open, or merged at or after the
-  # last merge into it. A fork's branch only shares the name.
+  # in the moduledoc: a pull request merged into the branch, and either the
+  # branch's own pull request merged before the last merge into it, or it
+  # has no pull request of its own. The board saves only closed pull
+  # requests, so an open one of its own is known from GitHub's tag on a run
+  # of the branch (GitHub tags none from a fork). A fork's pull request
+  # only shares the branch's name, as in `PullRequests`.
   defp long_lived(repo) do
     Store.query(
       """
@@ -413,11 +416,14 @@ defmodule Wallboard.Archive.CiMinutes do
         (SELECT base, max(merged_at) AS last_in FROM gh_prs
           WHERE lower(repo) = lower(?1) AND merged_at IS NOT NULL AND base IS NOT NULL
           GROUP BY base) t
-      WHERE NOT EXISTS
-        (SELECT 1 FROM gh_prs o
-          WHERE lower(o.repo) = lower(?1) AND o.branch = t.base
-            AND lower(coalesce(o.head_repo, o.repo)) = lower(o.repo)
-            AND (o.merged_at >= t.last_in OR (o.merged_at IS NULL AND o.closed_at IS NULL)))
+        LEFT JOIN
+        (SELECT branch, max(merged_at) AS merged FROM gh_prs
+          WHERE lower(repo) = lower(?1) AND lower(head_repo) = lower(repo)
+          GROUP BY branch) o ON o.branch = t.base
+      WHERE CASE WHEN o.merged IS NOT NULL THEN t.last_in > o.merged
+        ELSE o.branch IS NULL AND NOT EXISTS
+          (SELECT 1 FROM gh_runs r
+            WHERE lower(r.repo) = lower(?1) AND r.branch = t.base AND r.pr IS NOT NULL) END
       """,
       [repo]
     )
