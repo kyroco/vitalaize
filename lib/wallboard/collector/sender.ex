@@ -145,6 +145,8 @@ defmodule Wallboard.Collector.Sender do
       # been logged once already.
       runners: nil,
       logged: MapSet.new(),
+      # The look at the runners under way, if one is.
+      runners_task: nil,
       client: nil,
       # The hub's positions still to go back to, then the files the
       # client is still to forget, and whether both have been done at
@@ -175,10 +177,34 @@ defmodule Wallboard.Collector.Sender do
     {:noreply, state |> connect() |> rewind() |> pump()}
   end
 
+  # The runners are read in a task of their own, so a slow read (`ps`, or a
+  # .runner some program made hard to read) never holds up the sessions'
+  # events. A look starts only when the last one has answered, and the task
+  # is never stopped early: it ends by itself, and a `head` it started is
+  # killed when its time is up (see `Wallboard.Collector.Runners`).
+  def handle_info(:runners, %{runners_task: nil} = state) do
+    Process.send_after(self(), :runners, state.runners_ms)
+    processes = state.processes
+
+    task =
+      Task.Supervisor.async_nolink(Wallboard.TaskSupervisor, fn -> Runners.read(processes) end)
+
+    {:noreply, %{state | runners_task: task}}
+  end
+
   def handle_info(:runners, state) do
     Process.send_after(self(), :runners, state.runners_ms)
-    {:noreply, state |> read_runners() |> give_runners()}
+    {:noreply, state}
   end
+
+  def handle_info({ref, result}, %{runners_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | runners_task: nil}
+    {:noreply, state |> read_runners(result) |> give_runners()}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{runners_task: %Task{ref: ref}} = state),
+    do: {:noreply, %{state | runners_task: nil}}
 
   def handle_info({:wallboard_link, {:resume, points}}, state),
     do: {:noreply, %{state | resume: points} |> rewind() |> pump()}
@@ -301,8 +327,9 @@ defmodule Wallboard.Collector.Sender do
   # ---------------------------------------------------------------------------
   # GitHub runners
 
-  defp read_runners(state) do
-    case Runners.read(state.processes) do
+  # What a look at the runners found, `Runners.read/1`'s answer.
+  defp read_runners(state, result) do
+    case result do
       {list, unnamed} ->
         message = Filter.runners(list)
         sent = MapSet.new(message.runners, & &1.name)

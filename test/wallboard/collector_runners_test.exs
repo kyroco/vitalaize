@@ -143,6 +143,67 @@ defmodule Wallboard.CollectorRunnersTest do
       assert name_within_a_second(folder(c, "small", ~s({"agentName": "small"}))) ==
                {:ok, "small"}
     end
+
+    test "a .runner swapped between a plain file and a named pipe never holds the read", c do
+      path = folder(c, "swapped", nil)
+      plain = Path.join(c.dir, "plain.json")
+      fifo = Path.join(c.dir, "fifo")
+      File.write!(plain, ~s({"agentName": "swapped"}))
+      {_, 0} = System.cmd("mkfifo", [fifo])
+      runner = Path.join(path, ".runner")
+
+      # Another program puts each in place in turn, as fast as it can, so
+      # that a look at a plain file can be followed by an open of the pipe.
+      swap = """
+      while (1) {
+        for my $from (@ARGV[0, 1]) {
+          unlink "$ARGV[2].tmp"; link $from, "$ARGV[2].tmp"; rename "$ARGV[2].tmp", $ARGV[2];
+        }
+      }
+      """
+
+      swapper =
+        Port.open({:spawn_executable, System.find_executable("perl")}, [
+          :binary,
+          args: ["-e", swap, plain, fifo, runner]
+        ])
+
+      {:os_pid, swapper_pid} = Port.info(swapper, :os_pid)
+
+      ps = fn -> {:ok, ["#{path}/bin/Runner.Listener run"]} end
+
+      # Each read may take a tenth of a second here, not the usual second,
+      # so that the many reads that land on the pipe stay quick.
+      results =
+        for _ <- 1..200 do
+          task = Task.async(fn -> Runners.read(ps, 100) end)
+
+          case Task.yield(task, 3_000) do
+            {:ok, result} ->
+              result
+
+            nil ->
+              # A read stuck in the pipe: another program opens it to write,
+              # so the read lets go and the test run can end.
+              Port.open({:spawn_executable, System.find_executable("perl")},
+                args: ["-e", ~s{open(my $f, ">", $ARGV[0])}, fifo]
+              )
+
+              Task.shutdown(task, 2_000)
+              :still_reading
+          end
+        end
+
+      System.cmd("kill", ["-9", Integer.to_string(swapper_pid)])
+
+      # Every read answered: named, or the folder left unnamed.
+      refute :still_reading in results
+
+      assert Enum.all?(
+               results,
+               &(match?({[], [_]}, &1) or match?({[%{name: "swapped"}], []}, &1))
+             )
+    end
   end
 
   describe "on the hub" do

@@ -30,6 +30,8 @@ defmodule Wallboard.Collector.Runners do
   @ps_timeout_ms 5_000
   # A `.runner` file is a few hundred bytes.
   @file_max 64_000
+  # How long reading one may take.
+  @read_timeout_ms 1_000
 
   @doc """
   The runners running now: `{runners, unnamed}`, where `runners` is
@@ -38,16 +40,16 @@ defmodule Wallboard.Collector.Runners do
 
   `processes` gives the process list, one command line each, as
   `{:ok, [line]}` or `:error`; `processes/0` unless given (tests pass
-  their own).
+  their own). `read_timeout_ms` is how long reading one `.runner` may take.
   """
-  def read(processes \\ &processes/0) do
+  def read(processes \\ &processes/0, read_timeout_ms \\ @read_timeout_ms) do
     case processes.() do
       {:ok, lines} ->
         folders = parse(lines)
 
         {named, unnamed} =
           Enum.reduce(folders, {%{}, []}, fn {folder, state}, {named, unnamed} ->
-            case name(folder) do
+            case name(folder, read_timeout_ms) do
               {:ok, name} -> {Map.update(named, name, state, &busiest(&1, state)), unnamed}
               :error -> {named, [folder | unnamed]}
             end
@@ -91,9 +93,9 @@ defmodule Wallboard.Collector.Runners do
   @doc """
   The name GitHub knows the runner set up in `folder` by, from its
   `.runner` file: `{:ok, name}`, or `:error` when the file cannot be read
-  or holds no name.
+  or holds no name, or reading it takes longer than `read_timeout_ms`.
   """
-  def name(folder) do
+  def name(folder, read_timeout_ms \\ @read_timeout_ms) do
     path = Path.join(folder, ".runner")
 
     # Any program here can start a Runner.Listener from a folder it made, so
@@ -102,7 +104,7 @@ defmodule Wallboard.Collector.Runners do
     # that never ends. `lstat` does not follow a link, and the read stops
     # at the size limit even if the file grew since.
     with {:ok, %{type: :regular, size: size}} when size <= @file_max <- File.lstat(path),
-         {:ok, text} <- read_at_most(path, @file_max),
+         {:ok, text} <- read_at_most(path, @file_max, read_timeout_ms),
          true <- byte_size(text) <= @file_max,
          # The runner writes the file with a byte order mark first.
          text = String.replace_prefix(text, "﻿", ""),
@@ -115,17 +117,58 @@ defmodule Wallboard.Collector.Runners do
   end
 
   # One byte past the limit, so a file over it is seen to be over it.
-  defp read_at_most(path, max) do
-    File.open(path, [:read, :binary], fn io ->
-      case IO.binread(io, max + 1) do
-        data when is_binary(data) -> data
-        :eof -> ""
-        _ -> :error
-      end
-    end)
-    |> case do
-      {:ok, data} when is_binary(data) -> {:ok, data}
-      _ -> :error
+  #
+  # The file can be swapped for a named pipe between the look above and
+  # the open, and opening a pipe waits for a writer. An open by this
+  # program could neither be timed out nor stopped, so a small `head` does
+  # the reading, and is killed if it takes too long (a second, unless told).
+  defp read_at_most(path, max, timeout_ms) do
+    case System.find_executable("head") do
+      nil ->
+        :error
+
+      head ->
+        port =
+          Port.open({:spawn_executable, head}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: ["-c", Integer.to_string(max + 1), "--", path]
+          ])
+
+        deadline = System.monotonic_time(:millisecond) + timeout_ms
+        collect(port, [], deadline)
+    end
+  end
+
+  defp collect(port, acc, deadline) do
+    left = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} -> collect(port, [acc | data], deadline)
+      {^port, {:exit_status, 0}} -> {:ok, IO.iodata_to_binary(acc)}
+      {^port, {:exit_status, _}} -> :error
+    after
+      left ->
+        stop(port)
+        :error
+    end
+  end
+
+  defp stop(port) do
+    with {:os_pid, pid} <- Port.info(port, :os_pid),
+         do: System.cmd("kill", ["-9", Integer.to_string(pid)], stderr_to_stdout: true)
+
+    try do
+      Port.close(port)
+    rescue
+      ArgumentError -> :ok
+    end
+
+    receive do
+      {^port, _} -> :ok
+    after
+      0 -> :ok
     end
   end
 
