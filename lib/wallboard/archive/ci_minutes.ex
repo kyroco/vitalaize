@@ -56,8 +56,13 @@ defmodule Wallboard.Archive.CiMinutes do
   them. A branch is long-lived by the rule of
   `Wallboard.Archive.PullRequests`: a pull request merged into it after
   its own pull request merged (develop, which keeps taking features after
-  each release), or it took a merge and has no pull request of its own. A
-  stacked branch, merged into while its own pull request is open, is not.
+  each release), or it took a merge and no pull request of its own has
+  merged or is open (one closed without merging does not count). A stacked
+  branch, merged into while its first pull request of its own is open, is
+  not. The board saves only closed pull requests and reads those of the
+  last `backfill_days` when it first starts, so develop whose last release
+  merged before then, with a release open now, looks stacked until that
+  release merges.
   """
 
   alias Wallboard.{GitRemote, Settings, Store}
@@ -430,11 +435,13 @@ defmodule Wallboard.Archive.CiMinutes do
 
   # The long-lived branches of `repo` besides its default one, by the rule
   # in the moduledoc: a pull request merged into the branch, and either the
-  # branch's own pull request merged before the last merge into it, or it
-  # has no pull request of its own. The board saves only closed pull
-  # requests, so an open one of its own is known from GitHub's tag on a run
-  # of the branch (GitHub tags none from a fork). A fork's pull request
-  # only shares the branch's name, as in `PullRequests`.
+  # branch's own pull request merged before the last merge into it, or none
+  # of its own has merged and none is open. One closed without merging
+  # does not count. The board saves only closed pull requests, so an open
+  # one is known from GitHub's tag on a run of the branch with a number the
+  # board has not saved closed (GitHub tags none from a fork). A fork's
+  # pull request only shares the branch's name, as in `PullRequests`; the
+  # board saves no head repository only for a deleted fork.
   defp long_lived(repo) do
     Store.query(
       """
@@ -445,11 +452,13 @@ defmodule Wallboard.Archive.CiMinutes do
         LEFT JOIN
         (SELECT branch, max(merged_at) AS merged FROM gh_prs
           WHERE lower(repo) = lower(?1) AND lower(head_repo) = lower(repo)
+            AND merged_at IS NOT NULL
           GROUP BY branch) o ON o.branch = t.base
       WHERE CASE WHEN o.merged IS NOT NULL THEN t.last_in > o.merged
-        ELSE o.branch IS NULL AND NOT EXISTS
+        ELSE NOT EXISTS
           (SELECT 1 FROM gh_runs r
-            WHERE lower(r.repo) = lower(?1) AND r.branch = t.base AND r.pr IS NOT NULL) END
+            WHERE lower(r.repo) = lower(?1) AND r.branch = t.base AND r.pr IS NOT NULL
+              AND r.pr NOT IN (SELECT number FROM gh_prs WHERE lower(repo) = lower(?1))) END
       """,
       [repo]
     )

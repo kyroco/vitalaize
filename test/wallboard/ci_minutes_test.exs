@@ -393,11 +393,17 @@ defmodule Wallboard.CiMinutesTest do
     end
 
     test "a long-lived branch's runs are no session's; a stacked branch's still are" do
-      # develop: a feature merged into it after its own release merged.
+      # develop: a feature merged into it after its own release merged. A
+      # fork's branch of the same name merged later and changes nothing.
       pr(1, "develop", "main", @t0 - 9000, @t0 - 8000)
       pr(2, "feature-a", "develop", @t0 - 7000, @t0 - 6000)
-      # staging: took a merge and has no pull request of its own.
+      pr(8, "develop", "main", @t0 - 5500, @t0 - 5000, head_repo: "someone/shop")
+      # staging: took a merge and has no pull request of its own open or
+      # merged; #6, closed without merging, does not count.
       pr(3, "hotfix", "staging", @t0 - 7000, @t0 - 6000)
+      pr(6, "staging", "main", @t0 - 9500, nil, closed_at: @t0 - 9400)
+      run(8, branch: "staging", created_at: @t0 - 9450, pr: 6)
+      jobs(8, [job(8, 60, "ubuntu-latest")])
       # stack-base: merged into before its own pull request merges. The
       # board saves only closed pull requests, so its open one, #4, is
       # known only from GitHub's tag on a run of its branch.
@@ -419,8 +425,8 @@ defmodule Wallboard.CiMinutesTest do
       pr(5, "fix", "main", @t0, @t0 + 1000)
       # #9 is open, so the board has no row for it: its window starts when
       # #5 closed all the same. A fork's #7 on a branch of the same name
-      # closed later and sets nothing.
-      pr(7, "fix", "main", @t0 + 2000, @t0 + 3000, head_repo: "someone/shop")
+      # closed after #9's first push and sets nothing.
+      pr(7, "fix", "main", @t0 + 2000, @t0 + 4950, head_repo: "someone/shop")
 
       run(1, pr: 5, branch: "fix", created_at: @t0 + 100)
       run(2, branch: "fix", event: "push", created_at: @t0 + 200)
@@ -431,6 +437,12 @@ defmodule Wallboard.CiMinutesTest do
       run(5, pr: 5, branch: "fix", event: "push", created_at: @t0 + 300)
       for id <- 1..5, do: jobs(id, [job(id, 60 * id, "ubuntu-latest")])
 
+      assert %{paid: 8, runs: 3} = CiMinutes.for_pr(@repo, 5)
+      assert %{paid: 7, runs: 2} = CiMinutes.for_pr(@repo, 9)
+
+      # Once #9 closes and is saved, #5 still starts at the beginning: only
+      # a pull request that closed before it opened sets its start.
+      pr(9, "fix", "main", @t0 + 5000, @t0 + 6000)
       assert %{paid: 8, runs: 3} = CiMinutes.for_pr(@repo, 5)
       assert %{paid: 7, runs: 2} = CiMinutes.for_pr(@repo, 9)
     end
