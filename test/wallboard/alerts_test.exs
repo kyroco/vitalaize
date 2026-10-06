@@ -133,6 +133,25 @@ defmodule Wallboard.AlertsTest do
       assert Alerts.deliver(:ntfy, "x", settings) == {:error, "the server answered 403"}
     end
 
+    test "sending and waiting answers which channels took the text" do
+      took = catcher(200)
+      refused = catcher(500)
+
+      settings =
+        alerts(%{
+          slack_webhook: refused <> "/services/T/B/X",
+          ntfy_topic: "t1",
+          ntfy_server: took
+        })
+
+      assert Alerts.send_text_and_wait("x", "test", [:slack, :ntfy], settings) == [:ntfy]
+      assert_received {:got, "POST", "/services/T/B/X", _, _}
+      assert_received {:got, "POST", "/t1", _, "x"}
+
+      assert Alerts.send_text_and_wait("x", "test", [:slack], settings) == []
+      assert Alerts.send_text_and_wait("x", "test", [], settings) == []
+    end
+
     test "a server that cannot be reached fails without the address in the reason" do
       settings = alerts(%{slack_webhook: "http://127.0.0.1:1/services/HIDDENPATH"})
 
