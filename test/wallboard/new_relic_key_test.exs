@@ -148,15 +148,28 @@ defmodule Wallboard.NewRelicKeyTest do
   end
 
   # A stand-in for 1Password's op command, first on the PATH: it prints
-  # the key for the one address it knows.
-  defp fake_op(dir, ref, key, wait_s \\ 0) do
+  # the key for the one address it knows. With `gate`, a file's path, it
+  # first leaves `gate <> ".asked"` to say it was asked, then waits until
+  # the test writes `gate`, as 1Password waits while someone approves.
+  defp fake_op(dir, ref, key, gate \\ nil) do
     bin = Path.join(dir, "bin")
     File.mkdir_p!(bin)
     op = Path.join(bin, "op")
 
+    hold =
+      if gate,
+        do: """
+        touch #{inspect(gate <> ".asked")}
+        while [ ! -f #{inspect(gate)} ]; do
+          [ -d #{inspect(dir)} ] || exit 1
+          sleep 0.05
+        done
+        """,
+        else: ""
+
     File.write!(op, """
     #!/bin/sh
-    sleep #{wait_s}
+    #{hold}
     if [ "$1" = read ] && [ "$2" = #{inspect(ref)} ]; then echo #{inspect(key)}; exit 0; fi
     echo "no such item" >&2; exit 1
     """)
@@ -384,17 +397,20 @@ defmodule Wallboard.NewRelicKeyTest do
     test "a slow 1Password read that ends after a key is typed does not replace it", c do
       settings_file(c.dir, ~s(new_relic: %{api_key_ref: "op://Private/NR/key"}))
       # 1Password waits for someone to approve, as it can at start-up.
-      fake_op(c.dir, "op://Private/NR/key", @other, 1)
+      approved = Path.join(c.dir, "approved")
+      fake_op(c.dir, "op://Private/NR/key", @other, approved)
       at_start = Settings.load!()
       start_up = Task.async(fn -> Secrets.load_new_relic(at_start) end)
 
-      # Meanwhile the key is typed, and read at once.
-      Process.sleep(100)
+      # Meanwhile, while 1Password is asked, the key is typed, and read at
+      # once.
+      assert wait_for(fn -> File.exists?(approved <> ".asked") end)
       another_program_saves(c, %{"new_relic.api_key" => @key})
       Secrets.load_new_relic(Settings.load!())
       assert board_key() == @key
 
       # 1Password answers last: the typed key stays.
+      File.write!(approved, "")
       Task.await(start_up, 10_000)
       assert board_key() == @key
     end
@@ -482,6 +498,7 @@ defmodule Wallboard.NewRelicKeyTest do
     cond do
       fun.() -> true
       tries == 0 -> false
+      # A pause between looks at a condition, not a wait for a timer.
       true -> Process.sleep(20) && wait_for(fun, tries - 1)
     end
   end
