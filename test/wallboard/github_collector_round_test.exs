@@ -44,6 +44,9 @@ defmodule Wallboard.GitHubCollectorRoundTest do
         echo '[]' ;;
       *"/actions/runs?"*)
         if [ -f "$WALLBOARD_TEST_GH/runs_down" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+        if [ -f "$WALLBOARD_TEST_GH/days_down" ] && echo "$2" | grep -qF -f "$WALLBOARD_TEST_GH/days_down"; then
+          echo "gh: Server Error (HTTP 502)" >&2; exit 1
+        fi
         case "$2" in
           *"created=2026-10-03"*)
             echo '{"total_count": 1, "workflow_runs": [{"id": 2, "run_attempt": 1, "status": "completed", "conclusion": "failure", "head_branch": "feature", "created_at": "2026-10-03T16:00:00Z"}]}'
@@ -96,6 +99,13 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     end
   end
 
+  # The days whose runs gh fails to give, until changed.
+  defp days_down(dir, []), do: File.rm(Path.join(dir, "days_down"))
+
+  defp days_down(dir, days) do
+    File.write!(Path.join(dir, "days_down"), Enum.map(days, &"created=#{&1}\n"))
+  end
+
   # The days whose runs gh was asked for since the last look.
   defp days_read(dir) do
     for line <- asked(dir), [_, day] <- [Regex.run(~r/created=([0-9-]+)/, line)], do: day
@@ -112,7 +122,15 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     monday = ~U[2026-10-05 13:00:00Z]
 
     assert {:ok, _, _} = GitHubCollector.round(settings, monday)
-    assert days_read(dir) == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+
+    assert days_read(dir) == [
+             "2026-10-01",
+             "2026-10-02",
+             "2026-10-03",
+             "2026-10-04",
+             "2026-10-05"
+           ]
+
     assert [%{conclusion: "failure"}] = Store.query("SELECT * FROM gh_runs WHERE run_id = 2", [])
 
     assert Store.get_meta("github_runs_through:acme/shop") ==
@@ -133,6 +151,64 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     Store.put_meta("github_runs_through:acme/shop", Integer.to_string(friday))
 
     assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-10-05 13:00:00Z])
+    assert days_read(dir) == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+  end
+
+  test "a run still going across midnight UTC at the last round is read again after days off",
+       %{dir: dir, settings: settings} do
+    # The last good round began Friday 9:10 PM Eastern, more than an hour
+    # into GitHub's Saturday, while a run created Friday 7:50 PM Eastern
+    # (GitHub's Friday) was still going. The Mac was then closed until Monday.
+    settings = put_in(settings.archive.backfill_days, 14)
+    Store.put_meta("github_backfill:acme/shop", "2026-09-20")
+    friday = DateTime.to_unix(~U[2026-10-03 01:10:00Z])
+    Store.put_meta("github_runs_through:acme/shop", Integer.to_string(friday))
+
+    assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-10-05 13:00:00Z])
+    assert days_read(dir) == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+  end
+
+  test "a day that cannot be read keeps the other days, and is read again next round",
+       %{dir: dir, settings: settings} do
+    settings = put_in(settings.archive.backfill_days, 14)
+    Store.put_meta("github_backfill:acme/shop", "2026-09-20")
+    friday = DateTime.to_unix(~U[2026-10-02 21:55:00Z])
+    Store.put_meta("github_runs_through:acme/shop", Integer.to_string(friday))
+    days_down(dir, ["2026-10-02"])
+    monday = ~U[2026-10-05 13:00:00Z]
+
+    # Saturday's run, the jobs of the run read on the other days, and the
+    # pull requests are all saved, though Friday failed.
+    assert {:ok, _, 1} = GitHubCollector.round(settings, monday)
+    assert [_] = Store.query("SELECT run_id FROM gh_runs WHERE run_id = 2", [])
+    assert [_, _] = Store.query("SELECT attempt FROM gh_jobs", [])
+    assert Enum.any?(asked(dir), &String.contains?(&1, "/pulls?"))
+
+    # Friday comes back, and the next round starts at it.
+    days_down(dir, [])
+    later = DateTime.add(monday, 300)
+    assert {:ok, _, _} = GitHubCollector.round(settings, later)
+    assert days_read(dir) == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+
+    # Once it is read, the round after goes back to yesterday and today.
+    assert {:ok, _, _} = GitHubCollector.round(settings, DateTime.add(later, 300))
+    assert days_read(dir) == ["2026-10-04", "2026-10-05"]
+  end
+
+  test "when several days cannot be read, the next round starts at the earliest",
+       %{dir: dir, settings: settings} do
+    settings = put_in(settings.archive.backfill_days, 14)
+    Store.put_meta("github_backfill:acme/shop", "2026-09-20")
+    friday = DateTime.to_unix(~U[2026-10-02 21:55:00Z])
+    Store.put_meta("github_runs_through:acme/shop", Integer.to_string(friday))
+    monday = ~U[2026-10-05 13:00:00Z]
+
+    days_down(dir, ["2026-10-02", "2026-10-04"])
+    assert {:ok, _, _} = GitHubCollector.round(settings, monday)
+    assert length(days_read(dir)) == 5
+
+    days_down(dir, [])
+    assert {:ok, _, _} = GitHubCollector.round(settings, DateTime.add(monday, 300))
     assert days_read(dir) == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
   end
 

@@ -8,10 +8,11 @@ defmodule Wallboard.Archive.GitHubCollector do
     * on the very first round, saves the last `backfill_days` of runs, one
       day at a time (GitHub returns at most 1,000 runs for a filtered list,
       and a busy repo can pass that in two weeks)
-    * saves the runs created since the day of the last good round (an hour
-      early, and no further back than `backfill_days`), so runs created
-      while the board was off are not lost, and always yesterday's and
-      today's, which picks up runs that finished or were rerun since
+    * saves the runs created since the day before the last good round's
+      day (no further back than `backfill_days`), so runs created while the
+      board was off are not lost, and always yesterday's and today's, which
+      picks up runs that finished or were rerun since. A day that cannot be
+      read does not lose the others: it is read again next round
     * saves the jobs of up to `github_jobs_per_round` finished runs that do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
@@ -134,10 +135,10 @@ defmodule Wallboard.Archive.GitHubCollector do
     key = "github_backfill:" <> repo
     runs_through_key = "github_runs_through:" <> repo
 
-    with {:ok, runs} <- fetch_days(repo, run_days(key, runs_through_key, today, a, now)) do
+    with {:ok, runs, failed} <- fetch_days(repo, run_days(key, runs_through_key, today, a, now)) do
       :ok = Store.put_runs(runs)
       if !Store.get_meta(key), do: Store.put_meta(key, Date.to_iso8601(today))
-      Store.put_meta(runs_through_key, Integer.to_string(DateTime.to_unix(now)))
+      Store.put_meta(runs_through_key, Integer.to_string(runs_through(failed, now)))
 
       refresh_facts(repo, today)
 
@@ -223,10 +224,11 @@ defmodule Wallboard.Archive.GitHubCollector do
   end
 
   # The days a round's runs are read from, oldest first: the backfill on the
-  # first round, then from the day of an hour before the last good round
-  # began, so a run created while the board was off is still saved, but never
-  # further back than the backfill. Always yesterday too: a rerun keeps its
-  # run's day, and a run started before midnight finishes after it.
+  # first round, then from the day before the last good round's day, so a
+  # run created while the board was off is still saved, and so is one that
+  # was still going across midnight UTC at that round, but never further
+  # back than the backfill. Always yesterday too: a rerun keeps its run's
+  # day, and a run started before midnight finishes after it.
   defp run_days(backfill_key, through_key, today, archive, now) do
     yesterday = Date.add(today, -1)
     oldest = Date.add(today, -archive.backfill_days)
@@ -238,9 +240,10 @@ defmodule Wallboard.Archive.GitHubCollector do
 
         (through = Store.get_meta(through_key)) && match?({_, ""}, Integer.parse(through)) ->
           last =
-            (min(String.to_integer(through), DateTime.to_unix(now)) - 3600)
+            min(String.to_integer(through), DateTime.to_unix(now))
             |> DateTime.from_unix!()
             |> DateTime.to_date()
+            |> Date.add(-1)
 
           Enum.min([yesterday, Enum.max([last, oldest], Date)], Date)
 
@@ -251,13 +254,47 @@ defmodule Wallboard.Archive.GitHubCollector do
     Enum.to_list(Date.range(first, today, 1))
   end
 
+  # Where the next round's runs start, in Unix seconds, as run_days/5 reads
+  # it: this round's start, or when a day failed, the end of the earliest
+  # failed day, so the next round reads that day again.
+  defp runs_through(nil, now), do: DateTime.to_unix(now)
+
+  defp runs_through(failed, now) do
+    failed
+    |> Date.add(1)
+    |> DateTime.new!(~T[00:00:00])
+    |> DateTime.to_unix()
+    |> min(DateTime.to_unix(now))
+  end
+
+  # Each day on its own, so one day that fails does not lose the others.
+  # Returns the runs and the earliest failed day (nil when none failed), or
+  # the error when every day failed.
   defp fetch_days(repo, days) do
-    Enum.reduce_while(days, {:ok, []}, fn day, {:ok, acc} ->
-      case fetch_day(repo, day, 1, []) do
-        {:ok, runs} -> {:cont, {:ok, acc ++ runs}}
-        err -> {:halt, err}
-      end
-    end)
+    {runs, failed} =
+      Enum.reduce(days, {[], []}, fn day, {runs, failed} ->
+        case fetch_day(repo, day, 1, []) do
+          {:ok, more} -> {runs ++ more, failed}
+          {:error, why} -> {runs, failed ++ [{day, why}]}
+        end
+      end)
+
+    case failed do
+      [] ->
+        {:ok, runs, nil}
+
+      [{_, why} | _] when length(failed) == length(days) ->
+        {:error, why}
+
+      [{day, why} | _] ->
+        Logger.warning(
+          "GitHub archive: #{repo}: could not read the runs of " <>
+            Enum.map_join(failed, ", ", &Date.to_iso8601(elem(&1, 0))) <>
+            " (#{why}); saved the other days and will try again"
+        )
+
+        {:ok, runs, day}
+    end
   end
 
   # One day's runs, a page of 100 at a time.

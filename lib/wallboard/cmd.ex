@@ -16,6 +16,14 @@ defmodule Wallboard.Cmd do
   # there.
   @with_input ~s(IFS= read -r line; printf '%s\\n' "$line" | "$0" "$@" 2>/dev/null)
 
+  # `sh -c 'exec "$0" "$@" 2>file'` sends stderr to a file while every
+  # argument reaches the program untouched, with no shell parsing.
+  @plain ~s(exec "$0" "$@" 2>"$WALLBOARD_ERR_FILE")
+
+  # The message that says the time limit has passed. Sent once by a timer
+  # when the program starts, so output never moves the limit.
+  @time_up {__MODULE__, :time_up}
+
   @doc """
   Returns {:ok, stdout} on exit status 0, or {:error, reason}.
 
@@ -24,6 +32,9 @@ defmodule Wallboard.Cmd do
   for a key or a password: it never goes on a command line. With :input,
   the program's standard error is not read, so a failure says only its
   exit status.
+
+  When the time limit passes, the program is killed, with everything it
+  started, so a stuck program is never left running.
   """
   def run(program, args, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 20_000)
@@ -44,30 +55,16 @@ defmodule Wallboard.Cmd do
     err_file =
       Path.join(System.tmp_dir!(), "wallboard-#{System.unique_integer([:positive])}.err")
 
-    # `sh -c 'exec "$0" "$@" 2>file'` sends stderr to a file while every
-    # argument reaches the program untouched, with no shell parsing.
-    script = ~s(exec "$0" "$@" 2>"$WALLBOARD_ERR_FILE")
-
-    task =
-      Task.async(fn ->
-        System.cmd("/bin/sh", ["-c", script, exe | args],
-          env: [{"WALLBOARD_ERR_FILE", err_file} | env]
-        )
-      end)
+    ended =
+      run_port(["-c", @plain, exe | args], [{"WALLBOARD_ERR_FILE", err_file} | env], nil, timeout)
 
     result =
-      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {out, 0}} ->
-          {:ok, out}
-
-        {:ok, {_out, status}} ->
+      case ended do
+        {:exit, status} ->
           {:error, "#{program} exited with #{status}: #{first_line(File.read(err_file))}"}
 
-        nil ->
-          {:error, "#{program} took longer than #{div(timeout, 1000)}s"}
-
-        {:exit, reason} ->
-          {:error, "#{program} failed: #{inspect(reason)}"}
+        other ->
+          message(other, program, timeout)
       end
 
     File.rm(err_file)
@@ -76,30 +73,90 @@ defmodule Wallboard.Cmd do
 
   defp run_with_input(program, exe, args, input, timeout, env) do
     if is_binary(input) and not String.contains?(input, ["\n", "\r"]) do
-      port =
-        Port.open({:spawn_executable, "/bin/sh"}, [
-          :binary,
-          :exit_status,
-          args: ["-c", @with_input, exe | args],
-          env: Enum.map(env, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
-        ])
-
-      Port.command(port, input <> "\n")
-      collect(port, program, [], timeout)
+      ["-c", @with_input, exe | args]
+      |> run_port(env, input <> "\n", timeout)
+      |> message(program, timeout)
     else
       {:error, "#{program} takes one line of input"}
     end
   end
 
-  defp collect(port, program, out, timeout) do
+  defp message({:ok, out}, _program, _timeout), do: {:ok, out}
+
+  defp message({:exit, status}, program, _timeout),
+    do: {:error, "#{program} exited with #{status}"}
+
+  defp message(:time_up, program, timeout),
+    do: {:error, "#{program} took longer than #{div(timeout, 1000)}s"}
+
+  # Runs /bin/sh with `args` and waits for it to end or for the limit.
+  defp run_port(args, env, input, timeout) do
+    port =
+      Port.open({:spawn_executable, "/bin/sh"}, [
+        :binary,
+        :exit_status,
+        :hide,
+        args: args,
+        env: Enum.map(env, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
+      ])
+
+    timer = Process.send_after(self(), @time_up, timeout)
+    if input, do: Port.command(port, input)
+    result = collect(port, [])
+
+    # A limit that passed as the program ended must not reach the next run.
+    Process.cancel_timer(timer)
+
     receive do
-      {^port, {:data, data}} -> collect(port, program, [out | data], timeout)
-      {^port, {:exit_status, 0}} -> {:ok, IO.iodata_to_binary(out)}
-      {^port, {:exit_status, status}} -> {:error, "#{program} exited with #{status}"}
+      @time_up -> :ok
     after
-      timeout ->
-        Port.close(port)
-        {:error, "#{program} took longer than #{div(timeout, 1000)}s"}
+      0 -> :ok
+    end
+
+    result
+  end
+
+  defp collect(port, out) do
+    receive do
+      {^port, {:data, data}} ->
+        collect(port, [out | data])
+
+      {^port, {:exit_status, 0}} ->
+        {:ok, IO.iodata_to_binary(out)}
+
+      {^port, {:exit_status, status}} ->
+        {:exit, status}
+
+      @time_up ->
+        kill(port)
+        :time_up
+    end
+  end
+
+  # Each program the BEAM starts leads its own process group, so killing the
+  # group takes the shell and every program it started. Then wait for the
+  # shell's end, so the program is gone, not only told to go.
+  defp kill(port) do
+    with {:os_pid, pid} when is_integer(pid) <- Port.info(port, :os_pid) do
+      System.cmd("/bin/sh", ["-c", kill_group(), Integer.to_string(pid)], stderr_to_stdout: true)
+    end
+
+    wait_for_end(port)
+  end
+
+  # The shell line that kills the process group led by the process id in $0.
+  # /bin/sh is dash on Ubuntu and Debian and bash on a Mac, so it must read
+  # the same in both: dash takes no `--`, and bash reads `-s KILL -<id>` as
+  # a signal. Public only so a test can run it in each shell.
+  @doc false
+  def kill_group, do: ~s(kill -KILL "-$0")
+
+  defp wait_for_end(port) do
+    receive do
+      {^port, {:data, _}} -> wait_for_end(port)
+      {^port, {:exit_status, _}} -> :ok
+    after
+      5_000 -> if Port.info(port), do: Port.close(port)
     end
   end
 
