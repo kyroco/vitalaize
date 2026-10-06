@@ -277,6 +277,22 @@ defmodule Wallboard.BudgetTest do
       assert html =~ "Claude spend today $162.00 of $150"
     end
 
+    test "a board opened with a limit set and the archive off says why none is checked" do
+      start_supervised!({FakePoller, %{over: [], needs_archive: true}})
+
+      assert {:ok, socket} =
+               BoardLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}})
+
+      html =
+        socket.assigns
+        |> BoardLive.render()
+        |> Phoenix.HTML.Safe.to_iodata()
+        |> IO.iodata_to_binary()
+
+      assert html =~ "Budget limits are set, but the archive is off, so none is checked."
+      refute html =~ "Over budget"
+    end
+
     test "the strip names each passed limit, and is not there with none" do
       put("a", "claude", noon(today()), 162.0, 1)
       put("x", "codex", noon(today()), 0.0, 60_000)
