@@ -74,11 +74,12 @@ defmodule Wallboard.Archive.CiMinutes do
   # labelled "self-hosted" (as kyroco's own runners' jobs read
   # "self-hosted,Linux,ARM64,kyroco-gate") or on a runner GitHub has listed
   # as the repository's own. The Trends and Git tab tests hold the two to
-  # the same answer.
+  # the same answer. Runners are kept under the repository's name as typed
+  # in settings, so a job saved under another letter case still finds them.
   @own """
   (coalesce(j.runner_group_name, '') <> 'GitHub Actions' AND
     ((',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%' OR
-      j.runner_name IN (SELECT g.name FROM gh_runners g WHERE g.repo = j.repo)))
+      j.runner_name IN (SELECT g.name FROM gh_runners g WHERE lower(g.repo) = lower(j.repo))))
   """
 
   # A job's minutes as GitHub rounds them.
@@ -347,31 +348,43 @@ defmodule Wallboard.Archive.CiMinutes do
 
     facts = rows |> Enum.map(& &1.repo) |> Enum.uniq() |> Map.new(&{&1, repo_facts(&1)})
 
-    for row <- rows,
-        at = if(row.attempt > 1, do: row.job_created || row.created_at, else: row.created_at),
-        is_integer(at) do
-      public? = facts[row.repo][:private] == false
-      hosted = row.hosted || 0
-      grouped = row.grouped || 0
-      own = row.own || 0
+    attempts =
+      for row <- rows,
+          at = if(row.attempt > 1, do: row.job_created || row.created_at, else: row.created_at),
+          is_integer(at) do
+        public? = facts[row.repo][:private] == false
+        hosted = row.hosted || 0
+        grouped = row.grouped || 0
+        own = row.own || 0
 
-      %{
-        repo: row.repo,
-        run_id: row.run_id,
-        attempt: row.attempt,
-        branch: row.branch,
-        event: row.event,
-        pr: row.pr,
-        at: at,
-        default: facts[row.repo][:default_branch],
-        failed: row.failed == 1,
-        paid: if(public?, do: 0, else: hosted + grouped) + (row.larger || 0),
-        free: if(public?, do: hosted, else: 0),
-        unknown: if(public?, do: grouped, else: 0),
-        own: own,
-        avoided: if(public?, do: 0, else: own)
-      }
-    end
+        %{
+          repo: row.repo,
+          run_id: row.run_id,
+          attempt: row.attempt,
+          branch: row.branch,
+          event: row.event,
+          pr: row.pr,
+          at: at,
+          default: facts[row.repo][:default_branch],
+          failed: row.failed == 1,
+          paid: if(public?, do: 0, else: hosted + grouped) + (row.larger || 0),
+          free: if(public?, do: hosted, else: 0),
+          unknown: if(public?, do: grouped, else: 0),
+          own: own,
+          avoided: if(public?, do: 0, else: own)
+        }
+      end
+
+    # A tracked name retyped in other letter case saves its runs and jobs
+    # again under the new spelling: one attempt, counted once. The copy read
+    # furthest counts, since an attempt only gains minutes as its jobs are
+    # read, and the old spelling stops being read when the name changes.
+    attempts
+    |> Enum.group_by(&{String.downcase(&1.repo), &1.run_id, &1.attempt})
+    |> Enum.map(fn {_, copies} ->
+      kept = Enum.max_by(copies, &(&1.paid + &1.free + &1.unknown + &1.own))
+      %{kept | failed: Enum.any?(copies, & &1.failed)}
+    end)
   end
 
   # Saved sessions matching `where`, as `link/2` takes them. A session saves
