@@ -364,6 +364,34 @@ defmodule Wallboard.GitHubFetchTest do
       refute "runs/1/jobs?per_page=100&page=3" in calls
     end
 
+    test "stop at 10 pages: a run with more keeps its first 1,000", %{dir: dir} do
+      for page <- 1..11 do
+        jobs =
+          for n <- 1..100,
+              do: %{id: page * 1000 + n, run_id: 1, name: "t", status: "completed", labels: []}
+
+        File.write!(
+          Path.join(dir, "jobs_#{page}.json"),
+          Jason.encode!(%{total_count: 5000, jobs: jobs})
+        )
+      end
+
+      assert {:ok, rows} = GitHub.fetch_run_jobs("acme/rockets", 1)
+      assert length(rows) == 1000
+
+      calls = asked(dir)
+      assert "runs/1/jobs?per_page=100&page=10" in calls
+      refute "runs/1/jobs?per_page=100&page=11" in calls
+    end
+
+    test "a later page that fails fails the read, rather than give part of the jobs",
+         %{dir: dir} do
+      big_run(dir)
+      File.rm!(Path.join(dir, "jobs_2.json"))
+
+      assert {:error, _} = GitHub.fetch_run_jobs("acme/rockets", 1)
+    end
+
     test "are all read for its panel once it finished", %{dir: dir} do
       big_run(dir)
 
