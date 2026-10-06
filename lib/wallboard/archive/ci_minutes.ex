@@ -9,25 +9,32 @@ defmodule Wallboard.Archive.CiMinutes do
   `self-hosted`, or on a runner GitHub lists as the repository's own; see
   `Wallboard.Runners`) counts nothing. GitHub's standard runners are free
   on a public repository, so a public repository's minutes are kept apart
-  from the ones that use up the plan. Three kinds, then:
+  from the ones that use up the plan. Four kinds, then:
 
     * `paid`: GitHub's runners on a private repository, or one whose
-      visibility is not known yet, and its larger runners anywhere,
+      visibility is not known yet, and its macOS larger runners anywhere,
       weighted as above
     * `free`: GitHub's standard runners on a public repository, weighted
       the same
+    * `unknown`: on a public repository, jobs in a runner group other than
+      "GitHub Actions" that are not known to be yours, weighted the same
     * `own`: your own machines, in plain minutes
 
   GitHub's larger runners are billed on every repository, public or not,
-  and the plan's minutes never cover them. A job ran on one when it is
-  GitHub's and either sits in a runner group other than "GitHub Actions"
-  (Linux and Windows larger runners, which their owner names and groups)
-  or asks for one of GitHub's macOS larger runners by label
-  (`macos-15-large`, `macos-latest-xlarge`). Its system is read from the
-  words in its labels, its runner's name and its group, so `big-windows`
-  counts 2. GitHub prices a larger runner by its size too, which no job
-  says, so its minutes are a floor: a 96-core Linux runner costs 42 times a
-  2-core one and counts the same.
+  and the plan's minutes never cover them. Its macOS larger runners are
+  asked for by labels GitHub names (`macos-15-large`,
+  `macos-latest-xlarge`), so they are always paid. Its Linux and Windows
+  larger runners carry names and groups their owner chose, and so does a
+  runner of your own without the `self-hosted` label (an Actions Runner
+  Controller scale set, or one asked for by a custom label): a job in such
+  a group is billed if it is GitHub's and free if it is yours, and nothing
+  in the job says which. On a private repository both are counted paid,
+  as GitHub's would be; on a public one they are `unknown`, as
+  `Wallboard.Runners.kind/2` calls them. Their system is read from the
+  words in their labels, runner's name and group, so `big-windows` counts
+  2. GitHub prices a larger runner by its size too, which no job says, so
+  its minutes are a floor: a 96-core Linux runner costs 42 times a 2-core
+  one and counts the same.
 
   Minutes are added up by attempt: a rerun is another attempt of the same
   run, billed again, and begins when it was asked for.
@@ -82,18 +89,20 @@ defmodule Wallboard.Archive.CiMinutes do
   # A job's minutes as GitHub rounds them.
   @rounded "((coalesce(j.duration_s, 0) + 59) / 60)"
 
-  # A job on one of GitHub's larger runners, when it is not your own: in a
-  # runner group other than GitHub's (old rows saved no group and are not
-  # swept in), or asking by label for a macOS larger runner, as
+  # A job asking by label for one of GitHub's macOS larger runners, as
   # "macos-15-large" or "macos-latest-xlarge". LIKE ignores case, as GitHub
   # does with labels.
-  @larger """
-  (coalesce(j.runner_group_name, '') NOT IN ('', 'GitHub Actions') OR
-    (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-latest-large,%' OR
+  @mac_larger """
+  ((',' || coalesce(j.labels, '') || ',') LIKE '%,macos-latest-large,%' OR
     (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-latest-xlarge,%' OR
     (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-__-large,%' OR
     (',' || coalesce(j.labels, '') || ',') LIKE '%,macos-__-xlarge,%')
   """
+
+  # A job in a runner group other than GitHub's: one of its Linux or
+  # Windows larger runners, or a runner of your own without the self-hosted
+  # label. Old rows saved no group and are not swept in.
+  @other_group "coalesce(j.runner_group_name, '') NOT IN ('', 'GitHub Actions')"
 
   # Everything a job says about its machine: a larger runner's system can
   # be in its runner's name or group rather than its labels.
@@ -109,7 +118,7 @@ defmodule Wallboard.Archive.CiMinutes do
   """
 
   @doc """
-  The minutes of one saved session: `%{paid, free, own, runs, failed}`,
+  The minutes of one saved session: `%{paid, free, unknown, own, runs, failed}`,
   where `runs` counts attempts and `failed` those with a failed job.
   """
   def for_session(%{started_at: from, ended_at: to} = s)
@@ -254,8 +263,9 @@ defmodule Wallboard.Archive.CiMinutes do
   @doc """
   Rows for Trends, by the hour each attempt began, from `from` (Unix
   seconds), for the tracked repositories: `%{h, ci_paid, ci_free, ci_own,
-  ci_avoided}` for every attempt, and `%{h, tool, ci_agent}` for the paid minutes of
-  each attempt a session caused, under that session's tool.
+  ci_avoided, ci_unknown}` for every attempt, and `%{h, tool, ci_agent}`
+  for the paid minutes of each attempt a session caused, under that
+  session's tool.
   """
   def hourly(settings, from) do
     tracked = settings |> Settings.repo_names() |> Enum.map(&String.downcase/1)
@@ -283,7 +293,8 @@ defmodule Wallboard.Archive.CiMinutes do
           ci_paid: a.paid,
           ci_free: a.free,
           ci_own: a.own,
-          ci_avoided: a.avoided
+          ci_avoided: a.avoided,
+          ci_unknown: a.unknown
         }
       end) ++
         Enum.map(link(attempts, sessions), fn {a, s} ->
@@ -344,13 +355,14 @@ defmodule Wallboard.Archive.CiMinutes do
   end
 
   @doc """
-  Adds up attempts (with `paid`, `free`, `own` and `failed`) into
-  `%{paid, free, own, runs, failed}`.
+  Adds up attempts (with `paid`, `free`, `own`, `failed` and, optionally,
+  `unknown`) into `%{paid, free, unknown, own, runs, failed}`.
   """
   def total(attempts) do
     %{
       paid: attempts |> Enum.map(& &1.paid) |> Enum.sum(),
       free: attempts |> Enum.map(& &1.free) |> Enum.sum(),
+      unknown: attempts |> Enum.map(&Map.get(&1, :unknown, 0)) |> Enum.sum(),
       own: attempts |> Enum.map(& &1.own) |> Enum.sum(),
       runs: length(attempts),
       failed: Enum.count(attempts, & &1.failed)
@@ -370,10 +382,12 @@ defmodule Wallboard.Archive.CiMinutes do
         SELECT r.repo, r.run_id, coalesce(j.attempt, 1) AS attempt, r.branch, r.event, r.pr,
           r.created_at, min(j.created_at) AS job_created,
           max(coalesce(j.conclusion, '') = 'failure') AS failed,
-          sum(CASE WHEN #{@own} OR #{@larger} THEN 0 ELSE #{@rounded} * #{@weight} END)
-            AS hosted,
-          sum(CASE WHEN #{@own} OR NOT #{@larger} THEN 0 ELSE #{@rounded} * #{@weight} END)
-            AS larger,
+          sum(CASE WHEN #{@own} OR #{@mac_larger} OR #{@other_group} THEN 0
+            ELSE #{@rounded} * #{@weight} END) AS hosted,
+          sum(CASE WHEN #{@own} THEN 0 WHEN #{@mac_larger} THEN #{@rounded} * #{@weight}
+            ELSE 0 END) AS larger,
+          sum(CASE WHEN #{@own} OR #{@mac_larger} THEN 0
+            WHEN #{@other_group} THEN #{@rounded} * #{@weight} ELSE 0 END) AS grouped,
           sum(CASE WHEN #{@own} THEN #{@rounded} ELSE 0 END) AS own
         FROM gh_runs r JOIN gh_jobs j ON j.repo = r.repo AND j.run_id = r.run_id
         WHERE #{where}
@@ -391,6 +405,7 @@ defmodule Wallboard.Archive.CiMinutes do
         is_integer(at) do
       public? = facts[row.repo][:private] == false
       hosted = row.hosted || 0
+      grouped = row.grouped || 0
       own = row.own || 0
 
       %{
@@ -404,8 +419,9 @@ defmodule Wallboard.Archive.CiMinutes do
         default: facts[row.repo][:default_branch],
         long_lived: MapSet.member?(long_lived[row.repo], row.branch),
         failed: row.failed == 1,
-        paid: if(public?, do: 0, else: hosted) + (row.larger || 0),
+        paid: if(public?, do: 0, else: hosted + grouped) + (row.larger || 0),
         free: if(public?, do: hosted, else: 0),
+        unknown: if(public?, do: grouped, else: 0),
         own: own,
         avoided: if(public?, do: 0, else: own)
       }

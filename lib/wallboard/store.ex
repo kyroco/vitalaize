@@ -238,8 +238,9 @@ defmodule Wallboard.Store do
     # The repository's default branch when the pull request was read.
     "ALTER TABLE gh_prs ADD COLUMN default_branch TEXT",
     # The runner group of the machine that ran a job: "GitHub Actions" for
-    # GitHub's own machines, another name for your own (see
-    # Wallboard.Runners). Jobs saved before this column have none.
+    # GitHub's standard machines, another name for your own or for GitHub's
+    # larger runners (see Wallboard.Runners). Jobs saved before this column
+    # have none.
     "ALTER TABLE gh_jobs ADD COLUMN runner_group_name TEXT",
     # The runners GitHub has listed as each repository's own, so a job on
     # one counts as yours in Trends as it does on the Git tab, after the

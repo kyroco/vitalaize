@@ -470,6 +470,7 @@ defmodule Wallboard.Archive.Trends do
     [
       "#{thousands(d.ci_agent + d.codex_ci_agent)} from agent sessions",
       d.ci_free > 0 && "#{thousands(d.ci_free)} free on public repositories",
+      d.ci_unknown > 0 && "#{thousands(d.ci_unknown)} not known on public repositories",
       d.ci_own > 0 && "#{thousands(d.ci_own)} on your own machines"
     ]
     |> Enum.filter(& &1)
@@ -526,6 +527,7 @@ defmodule Wallboard.Archive.Trends do
     ci_free: 0,
     ci_own: 0,
     ci_avoided: 0,
+    ci_unknown: 0,
     ci_agent: 0,
     # Merged pull requests, those with any session found, and those with a
     # Claude or a Codex session; then their sessions, Claude dollars and

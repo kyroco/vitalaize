@@ -309,6 +309,23 @@ defmodule Wallboard.CiMinutesTest do
     assert %{claude: 10, codex: 5} = Enum.find(t.compare, &(&1.key == :ci_minutes))
   end
 
+  test "Trends says apart the minutes on a public repository it cannot place (#118)" do
+    now = DateTime.from_unix!(@t0 + 7200)
+    public!(@repo)
+    run(1, branch: "feature", created_at: @t0 + 60)
+
+    jobs(1, [
+      job(1, 600, "arc-runner-set", "success", runner: "arc-runner-set-x7k2p", group: "Default"),
+      job(2, 60, "macos-latest-xlarge", "success", group: "GitHub Actions")
+    ])
+
+    t = Trends.build(Wallboard.Settings.merge(settings(), %{}), 7, now)
+    card = Enum.find(t.cards, &(&1.key == :ci_minutes))
+
+    assert card.value == 10
+    assert card.sub == "0 from agent sessions · 10 not known on public repositories"
+  end
+
   test "the session detail's note says the runs and what uses up no plan" do
     alias WallboardWeb.BoardLive
 
@@ -331,21 +348,34 @@ defmodule Wallboard.CiMinutesTest do
     assert BoardLive.pr_ci_note(%{runs: 1, paid: 0, free: 5}) ==
              " · 5 CI min, free on a public repository"
 
-    # A larger runner is billed on a public repository.
+    # A macOS larger runner is billed on a public repository.
     assert BoardLive.pr_ci_note(%{runs: 1, paid: 10, free: 5}) ==
              " · 10 CI min, and 5 free on a public repository"
+
+    # A job in another group there may be billed or free: said apart.
+    assert BoardLive.pr_ci_note(%{runs: 1, paid: 0, free: 5, unknown: 20}) ==
+             " · 5 CI min, free on a public repository, 20 not known"
+
+    assert BoardLive.ci_note(%{runs: 1, failed: 0, free: 5, own: 0, paid: 0, unknown: 20}) ==
+             "1 run · 5 free on a public repository · 20 not known on a public repository"
   end
 
   describe "billed the way GitHub bills them (#118)" do
-    test "a larger runner is billed on a public repository, by the system its names give" do
+    test "GitHub's macOS larger runners are billed on a public repository; another group is not known" do
       public!(@repo)
       run(1, pr: 7)
 
       jobs(1, [
-        # A larger runner its owner named, in a group of the owner's.
+        # In a group of the owner's: a larger runner of GitHub's, or one of
+        # your own without the self-hosted label. Nothing in the job says.
         job(1, 600, "big-windows", "success", runner: "big-windows_ab12", group: "Default"),
         # The system is in the runner's name, not its label.
         job(2, 120, "builder", "success", runner: "builder-windows-16core", group: "Big ones"),
+        # An Actions Runner Controller scale set, asked for by its name.
+        job(7, 600, "arc-runner-set", "success",
+          runner: "arc-runner-set-x7k2p",
+          group: "Default"
+        ),
         # GitHub's own macOS larger runners, asked for by label.
         job(3, 60, "macos-latest-xlarge", "success", group: "GitHub Actions"),
         job(4, 60, "macOS-15-Large", "success", group: "GitHub Actions"),
@@ -354,8 +384,12 @@ defmodule Wallboard.CiMinutesTest do
         job(6, 60, "macos-15", "success", runner: "GitHub Actions 5")
       ])
 
-      # 2 * 10 + 2 * 2 + 10 + 10 billed; 1 + 10 free.
-      assert %{paid: 44, free: 11, own: 0} = CiMinutes.for_pr(@repo, 7)
+      # 10 + 10 billed; 1 + 10 free; 2 * 10 + 2 * 2 + 10 not known.
+      assert %{paid: 20, free: 11, unknown: 34, own: 0} = CiMinutes.for_pr(@repo, 7)
+
+      # On a private repository every one of GitHub's is paid, as before.
+      put_facts(@repo, %{private: true, default_branch: "main"})
+      assert %{paid: 65, free: 0, unknown: 0} = CiMinutes.for_pr(@repo, 7)
     end
 
     test "a long-lived branch's runs are no session's; a stacked branch's still are" do

@@ -173,10 +173,17 @@ the runner's name. A job counts as yours when it carries the `self-hosted`
 label (in any letter case, as GitHub reads it) or its runner is in GitHub's
 list of the repository's runners; any other job outside GitHub's own runner
 group, such as one on GitHub's paid larger runners, is counted apart as not
-known. CI minutes count a larger runner's minutes as paid on every
-repository, public ones too, because GitHub always bills them; GitHub also
-prices them by size, which the board cannot see, so they count as a 2-core
-runner's minutes would, a floor.
+known.
+
+GitHub always bills its larger runners, on public repositories too. CI
+minutes count its macOS larger runners (`macos-15-large`,
+`macos-latest-xlarge`) as paid everywhere. A Linux or Windows larger
+runner sits in a runner group its owner named, as does a machine of your
+own without the `self-hosted` label, and nothing in the job tells the two
+apart: on a private repository such a job counts as paid, and on a public
+one it is shown apart as not known. GitHub also prices larger runners by
+size, which the board cannot see, so they count as a standard runner of
+the same system would (macOS 10, Windows 2, Linux 1), a floor.
 
 A repository's panel lists its runners that GitHub or a collector reports,
 each online, busy or offline, with the job it is running. Runners that ran

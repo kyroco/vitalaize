@@ -2043,6 +2043,8 @@ defmodule WallboardWeb.BoardLive do
       "#{thousands(ci.runs)} #{if ci.runs == 1, do: "run", else: "runs"}" <>
         if(ci.failed > 0, do: ", #{thousands(ci.failed)} failed", else: ""),
       ci.free > 0 && "#{thousands(ci.free)} free on a public repository",
+      Map.get(ci, :unknown, 0) > 0 &&
+        "#{thousands(ci.unknown)} not known on a public repository",
       ci.own > 0 && "#{thousands(ci.own)} on your own machines"
     ]
     |> Enum.filter(& &1)
@@ -2052,16 +2054,28 @@ defmodule WallboardWeb.BoardLive do
   defp pr_ci(s, pr), do: pr_ci_note(s[:pr_ci] && s.pr_ci[{pr["repo"], pr["number"]}])
 
   @doc """
-  " · 22 CI min" after a pull request with saved runs. A public
-  repository's standard runners are free, its larger runners billed.
+  " · 22 CI min" after a pull request with saved runs. On a public
+  repository GitHub's standard runners are free, its macOS larger runners
+  billed, and a job in another runner group not known (see `CiMinutes`).
   """
-  def pr_ci_note(%{runs: runs, paid: paid, free: free}) when runs > 0 and free > 0 and paid > 0,
-    do: " · #{thousands(paid)} CI min, and #{thousands(free)} free on a public repository"
+  def pr_ci_note(%{runs: runs, paid: paid, free: free} = ci) when runs > 0 do
+    unknown = Map.get(ci, :unknown, 0)
 
-  def pr_ci_note(%{runs: runs, free: free}) when runs > 0 and free > 0,
-    do: " · #{thousands(free)} CI min, free on a public repository"
+    main =
+      cond do
+        free > 0 and paid > 0 ->
+          "#{thousands(paid)} CI min, and #{thousands(free)} free on a public repository"
 
-  def pr_ci_note(%{runs: runs, paid: paid}) when runs > 0, do: " · #{thousands(paid)} CI min"
+        free > 0 ->
+          "#{thousands(free)} CI min, free on a public repository"
+
+        true ->
+          "#{thousands(paid)} CI min"
+      end
+
+    " · " <> main <> if(unknown > 0, do: ", #{thousands(unknown)} not known", else: "")
+  end
+
   def pr_ci_note(_), do: ""
 
   attr :label, :string, required: true
