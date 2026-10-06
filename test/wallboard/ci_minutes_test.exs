@@ -286,6 +286,42 @@ defmodule Wallboard.CiMinutesTest do
     assert {:error, _} = GitHubCollector.parse_repo(~s({"message": "Not Found"}))
   end
 
+  describe "a repository retyped in other letter case (#124)" do
+    test "a run saved under both spellings counts once, for the pull request, a session and Trends" do
+      s = session("s1", "robert/7-fix", @t0, @t0 + 3600)
+
+      for repo <- [@repo, "Acme/Shop"] do
+        run(1, repo: repo, pr: 7, branch: "robert/7-fix", created_at: @t0 + 60)
+        jobs(1, [job(1, 120, "ubuntu-latest")], repo)
+      end
+
+      assert %{paid: 2, runs: 1} = CiMinutes.for_pr("Acme/Shop", 7)
+      assert %{paid: 2, runs: 1} = CiMinutes.for_session(saved(s))
+
+      rows = CiMinutes.hourly(Wallboard.Settings.merge(settings(), %{}), @t0)
+      assert [%{ci_paid: 2}] = Enum.filter(rows, &Map.has_key?(&1, :ci_paid))
+      assert [%{ci_agent: 2}] = Enum.filter(rows, &Map.has_key?(&1, :ci_agent))
+    end
+
+    test "the copy read furthest counts, failed if either copy failed" do
+      # The old spelling stopped being read with one job done, and it failed.
+      run(1, pr: 7)
+      jobs(1, [job(1, 60, "ubuntu-latest", "failure")])
+      run(1, repo: "Acme/Shop", pr: 7)
+      jobs(1, [job(1, 60, "ubuntu-latest"), job(2, 120, "ubuntu-latest")], "Acme/Shop")
+
+      assert %{paid: 3, runs: 1, failed: 1} = CiMinutes.for_pr(@repo, 7)
+    end
+
+    test "a job saved under the new spelling on a runner listed under the old one is your own" do
+      :ok = Store.put_runner_names(@repo, ["box-1"], @t0)
+      run(1, repo: "Acme/Shop", pr: 7)
+      jobs(1, [job(1, 120, "linux", "success", runner: "box-1", group: "Default")], "Acme/Shop")
+
+      assert %{paid: 0, own: 2} = CiMinutes.for_pr("Acme/Shop", 7)
+    end
+  end
+
   test "Trends shows CI minutes, the part agents caused, and each tool's" do
     now = DateTime.from_unix!(@t0 + 7200)
     session("c", "claude-branch", @t0, @t0 + 3600, "claude")
@@ -412,7 +448,7 @@ defmodule Wallboard.CiMinutesTest do
     :ok =
       Store.put_runs([
         %{
-          repo: @repo,
+          repo: opts[:repo] || @repo,
           run_id: id,
           attempt: opts[:attempt] || 1,
           workflow: "ci.yml",
@@ -426,8 +462,9 @@ defmodule Wallboard.CiMinutesTest do
       ])
   end
 
-  defp jobs(run_id, jobs) do
-    :ok = Store.put_jobs(@repo, run_id, Enum.map(jobs, &Map.put(&1, :run_id, run_id)))
+  defp jobs(run_id, jobs, repo \\ @repo) do
+    :ok =
+      Store.put_jobs(repo, run_id, Enum.map(jobs, &Map.merge(&1, %{run_id: run_id, repo: repo})))
   end
 
   defp job(id, seconds, labels, conclusion \\ "success", opts \\ []) do
