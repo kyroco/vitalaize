@@ -80,9 +80,13 @@
 
   # Limits on use. Each is over a "day" or a "week" (a week starts on Monday;
   # days are this machine's, as on the Trends tab), and nil means no limit.
-  # Claude spend is in dollars at the list prices above. When a total passes
-  # its limit, the board shows it and one alert goes out for that limit and
-  # period, on each channel below that is true and also set up under alerts.
+  # Claude spend is in dollars at the list prices above. A token limit counts
+  # cache reads and writes too, which are most of it. Limits are checked
+  # against the archive, so they need archive enabled (below); with it off,
+  # none is checked and the board says so. When a total passes its limit, the
+  # board shows it and one alert goes out for that limit and period, on each
+  # channel below that is true and also set up under alerts. If no channel
+  # takes it, it is tried again at the next check, a minute later.
   budget: %{
     claude_dollars: nil,
     claude_dollars_per: "day",
