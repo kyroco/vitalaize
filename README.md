@@ -20,10 +20,10 @@ machines, known limits, building from source and how it works.
 0.4.0 is about what shipped work costs.
 
 - **Cost per merged pull request**: a Shipped section on Trends shows merged
-  pull requests per day, Claude's cost per merged pull request, each tool's
-  tokens per merged pull request and sessions per merged pull request. Tokens
-  per merged pull request replaces tokens per 1,000 lines at the head of the
-  Claude and Codex comparison.
+  pull requests per day, Claude's cost per merged pull request, sessions per
+  merged pull request, and tokens per merged pull request with Claude and
+  Codex added together. When you use both, the Claude and Codex comparison
+  splits that last number by tool, in place of tokens per 1,000 lines.
 - **CI minutes per session and per pull request**, counted the way GitHub
   bills them: each job rounded up to a whole minute, Windows twice and macOS
   ten times. A session's details show the minutes its runs took, and Trends
