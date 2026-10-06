@@ -109,6 +109,19 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     assert days_read(dir) == ["2026-10-04", "2026-10-05"]
   end
 
+  test "a last round in the first hour of a day reads the day before it too",
+       %{dir: dir, settings: settings} do
+    # The last good round began Friday 8:30 PM Eastern, half an hour into
+    # GitHub's Saturday: a run created just before may still have been going.
+    settings = put_in(settings.archive.backfill_days, 14)
+    Store.put_meta("github_backfill:acme/shop", "2026-09-20")
+    friday = DateTime.to_unix(~U[2026-10-03 00:30:00Z])
+    Store.put_meta("github_runs_through:acme/shop", Integer.to_string(friday))
+
+    assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-10-05 13:00:00Z])
+    assert days_read(dir) == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+  end
+
   test "a board upgraded with no record of its last round reads yesterday and today",
        %{dir: dir, settings: settings} do
     settings = put_in(settings.archive.backfill_days, 14)
