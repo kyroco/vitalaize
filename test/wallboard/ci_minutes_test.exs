@@ -321,6 +321,21 @@ defmodule Wallboard.CiMinutesTest do
              "1 run · 12 free on a public repository · 3 on your own machines"
   end
 
+  test "a pull request's line shows billed minutes on a public repository too (#118)" do
+    alias WallboardWeb.BoardLive
+
+    assert BoardLive.pr_ci_note(nil) == ""
+    assert BoardLive.pr_ci_note(%{runs: 0, paid: 0, free: 0}) == ""
+    assert BoardLive.pr_ci_note(%{runs: 2, paid: 22, free: 0}) == " · 22 CI min"
+
+    assert BoardLive.pr_ci_note(%{runs: 1, paid: 0, free: 5}) ==
+             " · 5 CI min, free on a public repository"
+
+    # A larger runner is billed on a public repository.
+    assert BoardLive.pr_ci_note(%{runs: 1, paid: 10, free: 5}) ==
+             " · 10 CI min, and 5 free on a public repository"
+  end
+
   describe "billed the way GitHub bills them (#118)" do
     test "a larger runner is billed on a public repository, by the system its names give" do
       public!(@repo)

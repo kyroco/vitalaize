@@ -2049,20 +2049,20 @@ defmodule WallboardWeb.BoardLive do
     |> Enum.join(" · ")
   end
 
-  # " · 22 CI min" after a pull request with saved runs; a public
-  # repository's are free.
-  defp pr_ci(s, pr) do
-    case s[:pr_ci] && s.pr_ci[{pr["repo"], pr["number"]}] do
-      %{runs: runs, free: free} when runs > 0 and free > 0 ->
-        " · #{thousands(free)} CI min, free on a public repository"
+  defp pr_ci(s, pr), do: pr_ci_note(s[:pr_ci] && s.pr_ci[{pr["repo"], pr["number"]}])
 
-      %{runs: runs, paid: paid} when runs > 0 ->
-        " · #{thousands(paid)} CI min"
+  @doc """
+  " · 22 CI min" after a pull request with saved runs. A public
+  repository's standard runners are free, its larger runners billed.
+  """
+  def pr_ci_note(%{runs: runs, paid: paid, free: free}) when runs > 0 and free > 0 and paid > 0,
+    do: " · #{thousands(paid)} CI min, and #{thousands(free)} free on a public repository"
 
-      _ ->
-        ""
-    end
-  end
+  def pr_ci_note(%{runs: runs, free: free}) when runs > 0 and free > 0,
+    do: " · #{thousands(free)} CI min, free on a public repository"
+
+  def pr_ci_note(%{runs: runs, paid: paid}) when runs > 0, do: " · #{thousands(paid)} CI min"
+  def pr_ci_note(_), do: ""
 
   attr :label, :string, required: true
   attr :value, :any, required: true
