@@ -29,6 +29,7 @@ defmodule Wallboard.Sources.GitHub do
   """
 
   alias Wallboard.{Cmd, Runners, Settings, Store}
+  alias Wallboard.Archive.GitHubCollector
 
   # How long to wait before asking again for runners GitHub refused to list.
   @runners_hidden_s 3600
@@ -123,8 +124,8 @@ defmodule Wallboard.Sources.GitHub do
         runs
         |> Enum.filter(&(&1.status == :in_progress))
         |> Map.new(fn run ->
-          case api(["repos/#{gh.repo}/actions/runs/#{run.id}/jobs?per_page=100"]) do
-            {:ok, json} -> {run.id, parse_jobs(json)}
+          case GitHubCollector.fetch_jobs(gh.repo, run.id, timeout: 30_000) do
+            {:ok, list} -> {run.id, jobs_summary(list)}
             {:error, _} -> {run.id, nil}
           end
         end)
@@ -235,14 +236,8 @@ defmodule Wallboard.Sources.GitHub do
   run's panel when its jobs are not saved yet. {:ok, rows} or {:error, why}.
   """
   def fetch_run_jobs(repo, run_id) do
-    with {:ok, json} <- api(["repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=100"]) do
-      case Jason.decode(json) do
-        {:ok, %{"jobs" => jobs}} when is_list(jobs) ->
-          {:ok, Wallboard.Archive.GitHubCollector.job_rows(jobs, repo, run_id)}
-
-        _ ->
-          {:error, "GitHub returned jobs in an unexpected shape"}
-      end
+    with {:ok, jobs} <- GitHubCollector.fetch_jobs(repo, run_id, timeout: 30_000) do
+      {:ok, GitHubCollector.job_rows(jobs, repo, run_id)}
     end
   end
 
@@ -407,29 +402,30 @@ defmodule Wallboard.Sources.GitHub do
   """
   def parse_jobs(text) do
     case Jason.decode(text) do
-      {:ok, %{"jobs" => jobs}} when is_list(jobs) ->
-        current = Enum.find(jobs, &(&1["status"] == "in_progress"))
-
-        step =
-          current &&
-            (current["steps"] || [])
-            |> Enum.find(&(&1["status"] == "in_progress"))
-            |> then(&(&1 && &1["name"]))
-
-        %{
-          total: length(jobs),
-          done: Enum.count(jobs, &(&1["status"] == "completed")),
-          current_job: current && current["name"],
-          current_step: step,
-          # Each job also carries what says whose runner took it (see
-          # Wallboard.Runners), which with the repository's runner list
-          # marks the run and its runners.
-          list: Wallboard.Archive.GitHubCollector.job_rows(jobs, nil, nil)
-        }
-
-      _ ->
-        nil
+      {:ok, %{"jobs" => jobs}} when is_list(jobs) -> jobs_summary(jobs)
+      _ -> nil
     end
+  end
+
+  defp jobs_summary(jobs) do
+    current = Enum.find(jobs, &(&1["status"] == "in_progress"))
+
+    step =
+      current &&
+        (current["steps"] || [])
+        |> Enum.find(&(&1["status"] == "in_progress"))
+        |> then(&(&1 && &1["name"]))
+
+    %{
+      total: length(jobs),
+      done: Enum.count(jobs, &(&1["status"] == "completed")),
+      current_job: current && current["name"],
+      current_step: step,
+      # Each job also carries what says whose runner took it (see
+      # Wallboard.Runners), which with the repository's runner list
+      # marks the run and its runners.
+      list: GitHubCollector.job_rows(jobs, nil, nil)
+    }
   end
 
   @doc """

@@ -26,7 +26,9 @@ defmodule Wallboard.GitHubFetchTest do
         if [ -f "$WALLBOARD_TEST_GH/runs.json" ]; then cat "$WALLBOARD_TEST_GH/runs.json"
         else echo '{"workflow_runs":[]}'; fi ;;
       *"/actions/runs/"*"/jobs"*)
-        if [ -f "$WALLBOARD_TEST_GH/jobs.json" ]; then cat "$WALLBOARD_TEST_GH/jobs.json"
+        page=$(echo "$2" | sed -n 's/.*[?&]page=\\([0-9]*\\).*/\\1/p')
+        if [ -f "$WALLBOARD_TEST_GH/jobs_$page.json" ]; then cat "$WALLBOARD_TEST_GH/jobs_$page.json"
+        elif [ -f "$WALLBOARD_TEST_GH/jobs.json" ]; then cat "$WALLBOARD_TEST_GH/jobs.json"
         else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
       *"/actions/workflows/"*)
         echo '{"workflow_runs":[]}' ;;
@@ -184,7 +186,7 @@ defmodule Wallboard.GitHubFetchTest do
       runs(dir, [{1, "in_progress"}])
       assert {:ok, first} = GitHub.fetch(rockets, nil, @now)
       assert first.own_by_run == %{1 => ["acme-mini-1", "acme-mini-2"]}
-      assert "runs/1/jobs?per_page=100" in asked(dir)
+      assert "runs/1/jobs?per_page=100&page=1" in asked(dir)
 
       # Finished: its jobs are no longer asked for, and it keeps them.
       runs(dir, [{1, "completed"}])
@@ -283,6 +285,42 @@ defmodule Wallboard.GitHubFetchTest do
       assert {:ok, facts} = GitHub.fetch(rockets, nil, DateTime.add(@now, 5 * 86_400))
       # Only the finished jobs are saved: the one on acme-mini-1.
       assert facts.own_by_run == %{7 => ["acme-mini-1"]}
+    end
+  end
+
+  describe "a big run's jobs" do
+    # 150 jobs, as GitHub gives them: 100 on the first page, 50 on the next.
+    defp big_run(dir) do
+      jobs =
+        for id <- 1..150,
+            do: %{id: id, run_id: 1, name: "test (#{id})", status: "completed", labels: []}
+
+      {first, second} = Enum.split(jobs, 100)
+      File.write!(Path.join(dir, "jobs_1.json"), Jason.encode!(%{total_count: 150, jobs: first}))
+      File.write!(Path.join(dir, "jobs_2.json"), Jason.encode!(%{total_count: 150, jobs: second}))
+    end
+
+    test "are all read while it runs, a page at a time", %{dir: dir} do
+      [rockets, _] = repos(@rockets)
+      big_run(dir)
+      runs(dir, [{1, "in_progress"}])
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert facts.jobs[1].total == 150
+      assert length(facts.jobs[1].list) == 150
+
+      calls = asked(dir)
+      assert "runs/1/jobs?per_page=100&page=1" in calls
+      assert "runs/1/jobs?per_page=100&page=2" in calls
+      refute "runs/1/jobs?per_page=100&page=3" in calls
+    end
+
+    test "are all read for its panel once it finished", %{dir: dir} do
+      big_run(dir)
+
+      assert {:ok, rows} = GitHub.fetch_run_jobs("acme/rockets", 1)
+      assert length(rows) == 150
+      assert rows |> Enum.map(& &1.job_id) |> Enum.uniq() |> length() == 150
     end
   end
 
