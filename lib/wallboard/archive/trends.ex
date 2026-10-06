@@ -552,8 +552,17 @@ defmodule Wallboard.Archive.Trends do
       )
   end
 
+  @doc """
+  Claude and Codex use added up over the local days from `first` to `last`,
+  both included, the same way the cards add it up. GitHub is left out.
+  """
+  def sums(settings, %Date{} = first, %Date{} = last) do
+    days = day_sums(settings, first, false)
+    first |> Date.range(last) |> Enum.map(&days[&1]) |> merge()
+  end
+
   # Every source, summed by the hour in SQL, then by local day here.
-  defp day_sums(settings, since) do
+  defp day_sums(settings, since, github? \\ true) do
     from = since |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix() |> Kernel.-(86_400)
 
     hourly =
@@ -585,12 +594,16 @@ defmodule Wallboard.Archive.Trends do
           """,
           [from]
         ) ++
-        (settings
-         |> Wallboard.Settings.github_repos()
-         |> Enum.with_index()
-         |> Enum.flat_map(&github_hours(&1, from))) ++
-        CiMinutes.hourly(settings, from) ++
-        Enum.map(PullRequests.merged(settings, from), &pr_hour/1)
+        if(github?,
+          do:
+            (settings
+             |> Wallboard.Settings.github_repos()
+             |> Enum.with_index()
+             |> Enum.flat_map(&github_hours(&1, from))) ++
+              CiMinutes.hourly(settings, from) ++
+              Enum.map(PullRequests.merged(settings, from), &pr_hour/1),
+          else: []
+        )
 
     hourly
     |> Enum.group_by(&local_day(&1.h * 3600))
@@ -666,7 +679,8 @@ defmodule Wallboard.Archive.Trends do
   def change(_, prev) when prev == 0, do: nil
   def change(cur, prev), do: (cur - prev) * 100 / prev
 
-  defp local_day(unix) do
+  @doc "The local day a unix time falls on, the day every card counts it under."
+  def local_day(unix) do
     {{y, m, d}, _} =
       unix
       |> DateTime.from_unix!()
@@ -677,7 +691,8 @@ defmodule Wallboard.Archive.Trends do
     Date.new!(y, m, d)
   end
 
-  defp thousands(n) when is_integer(n) do
+  @doc "A number rounded to a whole one, with commas: 1234567.8 is \"1,234,568\"."
+  def thousands(n) when is_integer(n) do
     n
     |> Integer.to_string()
     |> String.reverse()
@@ -685,5 +700,5 @@ defmodule Wallboard.Archive.Trends do
     |> String.reverse()
   end
 
-  defp thousands(n), do: n |> round() |> thousands()
+  def thousands(n), do: n |> round() |> thousands()
 end

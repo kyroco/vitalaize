@@ -112,7 +112,10 @@ defmodule Wallboard.Application do
          timeout_ms: 600_000},
         # Runs every minute so turning the check on or off shows within the
         # minute; GitHub itself is asked once a day.
-        {Wallboard.Poller, name: :release, source: Wallboard.Sources.Release, interval_ms: 60_000}
+        {Wallboard.Poller,
+         name: :release, source: Wallboard.Sources.Release, interval_ms: 60_000},
+        # Checks the budget limits against the archive every minute.
+        {Wallboard.Poller, name: :budget, source: Wallboard.Sources.Budget, interval_ms: 60_000}
       ] ++
         if(Wallboard.Sources.DevPower.enabled?(settings),
           do: [

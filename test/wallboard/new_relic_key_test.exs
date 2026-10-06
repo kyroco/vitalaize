@@ -326,9 +326,9 @@ defmodule Wallboard.NewRelicKeyTest do
         io([
           # What this machine does: keep it.
           "",
-          # Section 4, New Relic: the account, the key, the 1Password
+          # Section 5, New Relic: the account, the key, the 1Password
           # address and the region.
-          "4",
+          "5",
           "",
           @key,
           "",
@@ -357,7 +357,7 @@ defmodule Wallboard.NewRelicKeyTest do
       refute log =~ @key
 
       # Shown as set when asked again.
-      again = io(["", "4", "", "", "", "", ""])
+      again = io(["", "5", "", "", "", "", ""])
       assert :ok = Setup.run(linux() ++ [io: again])
       assert output(again) =~ "New Relic API key [set]"
       refute output(again) =~ @key
