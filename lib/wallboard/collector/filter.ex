@@ -43,6 +43,8 @@ defmodule Wallboard.Collector.Filter do
     * `BackSoon`: the hub is restarting on purpose; keep data and retry
     * `Disconnected`: this machine was removed; stop
     * `Answer`: empty, kept for answers to waiting agents (VIT-11)
+    * `Board`: the board's port, after the `Resume`, where the pairing door
+      is; an older collector skips it
 
   ## Positions, and why a repeat is harmless
 

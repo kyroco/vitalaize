@@ -34,8 +34,9 @@ defmodule Wallboard.Link.Server do
   @max_items 256
   @max_runners 100
   # The most a request may cost and the most any count may be: far past
-  # anything a real session makes, and low enough that no sum the board
-  # takes of them can overflow.
+  # anything a real session makes. A sum of counts this size overflows
+  # only past millions of rows in one hour, where a single number near the
+  # top of its range did it alone.
   @max_cost 10_000.0
   @max_count Bitwise.bsl(1, 40)
   # How far past the hub's own clock a time may be, for a collector whose

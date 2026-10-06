@@ -42,6 +42,8 @@ defmodule Wallboard.Link.Client do
     * `:back_soon`: the hub is restarting on purpose
     * `{:down, wait_ms}`: the stream is gone; the next try is in `wait_ms`
     * `:removed`: the hub revoked this machine; the client has stopped
+    * `{:board_port, port}`: the board's port as the hub runs it now; the
+      client asks its door there from then on
 
   ## Removed while it was away
 
