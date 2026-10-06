@@ -555,6 +555,29 @@ defmodule Wallboard.RunDetailTest do
     assert html =~ "Waiting for a runner"
   end
 
+  test "a read that stops shows one plain sentence, and the detail goes to the log" do
+    use_settings(false)
+    # The board's one reader of jobs is gone, so asking it exits.
+    stop_supervised!(Wallboard.RunJobs)
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "failure")]))
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+        html = render_async(view, 5_000)
+
+        assert html =~
+                 "Could not read the jobs: the board stopped reading them. Close the run and tap it again"
+
+        refute html =~ "noproc"
+        refute html =~ "{:"
+      end)
+
+    assert log =~ "Run panel: reading"
+    assert log =~ "noproc"
+  end
+
   test "a deploy held for an approval says so, and shows the jobs that already ran" do
     use_settings(false)
 

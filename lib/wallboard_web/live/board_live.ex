@@ -10,6 +10,8 @@ defmodule WallboardWeb.BoardLive do
   """
   use WallboardWeb, :live_view
 
+  require Logger
+
   alias Wallboard.{Mailbox, Poller, RunJobs, Runners, Settings, Store}
   alias Wallboard.Archive.{CiMinutes, Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
@@ -359,8 +361,11 @@ defmodule WallboardWeb.BoardLive do
         {:ok, {:error, why}} ->
           {:error, why}
 
+        # A program's own words for what went wrong are for the log, not
+        # the page.
         {:exit, reason} ->
-          {:error, "the read stopped: #{inspect(reason)}"}
+          Logger.warning("Run panel: reading #{inspect(key)}'s jobs stopped: #{inspect(reason)}")
+          {:error, "the board stopped reading them. Close the run and tap it again"}
       end
 
     {:noreply,
