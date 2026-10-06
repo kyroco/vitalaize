@@ -100,6 +100,51 @@ defmodule Wallboard.CollectorRunnersTest do
     end
   end
 
+  describe "a .runner that is not a plain file" do
+    # Any program on the machine can start a Runner.Listener from a folder
+    # it made and put what it likes at that folder's .runner. Reading a
+    # named pipe waits for a writer forever, so each name is asked for in a
+    # task that must answer within a second.
+    defp name_within_a_second(folder) do
+      task = Task.async(fn -> Runners.name(folder) end)
+
+      case Task.yield(task, 1_000) || Task.shutdown(task, :brutal_kill) do
+        {:ok, result} -> result
+        nil -> :still_reading
+      end
+    end
+
+    test "a named pipe is not read, and does not hold the collector up", c do
+      path = folder(c, "pipe", nil)
+      {_, 0} = System.cmd("mkfifo", [Path.join(path, ".runner")])
+
+      assert name_within_a_second(path) == :error
+    end
+
+    test "a link is not followed, to a pipe or to a plain file", c do
+      pipe = folder(c, "elsewhere", nil)
+      {_, 0} = System.cmd("mkfifo", [Path.join(pipe, "fifo")])
+      to_pipe = folder(c, "to-pipe", nil)
+      File.ln_s!(Path.join(pipe, "fifo"), Path.join(to_pipe, ".runner"))
+
+      plain = Path.join(c.dir, "plain.json")
+      File.write!(plain, ~s({"agentName": "linked"}))
+      to_plain = folder(c, "to-plain", nil)
+      File.ln_s!(plain, Path.join(to_plain, ".runner"))
+
+      assert name_within_a_second(to_pipe) == :error
+      assert name_within_a_second(to_plain) == :error
+    end
+
+    test "a plain file past the size limit is not read", c do
+      big = ~s({"agentName": "big", "pad": ") <> String.duplicate("x", 70_000) <> ~s("})
+      assert name_within_a_second(folder(c, "big", big)) == :error
+
+      assert name_within_a_second(folder(c, "small", ~s({"agentName": "small"}))) ==
+               {:ok, "small"}
+    end
+  end
+
   describe "on the hub" do
     test "the same name on two machines shows the busiest state" do
       assert RunnerStates.merge(%{

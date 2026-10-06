@@ -96,14 +96,35 @@ defmodule Wallboard.Collector.Runners do
   def name(folder) do
     path = Path.join(folder, ".runner")
 
-    with {:ok, %{size: size}} when size <= @file_max <- File.stat(path),
-         {:ok, text} <- File.read(path),
+    # Any program here can start a Runner.Listener from a folder it made, so
+    # the file may be anything. Only a plain file is read: a named pipe
+    # would hold this process forever, and a link could lead to a device
+    # that never ends. `lstat` does not follow a link, and the read stops
+    # at the size limit even if the file grew since.
+    with {:ok, %{type: :regular, size: size}} when size <= @file_max <- File.lstat(path),
+         {:ok, text} <- read_at_most(path, @file_max),
+         true <- byte_size(text) <= @file_max,
          # The runner writes the file with a byte order mark first.
          text = String.replace_prefix(text, "﻿", ""),
          {:ok, %{} = settings} <- Jason.decode(text),
          name when is_binary(name) and name != "" <- agent_name(settings) do
       {:ok, name}
     else
+      _ -> :error
+    end
+  end
+
+  # One byte past the limit, so a file over it is seen to be over it.
+  defp read_at_most(path, max) do
+    File.open(path, [:read, :binary], fn io ->
+      case IO.binread(io, max + 1) do
+        data when is_binary(data) -> data
+        :eof -> ""
+        _ -> :error
+      end
+    end)
+    |> case do
+      {:ok, data} when is_binary(data) -> {:ok, data}
       _ -> :error
     end
   end
