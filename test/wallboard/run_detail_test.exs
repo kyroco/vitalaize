@@ -148,7 +148,7 @@ defmodule Wallboard.RunDetailTest do
     %{
       "id" => id,
       "run_id" => Keyword.get(opts, :run_id, 101),
-      "run_attempt" => 1,
+      "run_attempt" => Keyword.get(opts, :attempt, 1),
       "name" => name,
       "status" => status,
       "conclusion" => conclusion,
@@ -428,6 +428,79 @@ defmodule Wallboard.RunDetailTest do
     html = view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
     refute html =~ "detail-run"
     assert html =~ "Every workflow"
+  end
+
+  test "a run in a repository's list of every workflow opens on a tap", %{dir: dir} do
+    use_settings(false)
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+    send_facts(view, facts([run_json(104, "completed", "success", name: "Deploy dev")]))
+
+    view |> element(~s|button.repo-head[phx-value-repo="#{@repo}"]|) |> render_click()
+
+    html =
+      view |> element(~s|.workflow-grid tr.tap-row[phx-value-id="104"]|) |> render_click()
+
+    assert html =~ "detail-run"
+    assert html =~ "Deploy dev"
+    assert html =~ "Passed"
+  end
+
+  test "a rerun shows its own jobs, never the ones its first attempt saved", %{dir: dir} do
+    use_settings(true)
+    start_supervised!({Store, path: ":memory:"})
+    first = Wallboard.Archive.GitHubCollector.job_rows(finished_jobs(), @repo, 101)
+    :ok = Store.put_jobs(@repo, 101, first)
+
+    File.write!(
+      Path.join(dir, "jobs.json"),
+      jobs_json([
+        job(1, "Build", "completed", "success", started: 890, completed: 760),
+        job(2, "Tests", "completed", "success",
+          attempt: 2,
+          started: 300,
+          completed: 100,
+          runner: "gate-air-2"
+        )
+      ])
+    )
+
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "success", attempt: 2)]))
+
+    html = view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    refute html =~ "failed at:"
+    html = render_async(view, 5_000)
+
+    assert html =~ "attempt 2"
+    assert html =~ "on gate-air-2"
+    refute html =~ "failed at:"
+    assert length(asked(dir)) == 1
+  end
+
+  test "a run made again while its panel is open reads the new attempt's jobs", %{dir: dir} do
+    use_settings(false)
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "failure")]))
+
+    view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    assert render_async(view, 5_000) =~ "failed at: Run mix test"
+
+    File.write!(
+      Path.join(dir, "jobs.json"),
+      jobs_json([
+        job(2, "Tests", "completed", "success", attempt: 2, started: 300, completed: 100)
+      ])
+    )
+
+    send_facts(view, facts([run_json(101, "completed", "success", attempt: 2)]))
+    html = render_async(view, 5_000)
+
+    refute html =~ "failed at:"
+    assert html =~ "Jobs · 1"
+    assert length(asked(dir)) == 2
   end
 
   test "a tap on a run the board no longer lists does nothing" do
