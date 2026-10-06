@@ -49,7 +49,13 @@ defmodule Wallboard.ArchiveTest do
     {session, _} = Transcript.to_record(Transcript.read_lines(Enum.join(lines, "\n")), [], ctx)
 
     assert session.git_branch == "robert/41-sign-in"
-    assert session.detail.branches == ["worktree-41", "robert/41-sign-in", "main"]
+    at = fn hm -> DateTime.to_unix(DateTime.from_iso8601("2026-09-29T#{hm}:00Z") |> elem(1)) end
+
+    assert session.detail.branches == [
+             %{branch: "worktree-41", from: at.("13:00"), to: at.("13:00")},
+             %{branch: "robert/41-sign-in", from: at.("13:01"), to: at.("13:03")},
+             %{branch: "main", from: at.("13:02"), to: at.("13:02")}
+           ]
   end
 
   test "reads prompts, requests once per id, and tool calls" do

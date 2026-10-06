@@ -22,14 +22,15 @@ defmodule Wallboard.Archive.CiMinutes do
   Minutes are added up by attempt: a rerun is another attempt of the same
   run, billed again, and begins when it was asked for.
 
-  An attempt goes to the session that caused it: one that worked on the
-  attempt's branch (a Claude session keeps every branch it was on; a Codex
-  session and one from another machine keep one), in its repository when the session's repository is known, that
-  was at work when the attempt began (from its start to `@after_s` past its
-  last activity, since a push is often a session's last act). When several
-  qualify, a session no other tool started comes first (a Codex review that
-  Claude started runs inside the Claude session that pushes), then the one
-  that started last, so an attempt counts once.
+  An attempt goes to the session that caused it: one that was on the
+  attempt's branch when the attempt began (from when it was first seen
+  there to `@after_s` past when it was last seen there, since a push is
+  often a session's last act there), in its repository when the session's
+  repository is known. A Claude session keeps every branch it was on, with
+  when; a Codex session and one from another machine keep one branch, for
+  their whole span. When several qualify, a session no script or other
+  tool started comes first (a review it started runs inside the session
+  that pushes), then the one that started last, so an attempt counts once.
   Sessions save no commit, so the link is by branch and time.
 
   Attempts on the repository's default branch (and on `main` or `master`),
@@ -42,10 +43,11 @@ defmodule Wallboard.Archive.CiMinutes do
   # How long after a session's last activity an attempt it caused may begin.
   @after_s 300
 
-  # Who started a Codex session that another tool started, such as a review
-  # Claude asked for. Claude's own `claude -p` runs look like any other
-  # session started without a terminal, so they cannot be told apart.
-  @nested ["Claude Code", "codex_exec"]
+  # How a session that a script or another tool started says so: a Codex
+  # review Claude asked for ("Claude Code"), `codex exec`, and Claude's own
+  # `claude -p` and Agent SDK runs ("sdk-cli"; on one hub, 2,115 such
+  # sessions opened no pull request, while 159 of 213 terminal ones did).
+  @nested ["Claude Code", "codex_exec", "sdk-cli"]
 
   # Events no session causes by pushing.
   @not_pushed ~w(schedule merge_group dynamic)
@@ -59,7 +61,7 @@ defmodule Wallboard.Archive.CiMinutes do
   ((',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%'
     OR (coalesce(j.runner_name, '') != ''
       AND j.runner_name NOT GLOB 'GitHub Actions [0-9]*'
-      AND j.runner_name NOT GLOB (coalesce(j.labels, '') || '-[0-9]*')))
+      AND j.runner_name NOT GLOB (coalesce(j.labels, '') || '-1000[0-9][0-9][0-9][0-9][0-9][0-9]')))
   """
 
   # A job's minutes as GitHub rounds them.
@@ -77,7 +79,7 @@ defmodule Wallboard.Archive.CiMinutes do
   """
   def for_session(%{started_at: from, ended_at: to} = s)
       when is_integer(from) and is_integer(to) do
-    case branches(s) do
+    case s |> spans() |> Enum.map(& &1.branch) |> Enum.uniq() do
       [] -> total([])
       branches -> for_session(s, branches, from, to)
     end
@@ -99,7 +101,8 @@ defmodule Wallboard.Archive.CiMinutes do
       sessions(
         """
         (git_branch IN (#{on}) OR EXISTS
-          (SELECT 1 FROM json_each(detail, '$.branches') b WHERE b.value IN (#{on})))
+          (SELECT 1 FROM json_each(detail, '$.branches') b
+            WHERE json_extract(b.value, '$.branch') IN (#{on})))
           AND started_at <= ?2 AND ended_at >= ?1 - #{@after_s}
           OR (machine = ?3 AND session_id = ?4)
         """,
@@ -115,15 +118,26 @@ defmodule Wallboard.Archive.CiMinutes do
     |> total()
   end
 
-  # Every branch a saved session worked on: the ones its details list (a
-  # Claude session saved since #52) and the one saved with it.
-  defp branches(s) do
+  # Each branch a saved session worked on, with when: `%{branch, from, to}`.
+  # A Claude session saved since #52 lists them in its details; any other
+  # has the one branch saved with it, for its whole span.
+  defp spans(s) do
     detail = Map.get(s, :detail) || %{}
-    listed = Map.get(detail, "branches") || Map.get(detail, :branches) || []
 
-    [Map.get(s, :git_branch) | List.wrap(listed)]
-    |> Enum.filter(&(is_binary(&1) and &1 != ""))
-    |> Enum.uniq()
+    listed =
+      for span <- List.wrap(Map.get(detail, "branches") || Map.get(detail, :branches)),
+          is_map(span),
+          branch = span["branch"] || span[:branch],
+          from = span["from"] || span[:from],
+          to = span["to"] || span[:to],
+          is_binary(branch) and branch != "" and is_integer(from) and is_integer(to),
+          do: %{branch: branch, from: from, to: to}
+
+    branch = Map.get(s, :git_branch)
+
+    if is_binary(branch) and branch != "" and not Enum.any?(listed, &(&1.branch == branch)),
+      do: listed ++ [%{branch: branch, from: s[:started_at], to: s[:ended_at]}],
+      else: listed
   end
 
   # "?first, ?first+1, ..." for each value.
@@ -198,14 +212,15 @@ defmodule Wallboard.Archive.CiMinutes do
 
   An attempt has `repo`, `branch`, `event`, `at` and `default` (its
   repository's default branch, or nil); a session has `machine`,
-  `session_id`, `repo` (nil when not known), `branch` or `branches` (every
-  branch it worked on), `started_at`, `ended_at` and, optionally, `nested`
-  (true when another tool started it).
+  `session_id`, `repo` (nil when not known), `started_at`, `ended_at`,
+  either `branch` (worked on for the whole session) or `spans` (each branch
+  with when it was worked on, `%{branch, from, to}`), and, optionally,
+  `nested` (true when a script or another tool started it).
   """
   def link(attempts, sessions) do
     by_branch =
-      for s <- sessions, b <- Map.get(s, :branches) || [s.branch], reduce: %{} do
-        acc -> Map.update(acc, b, [s], &[s | &1])
+      for s <- sessions, span <- span_list(s), reduce: %{} do
+        acc -> Map.update(acc, span.branch, [{s, span}], &[{s, span} | &1])
       end
 
     for a <- attempts,
@@ -215,24 +230,29 @@ defmodule Wallboard.Archive.CiMinutes do
         do: {a, owner}
   end
 
+  defp span_list(%{spans: spans}) when is_list(spans), do: spans
+  defp span_list(s), do: [%{branch: s.branch, from: s.started_at, to: s.ended_at}]
+
   defp pushed?(a) do
     is_binary(a.branch) and is_integer(a.at) and a.event not in @not_pushed and
       a.branch not in ["main", "master", a.default] and
       not String.starts_with?(a.branch, "gh-readonly-queue/")
   end
 
-  defp owner(a, sessions) do
-    sessions
-    |> Enum.filter(fn s ->
-      is_integer(s.started_at) and is_integer(s.ended_at) and s.started_at <= a.at and
-        a.at <= s.ended_at + @after_s and
+  # Among the sessions on the attempt's branch, those on it when the attempt
+  # began: one no script or other tool started first, then the latest start.
+  defp owner(a, on_branch) do
+    on_branch
+    |> Enum.filter(fn {s, span} ->
+      is_integer(span.from) and is_integer(span.to) and span.from <= a.at and
+        a.at <= span.to + @after_s and
         (s.repo == nil or String.downcase(s.repo) == String.downcase(a.repo))
     end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq_by(&{&1.machine, &1.session_id})
     |> Enum.max_by(
-      &{!Map.get(&1, :nested, false), &1.started_at, &1.machine, &1.session_id},
-      fn ->
-        nil
-      end
+      &{!Map.get(&1, :nested, false), &1.started_at || 0, &1.machine, &1.session_id},
+      fn -> nil end
     )
   end
 
@@ -320,10 +340,16 @@ defmodule Wallboard.Archive.CiMinutes do
         machine: row.machine,
         session_id: row.session_id,
         tool: row.tool,
-        nested: row.tool == "codex" and row.entrypoint in @nested,
+        nested: row.entrypoint in @nested,
         # Only this machine's own sessions have their folder here.
         repo: if(row.source in [nil, ""], do: repos[row.cwd]),
-        branches: branches(%{git_branch: row.git_branch, detail: %{"branches" => listed(row)}}),
+        spans:
+          spans(%{
+            git_branch: row.git_branch,
+            started_at: row.started_at,
+            ended_at: row.ended_at,
+            detail: %{"branches" => listed(row)}
+          }),
         started_at: row.started_at,
         ended_at: row.ended_at
       }

@@ -122,10 +122,14 @@ defmodule Wallboard.CiMinutesTest do
         job(2, 60, "ubuntu-latest", "success", runner: "GitHub Actions 1000041223"),
         job(3, 60, "ubuntu-8core", "success", runner: "ubuntu-8core-1000027280"),
         # No runner recorded (never started, or cancelled): counted as GitHub's.
-        job(4, 60, "ubuntu-latest", "cancelled")
+        job(4, 60, "ubuntu-latest", "cancelled"),
+        # Your own runners named after their label: a runner scale set, and
+        # a fleet numbered from 2.
+        job(5, 120, "arc-runner-set", "success", runner: "arc-runner-set-7x2kq-runner-9fz4l"),
+        job(6, 120, "mac-mini", "success", runner: "mac-mini-2")
       ])
 
-      assert %{paid: 3, own: 2} = CiMinutes.for_pr(@repo, 7)
+      assert %{paid: 3, own: 6} = CiMinutes.for_pr(@repo, 7)
     end
 
     test "a session started by another tool does not take the pushes of the one that started it" do
@@ -142,17 +146,82 @@ defmodule Wallboard.CiMinutesTest do
       assert %{runs: 0} = CiMinutes.for_session(codex)
     end
 
+    for {tool, entrypoint} <- [{"claude", "sdk-cli"}, {"codex", "codex_exec"}] do
+      test "a #{entrypoint} run started inside a session does not take its pushes" do
+        person = session("person", "feature", @t0, @t0 + 7200)
+
+        script =
+          session("script", "feature", @t0 + 1800, @t0 + 3000, unquote(tool), unquote(entrypoint))
+
+        run(1, branch: "feature", created_at: @t0 + 2400)
+        jobs(1, [job(1, 60, "ubuntu-latest")])
+
+        assert %{runs: 1} = CiMinutes.for_session(person)
+        assert %{runs: 0} = CiMinutes.for_session(script)
+      end
+    end
+
     test "a session that pushed one branch and was saved on another still gets its runs" do
       s =
-        session("s1", "main", @t0, @t0 + 3600, "claude", "cli", ["robert/41-sign-in", "main"])
+        session("s1", "main", @t0, @t0 + 3600, "claude", "cli", [
+          span("robert/41-sign-in", @t0, @t0 + 1200),
+          span("main", @t0 + 1200, @t0 + 3600)
+        ])
 
       run(1, branch: "robert/41-sign-in", created_at: @t0 + 600)
       jobs(1, [job(1, 60, "ubuntu-latest")])
 
-      assert %{paid: 1, runs: 1} = CiMinutes.for_session(s)
+      # As the board reads it, details decoded from the database.
+      assert %{paid: 1, runs: 1} = CiMinutes.for_session(saved(s))
 
       t = Trends.build(Wallboard.Settings.merge(settings(), %{}), 7, DateTime.from_unix!(@t0))
       assert %{sub: "1 from agent sessions"} = Enum.find(t.cards, &(&1.key == :ci_minutes))
+    end
+
+    test "a branch a session only passed through is not its branch for the rest of its life" do
+      # Started on develop, then branched off: a teammate's merge run on
+      # develop an hour later is not this session's.
+      s =
+        session("s1", "feature-y", @t0, @t0 + 7200, "claude", "cli", [
+          span("develop", @t0, @t0 + 60),
+          span("feature-y", @t0 + 60, @t0 + 7200)
+        ])
+
+      run(1, branch: "develop", created_at: @t0 + 3600, event: "push")
+      jobs(1, [job(1, 60, "ubuntu-latest")])
+      assert %{runs: 0} = CiMinutes.for_session(saved(s))
+
+      # A later session that looked at the pusher's branch for a minute does
+      # not take the push made after it left.
+      pusher = session("pusher", "feature", @t0, @t0 + 7200)
+
+      looker =
+        session("looker", "other", @t0 + 1800, @t0 + 7200, "claude", "cli", [
+          span("feature", @t0 + 1800, @t0 + 1860),
+          span("other", @t0 + 1860, @t0 + 7200)
+        ])
+
+      run(2, branch: "feature", created_at: @t0 + 3600)
+      jobs(2, [job(2, 60, "ubuntu-latest")])
+      assert %{runs: 1} = CiMinutes.for_session(saved(pusher))
+      assert %{runs: 0} = CiMinutes.for_session(saved(looker))
+    end
+
+    test "a rival found only through the branches its details list takes the run once" do
+      pusher = session("pusher", "feature", @t0, @t0 + 7200)
+
+      # Started later, worked on feature, and was saved on main.
+      later =
+        session("later", "main", @t0 + 1800, @t0 + 7200, "claude", "cli", [
+          span("feature", @t0 + 1800, @t0 + 3500),
+          span("main", @t0 + 3500, @t0 + 7200)
+        ])
+
+      run(1, branch: "feature", created_at: @t0 + 2400)
+      jobs(1, [job(1, 60, "ubuntu-latest")])
+
+      assert %{runs: 1} = CiMinutes.for_session(saved(later))
+      assert %{runs: 0} = CiMinutes.for_session(saved(pusher))
     end
   end
 
@@ -307,7 +376,7 @@ defmodule Wallboard.CiMinutesTest do
          ended_at,
          tool \\ "claude",
          entrypoint \\ "cli",
-         branches \\ nil
+         spans \\ nil
        ) do
     s = %{
       machine: "m",
@@ -319,7 +388,7 @@ defmodule Wallboard.CiMinutesTest do
       started_at: started_at,
       ended_at: ended_at,
       prompts: 1,
-      detail: %{branches: branches || [branch]}
+      detail: if(spans, do: %{branches: spans}, else: %{})
     }
 
     :ok =
@@ -339,6 +408,12 @@ defmodule Wallboard.CiMinutesTest do
 
     s
   end
+
+  defp span(branch, from, to), do: %{branch: branch, from: from, to: to}
+
+  # The session as the board reads it back: details decoded from JSON, with
+  # string keys.
+  defp saved(s), do: Store.get_session(s.machine, s.session_id)
 
   defp public!(repo), do: put_facts(repo, %{private: false, default_branch: "main"})
 

@@ -29,8 +29,8 @@ defmodule Wallboard.Archive.Transcript do
       last_at: nil,
       cwd: nil,
       git_branch: nil,
-      # Every branch seen, in the order first seen: a session can push one
-      # branch and end on another.
+      # Every branch seen, in the order first seen, with when: a session can
+      # push one branch and end on another.
       branches: [],
       version: nil,
       entrypoint: nil,
@@ -123,17 +123,27 @@ defmodule Wallboard.Archive.Transcript do
         last_at: at || t.last_at,
         cwd: e["cwd"] || t.cwd,
         git_branch: e["gitBranch"] || t.git_branch,
-        branches: branch_seen(t.branches, e["gitBranch"]),
+        branches: branch_seen(t.branches, e["gitBranch"], at),
         version: e["version"] || t.version,
         entrypoint: t.entrypoint || e["entrypoint"]
     }
   end
 
-  defp branch_seen(seen, branch) when is_binary(branch) and branch != "" do
-    if branch in seen, do: seen, else: seen ++ [branch]
+  # Each branch with when the session was first and last seen on it, in Unix
+  # seconds: a session's runs on a branch are the ones it began while there.
+  defp branch_seen(seen, branch, %DateTime{} = at) when is_binary(branch) and branch != "" do
+    unix = DateTime.to_unix(at)
+
+    case Enum.find_index(seen, &(&1.branch == branch)) do
+      nil ->
+        seen ++ [%{branch: branch, from: unix, to: unix}]
+
+      i ->
+        List.update_at(seen, i, &%{&1 | from: min(&1.from, unix), to: max(&1.to, unix)})
+    end
   end
 
-  defp branch_seen(seen, _), do: seen
+  defp branch_seen(seen, _, _), do: seen
 
   defp title(t, kind, v) when is_binary(v), do: %{t | titles: Map.put(t.titles, kind, clip(v))}
   defp title(t, _, _), do: t
