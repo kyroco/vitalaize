@@ -170,13 +170,18 @@ defmodule Wallboard.CollectorRunnersTest do
 
       {:os_pid, swapper_pid} = Port.info(swapper, :os_pid)
 
+      # Reads start once the swapping has.
+      Enum.find(1..200, fn _ -> File.exists?(runner) or (Process.sleep(10) && false) end)
+      assert File.exists?(runner)
+
       ps = fn -> {:ok, ["#{path}/bin/Runner.Listener run"]} end
 
       # Each read may take a tenth of a second here, not the usual second,
-      # so that the many reads that land on the pipe stay quick.
-      results =
+      # so that the many reads that land on the pipe stay quick. Each is
+      # timed: one that took the whole tenth met the pipe.
+      timed =
         for _ <- 1..200 do
-          task = Task.async(fn -> Runners.read(ps, 100) end)
+          task = Task.async(fn -> :timer.tc(fn -> Runners.read(ps, 100) end) end)
 
           case Task.yield(task, 3_000) do
             {:ok, result} ->
@@ -190,11 +195,12 @@ defmodule Wallboard.CollectorRunnersTest do
               )
 
               Task.shutdown(task, 2_000)
-              :still_reading
+              {0, :still_reading}
           end
         end
 
       System.cmd("kill", ["-9", Integer.to_string(swapper_pid)])
+      results = Enum.map(timed, &elem(&1, 1))
 
       # Every read answered: named, or the folder left unnamed.
       refute :still_reading in results
@@ -203,6 +209,14 @@ defmodule Wallboard.CollectorRunnersTest do
                results,
                &(match?({[], [_]}, &1) or match?({[%{name: "swapped"}], []}, &1))
              )
+
+      # The pipe was met: some reads ran out their time.
+      assert Enum.any?(timed, fn {us, _} -> us >= 100_000 end)
+
+      # And each `head` that met it was killed, none left waiting on it.
+      Process.sleep(200)
+      {left, _} = System.cmd("pgrep", ["-f", "head -c 64001 -- #{runner}"])
+      assert left == ""
     end
   end
 
