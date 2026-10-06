@@ -301,6 +301,7 @@ button { font: inherit; }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat-note { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-note-wrap { white-space: normal; }
 .detail-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .detail-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 /* A repository's details: every workflow's recent runs, two across. */

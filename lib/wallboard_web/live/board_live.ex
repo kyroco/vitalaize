@@ -1715,6 +1715,7 @@ defmodule WallboardWeb.BoardLive do
               label="CI minutes"
               value={thousands(@s.ci.paid)}
               note={ci_note(@s.ci)}
+              wrap
             />
           </div>
 
@@ -1894,13 +1895,15 @@ defmodule WallboardWeb.BoardLive do
   attr :label, :string, required: true
   attr :value, :any, required: true
   attr :note, :any, default: nil
+  # A note too long for one line wraps instead of being cut off.
+  attr :wrap, :boolean, default: false
 
   defp stat(assigns) do
     ~H"""
     <div class="stat">
       <span class="kicker">{@label}</span>
       <span class="stat-value">{@value || "-"}</span>
-      <span :if={@note} class="stat-note">{@note}</span>
+      <span :if={@note} class={["stat-note", @wrap && "stat-note-wrap"]}>{@note}</span>
     </div>
     """
   end
