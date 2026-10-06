@@ -8,8 +8,10 @@ defmodule Wallboard.Archive.GitHubCollector do
     * on the very first round, saves the last `backfill_days` of runs, one
       day at a time (GitHub returns at most 1,000 runs for a filtered list,
       and a busy repo can pass that in two weeks)
-    * saves the runs created in the last 2 days, which picks up runs that
-      finished or were rerun since
+    * saves the runs created since the day of the last good round (an hour
+      early, and no further back than `backfill_days`), so runs created
+      while the board was off are not lost, and always yesterday's and
+      today's, which picks up runs that finished or were rerun since
     * saves the jobs of up to `github_jobs_per_round` finished runs that do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
@@ -124,15 +126,12 @@ defmodule Wallboard.Archive.GitHubCollector do
     a = settings.archive
     today = DateTime.to_date(now)
     key = "github_backfill:" <> repo
+    runs_through_key = "github_runs_through:" <> repo
 
-    days =
-      if Store.get_meta(key),
-        do: [Date.add(today, -1), today],
-        else: Enum.map(a.backfill_days..0//-1, &Date.add(today, -&1))
-
-    with {:ok, runs} <- fetch_days(repo, days) do
+    with {:ok, runs} <- fetch_days(repo, run_days(key, runs_through_key, today, a, now)) do
       :ok = Store.put_runs(runs)
       if !Store.get_meta(key), do: Store.put_meta(key, Date.to_iso8601(today))
+      Store.put_meta(runs_through_key, Integer.to_string(DateTime.to_unix(now)))
 
       refresh_facts(repo, today)
 
@@ -178,6 +177,35 @@ defmodule Wallboard.Archive.GitHubCollector do
       true ->
         midnight.(Date.add(today, -1))
     end
+  end
+
+  # The days a round's runs are read from, oldest first: the backfill on the
+  # first round, then from the day of an hour before the last good round
+  # began, so a run created while the board was off is still saved, but never
+  # further back than the backfill. Always yesterday too: a rerun keeps its
+  # run's day, and a run started before midnight finishes after it.
+  defp run_days(backfill_key, through_key, today, archive, now) do
+    yesterday = Date.add(today, -1)
+    oldest = Date.add(today, -archive.backfill_days)
+
+    first =
+      cond do
+        !Store.get_meta(backfill_key) ->
+          oldest
+
+        (through = Store.get_meta(through_key)) && match?({_, ""}, Integer.parse(through)) ->
+          last =
+            (min(String.to_integer(through), DateTime.to_unix(now)) - 3600)
+            |> DateTime.from_unix!()
+            |> DateTime.to_date()
+
+          Enum.min([yesterday, Enum.max([last, oldest], Date)], Date)
+
+        true ->
+          yesterday
+      end
+
+    Enum.to_list(Date.range(first, today, 1))
   end
 
   defp fetch_days(repo, days) do
