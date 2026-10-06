@@ -138,13 +138,18 @@ defmodule Wallboard.Cmd do
   # shell's end, so the program is gone, not only told to go.
   defp kill(port) do
     with {:os_pid, pid} when is_integer(pid) <- Port.info(port, :os_pid) do
-      System.cmd("/bin/sh", ["-c", ~s(kill -KILL -- "-$0"), Integer.to_string(pid)],
-        stderr_to_stdout: true
-      )
+      System.cmd("/bin/sh", ["-c", kill_group(), Integer.to_string(pid)], stderr_to_stdout: true)
     end
 
     wait_for_end(port)
   end
+
+  # The shell line that kills the process group led by the process id in $0.
+  # /bin/sh is dash on Ubuntu and Debian and bash on a Mac, so it must read
+  # the same in both: dash takes no `--`, and bash reads `-s KILL -<id>` as
+  # a signal. Public only so a test can run it in each shell.
+  @doc false
+  def kill_group, do: ~s(kill -KILL "-$0")
 
   defp wait_for_end(port) do
     receive do

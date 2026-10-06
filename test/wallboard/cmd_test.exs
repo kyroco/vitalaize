@@ -75,6 +75,29 @@ defmodule Wallboard.CmdTest do
     wait_until(fn -> gone?(pid) and gone?(child) end)
   end
 
+  test "the kill takes a program and what it started, in every shell /bin/sh may be" do
+    # dash is /bin/sh on Ubuntu and Debian, bash on a Mac.
+    for shell <- ["/bin/sh", "/bin/dash", "/bin/bash"], File.exists?(shell) do
+      port =
+        Port.open({:spawn_executable, "/bin/sh"}, [
+          :binary,
+          :exit_status,
+          args: ["-c", "sleep 600 & echo $!; wait"]
+        ])
+
+      assert_receive {^port, {:data, child}}, 5_000
+      {:os_pid, pid} = Port.info(port, :os_pid)
+
+      assert {_, 0} =
+               System.cmd(shell, ["-c", Cmd.kill_group(), Integer.to_string(pid)],
+                 stderr_to_stdout: true
+               )
+
+      assert_receive {^port, {:exit_status, _}}, 5_000, "#{shell} did not kill the group"
+      wait_until(fn -> gone?(String.trim(child)) end)
+    end
+  end
+
   test "the limit is a real timer, with or without input" do
     assert {:error, "sleep took longer than 0s"} = Cmd.run("sleep", ["600"], timeout: 0)
 
