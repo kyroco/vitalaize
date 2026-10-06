@@ -249,6 +249,19 @@ defmodule Wallboard.GitHubFetchTest do
       assert %{list: [_ | _]} = facts.jobs[77]
     end
 
+    test "a held deploy in both the last day's runs and the deploy list is read once",
+         %{dir: dir} do
+      lists(dir, ["gate.yml", "prod-deploy.yml"])
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+      runs(dir, [{1, "waiting"}])
+      File.cp!(Path.join(dir, "runs.json"), Path.join(dir, "deploy_runs.json"))
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert Enum.count(asked(dir), &(&1 == "runs/1/jobs?per_page=100&page=1")) == 1
+      assert %{list: [_ | _]} = facts.jobs[1]
+    end
+
     test "a job without the self-hosted label is yours when GitHub lists its runner",
          %{dir: dir} do
       [rockets, _] = repos(@rockets)
