@@ -1154,8 +1154,10 @@ enum Setup {
         Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
         try? fm.removeItem(at: agentPlist)
         // The old upload hooks and this Mac's certificate for its hub, by
-        // the board's own code, while the data folder is still there.
-        if let data = engine(["remove"]),
+        // the board's own code, while the data folder is still there. With
+        // the settings deleted, the keys typed in Settings go too: they are
+        // in the keychain, not in the data folder.
+        if let data = engine(deleteData ? ["remove", "keys"] : ["remove"]),
            let answer = try? JSONDecoder().decode(SaveAnswer.self, from: data), answer.ok {
             answer.lines?.forEach(say)
         } else {

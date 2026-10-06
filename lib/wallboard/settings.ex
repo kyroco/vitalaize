@@ -699,6 +699,9 @@ defmodule Wallboard.Settings do
   @doc "The name a setting's key is kept under in the key store, or nil."
   def key_name(path), do: Enum.find_value(@kept_keys, fn {p, name} -> p == path && name end)
 
+  @doc "Every setting kept in the key store, as `{name, label}`."
+  def kept_keys, do: for({path, name} <- @kept_keys, do: {name, label(path)})
+
   defp saved_at(map, [k | rest]) do
     case map do
       %{^k => inner} when rest == [] -> inner

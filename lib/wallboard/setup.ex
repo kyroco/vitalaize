@@ -240,10 +240,31 @@ defmodule Wallboard.Setup do
   settings: the old upload hooks, and the certificate and hub address
   pairing saved. Returns what it did as sentences. The service is the
   caller's to stop first (the VitalAIze app does, and `vitalaize remove`).
+
+  With `keys: true`, the keys typed in Settings go too
+  (`Wallboard.KeyStore`): the app asks for that when the settings are
+  being deleted, since on a Mac the keys are not in the settings folder.
   """
   def remove(opts \\ []) do
     settings = settings_or_defaults()
-    retire_old_hooks(settings, opts) ++ forget_hub(settings)
+
+    retire_old_hooks(settings, opts) ++
+      forget_hub(settings) ++ if(opts[:keys], do: forget_keys(), else: [])
+  end
+
+  defp forget_keys do
+    place = Wallboard.KeyStore.place()
+
+    for {name, label} <- Settings.kept_keys(), Wallboard.KeyStore.fetch(name) != :none do
+      case Wallboard.KeyStore.delete(name) do
+        :ok ->
+          "Took the #{label} out of #{place}."
+
+        {:error, why} ->
+          "Could not take the #{label} out of #{place} (#{why}). " <>
+            "Delete the VitalAIze item there by hand."
+      end
+    end
   end
 
   # A settings file that does not load must not keep VitalAIze on the
@@ -751,7 +772,9 @@ defmodule Wallboard.Setup do
     * `["retire"]`: takes out the old upload hooks (`retire_old_hooks/2`)
       and answers `lines`, what it did.
     * `["remove"]`: `remove/1`, and answers `lines`. It works beside a
-      settings file that does not load.
+      settings file that does not load. `["remove", "keys"]` takes the
+      keys typed in Settings out of the key store too, for a Remove that
+      deletes the settings.
   """
   def json(args, opts \\ [])
 
@@ -877,8 +900,13 @@ defmodule Wallboard.Setup do
 
   def json(["remove"], opts), do: emit(opts, %{ok: true, lines: remove(opts)})
 
+  def json(["remove", "keys"], opts),
+    do: emit(opts, %{ok: true, lines: remove(Keyword.put(opts, :keys, true))})
+
   def json(_other, _opts),
-    do: {:error, "Usage: --json show | save | forget | pair [address] | hubs | retire | remove"}
+    do:
+      {:error,
+       "Usage: --json show | save | forget | pair [address] | hubs | retire | remove [keys]"}
 
   defp quiet_address("", opts) do
     case opts[:discover].() do

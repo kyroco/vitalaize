@@ -486,6 +486,33 @@ defmodule Wallboard.NewRelicKeyTest do
     end
   end
 
+  describe "removing VitalAIze" do
+    test "keeps the key, unless the settings are deleted too", c do
+      settings_file(c.dir)
+      {:ok, _, %{"ok" => true}} = app_save(%{"new_relic.api_key" => @key})
+
+      # Remove: the settings stay, and so does the key they point to.
+      out = io([])
+      assert :ok = Setup.json(["remove"], mac() ++ [out: out])
+      assert Memory.all() == %{"new_relic" => @key}
+
+      # Remove with the database and settings deleted: the key goes too, and
+      # the person is told.
+      out = io([])
+      assert :ok = Setup.json(["remove", "keys"], mac() ++ [out: out])
+      "VITALAIZE_JSON" <> json = String.trim(output(out))
+      assert %{"ok" => true, "lines" => lines} = Jason.decode!(json)
+      assert "Took the New Relic API key out of the test keychain." in lines
+      assert Memory.all() == %{}
+      refute json =~ @key
+
+      # With none kept, nothing is said about it.
+      out = io([])
+      assert :ok = Setup.json(["remove", "keys"], mac() ++ [out: out])
+      refute output(out) =~ "New Relic"
+    end
+  end
+
   describe "the stores" do
     test "the file store keeps, replaces and removes a key, closed to others", c do
       opts = [dir: Path.join(c.dir, "keys")]

@@ -65,4 +65,5 @@ acme/rockets"
   drive hub-remove-all
   check "after Remove with delete the login item is gone" item_gone "$LABEL"
   check "after Remove with delete the data folder is gone" test ! -d "$DATA"
+  check "and the New Relic key is out of the keychain" test -z "$(kept_key new_relic)"
 }

@@ -492,7 +492,7 @@ final class AppState: ObservableObject {
                 self.mendDone = nil
                 self.mendFailure = nil
                 let kept = folder.map { "Its database and settings are still in \($0). Setting up again with the same folder picks them up." }
-                self.removed = deleteData ? "Its database and settings were deleted too." : (kept ?? "")
+                self.removed = deleteData ? "Its database and settings were deleted too, and any key typed in Settings was taken out of the keychain." : (kept ?? "")
             }
         }
     }
