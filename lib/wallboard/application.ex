@@ -145,7 +145,9 @@ defmodule Wallboard.Application do
       {Phoenix.PubSub, name: Wallboard.PubSub},
       {Task.Supervisor, name: Wallboard.TaskSupervisor},
       # Takes up what the VitalAIze app or `vitalaize setup` saves.
-      Wallboard.Settings.Watch
+      Wallboard.Settings.Watch,
+      # Reads finished runs' jobs for the Git tab, once for every screen.
+      Wallboard.RunJobs
     ] ++
       archive_children(settings) ++
       if(new_relic?,

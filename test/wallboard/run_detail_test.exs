@@ -47,6 +47,7 @@ defmodule Wallboard.RunDetailTest do
     )
 
     start_supervised!(@endpoint)
+    start_supervised!(Wallboard.RunJobs)
 
     on_exit(fn ->
       System.put_env("PATH", elem(old, 0))
@@ -268,7 +269,7 @@ defmodule Wallboard.RunDetailTest do
     assert length(asked(dir)) == 1
   end
 
-  test "a failed read says so, and a new tap tries once more", %{dir: dir} do
+  test "a failed read says so, and taps right after it do not read again", %{dir: dir} do
     use_settings(false)
     File.write!(Path.join(dir, "jobs.json"), "not json")
     File.write!(Path.join(dir, "go"), "")
@@ -282,10 +283,85 @@ defmodule Wallboard.RunDetailTest do
     send_facts(view, facts([run_json(101, "completed", "failure")]))
     assert length(asked(dir)) == 1
 
+    for _ <- 1..5 do
+      view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
+      view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+      assert render_async(view, 5_000) =~ "Could not read the jobs"
+    end
+
+    assert length(asked(dir)) == 1
+  end
+
+  test "a failed read is tried again once the wait is over", %{dir: dir} do
+    stop_supervised!(Wallboard.RunJobs)
+    start_supervised!({Wallboard.RunJobs, retry_ms: 0})
+    use_settings(false)
+    File.write!(Path.join(dir, "jobs.json"), "not json")
+    File.write!(Path.join(dir, "go"), "")
+
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "failure")]))
+    view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    assert render_async(view, 5_000) =~ "Could not read the jobs"
+
+    File.write!(Path.join(dir, "jobs.json"), jobs_json(finished_jobs()))
     view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
     view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
-    render_async(view, 5_000)
+    assert render_async(view, 5_000) =~ "failed at: Run mix test"
     assert length(asked(dir)) == 2
+  end
+
+  test "taps back and forth between two runs read each one once", %{dir: dir} do
+    use_settings(false)
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+
+    send_facts(
+      view,
+      facts([run_json(101, "completed", "failure"), run_json(102, "completed", "success")])
+    )
+
+    for _ <- 1..5, id <- [101, 102] do
+      view |> element(~s|button.recent-row[phx-value-id="#{id}"]|) |> render_click()
+      render_async(view, 5_000)
+      view |> element(~s|button.close[phx-click="close_run"]|) |> render_click()
+    end
+
+    assert asked(dir) |> Enum.sort() |> Enum.uniq() == asked(dir) |> Enum.sort()
+    assert length(asked(dir)) == 2
+  end
+
+  test "two screens tapping a run while it is read make one call", %{dir: dir} do
+    use_settings(false)
+    one = open_board()
+    two = open_board()
+    send_facts(one, facts([run_json(101, "completed", "failure")]))
+    send_facts(two, facts([run_json(101, "completed", "failure")]))
+
+    one |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    two |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    Process.sleep(300)
+    File.write!(Path.join(dir, "go"), "")
+
+    assert render_async(one, 5_000) =~ "failed at: Run mix test"
+    assert render_async(two, 5_000) =~ "failed at: Run mix test"
+    assert length(asked(dir)) == 1
+  end
+
+  test "a run with no jobs is read once, on every screen", %{dir: dir} do
+    use_settings(true)
+    start_supervised!({Store, path: ":memory:"})
+    File.write!(Path.join(dir, "jobs.json"), jobs_json([]))
+    File.write!(Path.join(dir, "go"), "")
+
+    for _ <- 1..3 do
+      view = open_board()
+      send_facts(view, facts([run_json(101, "completed", "failure")]))
+      view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+      assert render_async(view, 5_000) =~ "No jobs"
+    end
+
+    assert length(asked(dir)) == 1
   end
 
   test "a running run's panel follows the checks as jobs finish, with no call of its own",

@@ -10,7 +10,7 @@ defmodule WallboardWeb.BoardLive do
   """
   use WallboardWeb, :live_view
 
-  alias Wallboard.{Mailbox, Poller, Settings, Store}
+  alias Wallboard.{Mailbox, Poller, RunJobs, Settings, Store}
   alias Wallboard.Archive.{Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
 
@@ -332,15 +332,13 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_event(_, _params, socket), do: {:noreply, socket}
 
-  # A finished run's jobs, read once for its panel. Saved in the archive
-  # when it is on, so the archive does not read them again and every
-  # screen finds them there.
+  # A finished run's jobs, from the board's one reader of them (see
+  # Wallboard.RunJobs), which reads each run once for every screen.
   @impl true
-  def handle_async({:run_jobs, {repo, id, _} = key}, result, socket) do
+  def handle_async({:run_jobs, key}, result, socket) do
     got =
       case result do
         {:ok, {:ok, rows}} ->
-          if archive?(socket), do: Store.put_jobs(repo, id, rows)
           rows
 
         {:ok, {:error, why}} ->
@@ -490,7 +488,7 @@ defmodule WallboardWeb.BoardLive do
         socket =
           socket
           |> assign(run_jobs: Map.put(socket.assigns.run_jobs, key, :loading))
-          |> start_async({:run_jobs, key}, fn -> GitHub.fetch_run_jobs(repo, run.id) end)
+          |> start_async({:run_jobs, key}, fn -> RunJobs.get(repo, run.id, run[:attempt]) end)
 
         {socket, :loading}
 
