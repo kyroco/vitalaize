@@ -1,0 +1,65 @@
+{
+  "total_count": 4,
+  "jobs": [
+    {
+      "id": 71000000001,
+      "run_id": 36500000001,
+      "run_attempt": 1,
+      "name": "Lint",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-05T17:00:00Z",
+      "started_at": "2026-10-05T17:00:04Z",
+      "completed_at": "2026-10-05T17:01:10Z",
+      "runner_name": "GitHub Actions 1000041223",
+      "runner_group_name": "GitHub Actions",
+      "labels": ["ubuntu-latest"],
+      "steps": [{"name": "Run lint", "status": "completed", "conclusion": "success"}]
+    },
+    {
+      "id": 71000000002,
+      "run_id": 36500000001,
+      "run_attempt": 1,
+      "name": "Build",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-10-05T17:00:00Z",
+      "started_at": "2026-10-05T17:00:06Z",
+      "completed_at": "2026-10-05T17:04:07Z",
+      "runner_name": "acme-mini-1",
+      "runner_group_name": "Default",
+      "labels": ["self-hosted", "macOS", "ARM64"],
+      "steps": [{"name": "Compile", "status": "completed", "conclusion": "success"}]
+    },
+    {
+      "id": 71000000003,
+      "run_id": 36500000001,
+      "run_attempt": 1,
+      "name": "Browser tests",
+      "status": "in_progress",
+      "conclusion": null,
+      "created_at": "2026-10-05T17:04:08Z",
+      "started_at": "2026-10-05T17:04:10Z",
+      "completed_at": null,
+      "runner_name": "acme-mini-2",
+      "runner_group_name": "Default",
+      "labels": ["self-hosted", "macOS", "ARM64"],
+      "steps": [{"name": "Run Playwright", "status": "in_progress", "conclusion": null}]
+    },
+    {
+      "id": 71000000004,
+      "run_id": 36500000001,
+      "run_attempt": 1,
+      "name": "Deploy preview",
+      "status": "queued",
+      "conclusion": null,
+      "created_at": "2026-10-05T17:04:08Z",
+      "started_at": null,
+      "completed_at": null,
+      "runner_name": null,
+      "runner_group_name": null,
+      "labels": ["self-hosted", "macOS", "ARM64"],
+      "steps": []
+    }
+  ]
+}

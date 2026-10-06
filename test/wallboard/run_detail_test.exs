@@ -160,7 +160,7 @@ defmodule Wallboard.RunDetailTest do
       "started_at" => opts[:started] && iso(opts[:started]),
       "completed_at" => opts[:completed] && iso(opts[:completed]),
       "runner_name" => opts[:runner],
-      "labels" => ["ubuntu-latest"],
+      "labels" => Keyword.get(opts, :labels, ["ubuntu-latest"]),
       "steps" => Keyword.get(opts, :steps, [])
     }
   end
@@ -232,6 +232,46 @@ defmodule Wallboard.RunDetailTest do
     assert html =~ "on gate-air-1"
     assert html =~ "on GitHub Actions 12"
     assert asked(dir) == []
+  end
+
+  test "a job on one of your own machines is marked so, and one on GitHub's is not", %{dir: dir} do
+    use_settings(true)
+    start_supervised!({Store, path: ":memory:"})
+
+    jobs = [
+      job(1, "Build", "completed", "success",
+        started: 890,
+        completed: 760,
+        runner: "GitHub Actions 12"
+      ),
+      # The self-hosted label says it.
+      job(2, "Tests", "completed", "success",
+        started: 750,
+        completed: 470,
+        runner: "gate-air-1",
+        labels: ["self-hosted", "Linux", "ARM64", "kyroco-gate"]
+      ),
+      # No label, but GitHub has listed the runner as the repository's own.
+      job(3, "Lint", "completed", "success",
+        started: 750,
+        completed: 700,
+        runner: "acme-mac",
+        labels: ["acme-mac"]
+      )
+    ]
+
+    :ok = Store.put_jobs(@repo, 101, Wallboard.Archive.GitHubCollector.job_rows(jobs, @repo, 101))
+    :ok = Store.put_runner_names(@repo, ["acme-mac"], 0)
+    File.write!(Path.join(dir, "go"), "")
+
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "success")]))
+    html = view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+
+    assert html =~ ~r/on gate-air-1<span class="own-tag"> · your machine/
+    assert html =~ ~r/on acme-mac<span class="own-tag"> · your machine/
+    assert html =~ "on GitHub Actions 12"
+    refute html =~ ~r/on GitHub Actions 12<span class="own-tag">/
   end
 
   test "a finished run whose jobs are not saved says loading, then shows them, with one call",
@@ -374,6 +414,40 @@ defmodule Wallboard.RunDetailTest do
     end
 
     assert length(asked(dir)) == 1
+  end
+
+  test "with the archive off, GitHub's runner list alone marks a job as on your machine" do
+    use_settings(false)
+    refute Process.whereis(Store)
+
+    # No self-hosted label: only GitHub's list says gate-air-1 is yours.
+    running = [
+      job(1, "Build", "completed", "success",
+        run_id: 202,
+        started: 300,
+        completed: 200,
+        runner: "GitHub Actions 12"
+      ),
+      job(2, "Tests", "in_progress", nil,
+        run_id: 202,
+        started: 190,
+        runner: "gate-air-1",
+        labels: ["acme-mac"]
+      )
+    ]
+
+    facts =
+      facts([run_json(202, "in_progress", nil)], %{202 => GitHub.parse_jobs(jobs_json(running))})
+
+    listed = [%{name: "gate-air-1", status: "online", busy: true, labels: ["acme-mac"]}]
+    facts = update_in(facts, [:repos, Access.at(0), :facts], &Map.put(&1, :runners, listed))
+
+    view = open_board()
+    send_facts(view, facts)
+    html = view |> element(~s|button.run-card[phx-value-id="202"]|) |> render_click()
+
+    assert html =~ ~r/on gate-air-1<span class="own-tag"> · your machine/
+    refute html =~ ~r/on GitHub Actions 12<span class="own-tag">/
   end
 
   test "a running run's panel follows the checks as jobs finish, with no call of its own",

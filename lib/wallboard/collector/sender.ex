@@ -50,6 +50,15 @@ defmodule Wallboard.Collector.Sender do
   folder, so a collector that stops halfway through does not send them
   after it starts again.
 
+  ## GitHub runners
+
+  Every few seconds it also looks for GitHub Actions runners on this
+  machine (`Wallboard.Collector.Runners`) and hands the client their names
+  and states, through `Wallboard.Collector.Filter.runners/1`. The client
+  sends them when they change; they skip the outbox and nothing of them is
+  kept on disk. A runner whose `.runner` file this user cannot read has no
+  name here and is not sent; that is logged once for each such folder.
+
   ## How the link stands
 
   Every time the stream to the hub opens or is lost, the sender writes
@@ -61,10 +70,12 @@ defmodule Wallboard.Collector.Sender do
   use GenServer
   require Logger
 
-  alias Wallboard.Collector.{Outbox, Proto, Watcher}
+  alias Wallboard.Collector.{Filter, Outbox, Proto, Runners, Watcher}
   alias Wallboard.Link.{Authority, Client}
 
   @tick_ms 500
+  # How often the process list is read for GitHub runners.
+  @runners_ms 5_000
   @batch 200
   @high_water 4_000_000
   # How long "the hub is restarting" stands before a lost stream is said
@@ -145,6 +156,16 @@ defmodule Wallboard.Collector.Sender do
       # Passed on to the client: its name, pace and waits, for tests.
       client_opts: Keyword.get(opts, :client, []),
       tick_ms: Keyword.get(opts, :tick_ms, @tick_ms),
+      # The process list, for the GitHub runners on this machine (see
+      # `Wallboard.Collector.Runners.read/1`). Tests give their own.
+      processes: Keyword.get(opts, :processes, &Runners.processes/0),
+      runners_ms: Keyword.get(opts, :runners_ms, @runners_ms),
+      # The runners as last read, as the message for the hub, and what has
+      # been logged once already.
+      runners: nil,
+      logged: MapSet.new(),
+      # The look at the runners under way, if one is.
+      runners_task: nil,
       client: nil,
       # The hub's positions still to go back to, then the files the
       # client is still to forget, and whether both have been done at
@@ -165,6 +186,7 @@ defmodule Wallboard.Collector.Sender do
     state = %{state | skip: saved_skip(state.dir)}
 
     send(self(), :tick)
+    send(self(), :runners)
     {:ok, state}
   end
 
@@ -173,6 +195,35 @@ defmodule Wallboard.Collector.Sender do
     Process.send_after(self(), :tick, state.tick_ms)
     {:noreply, state |> connect() |> rewind() |> pump()}
   end
+
+  # The runners are read in a task of their own, so a slow read (`ps`, or a
+  # .runner some program made hard to read) never holds up the sessions'
+  # events. A look starts only when the last one has answered, and the task
+  # is never stopped early: it ends by itself, and a `head` it started is
+  # killed when its time is up (see `Wallboard.Collector.Runners`).
+  def handle_info(:runners, %{runners_task: nil} = state) do
+    Process.send_after(self(), :runners, state.runners_ms)
+    processes = state.processes
+
+    task =
+      Task.Supervisor.async_nolink(Wallboard.TaskSupervisor, fn -> Runners.read(processes) end)
+
+    {:noreply, %{state | runners_task: task}}
+  end
+
+  def handle_info(:runners, state) do
+    Process.send_after(self(), :runners, state.runners_ms)
+    {:noreply, state}
+  end
+
+  def handle_info({ref, result}, %{runners_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | runners_task: nil}
+    {:noreply, state |> read_runners(result) |> give_runners()}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{runners_task: %Task{ref: ref}} = state),
+    do: {:noreply, %{state | runners_task: nil}}
 
   def handle_info({:wallboard_link, {:resume, points}}, state),
     do: {:noreply, %{state | resume: points} |> rewind() |> pump()}
@@ -207,7 +258,7 @@ defmodule Wallboard.Collector.Sender do
   @impl true
   def format_status(status) do
     status
-    |> Map.update(:state, nil, &Map.take(&1, [:dir, :ready?, :removed?]))
+    |> Map.update(:state, nil, &Map.take(&1, [:dir, :ready?, :removed?, :runners]))
     |> Map.replace(:message, :not_shown)
     |> Map.replace(:log, [])
   end
@@ -244,7 +295,7 @@ defmodule Wallboard.Collector.Sender do
         {:ok, pid} = Client.start_link(opts)
         Logger.info("Collector: sending to the hub at #{inspect(hub.host)}, port #{hub.port}.")
         # Not connected until the client says so.
-        %{note(state, "down") | client: pid, paired_as: paired_as}
+        give_runners(%{note(state, "down") | client: pid, paired_as: paired_as})
       else
         if not state.warned?,
           do: Logger.warning("Collector: the certificate files could not be read. Pair again.")
@@ -292,6 +343,62 @@ defmodule Wallboard.Collector.Sender do
       0 -> :ok
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # GitHub runners
+
+  # What a look at the runners found, `Runners.read/1`'s answer.
+  defp read_runners(state, result) do
+    case result do
+      {list, unnamed} ->
+        message = Filter.runners(list)
+        sent = MapSet.new(message.runners, & &1.name)
+
+        state =
+          Enum.reduce(unnamed, state, fn folder, state ->
+            once(state, {:unnamed, folder}, fn ->
+              "Collector: a GitHub runner runs from #{folder}, but this user cannot " <>
+                "read its .runner file, so its name and state are not sent."
+            end)
+          end)
+
+        state =
+          list
+          |> Enum.reject(&MapSet.member?(sent, &1.name))
+          |> Enum.reduce(state, fn %{name: name}, state ->
+            once(state, {:shape, name}, fn ->
+              "Collector: the GitHub runner #{inspect(name)} is not sent: a runner name " <>
+                "is letters, digits, dots, underscores and hyphens, up to 64."
+            end)
+          end)
+
+        %{state | runners: message}
+
+      :error ->
+        once(state, :ps, fn ->
+          "Collector: the process list could not be read, so no GitHub runner is sent."
+        end)
+    end
+  end
+
+  defp once(state, key, line) do
+    if MapSet.member?(state.logged, key) do
+      state
+    else
+      Logger.warning(line.())
+      %{state | logged: MapSet.put(state.logged, key)}
+    end
+  end
+
+  # The client sends them only when they changed, and again after each
+  # connect.
+  defp give_runners(%{client: pid, runners: %Proto.RunnerStates{} = runners} = state)
+       when is_pid(pid) do
+    Client.runners(pid, runners)
+    state
+  end
+
+  defp give_runners(state), do: state
 
   # When cert.pem and hub.json were last written, and how long they are.
   defp stamp(dir) do

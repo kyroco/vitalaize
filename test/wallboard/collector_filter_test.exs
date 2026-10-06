@@ -799,4 +799,54 @@ defmodule Wallboard.CollectorFilterTest do
              }
     end
   end
+
+  describe "GitHub runners" do
+    test "only a runner-shaped name and online or busy leave; any other runner is not sent" do
+      list = [
+        %{name: "kyroco-air-1", state: :busy},
+        %{name: "build_box.2", state: :online},
+        %{name: String.duplicate("a", 64), state: :online},
+        # Not names: too long, a path, a sentence, a command, other letters
+        %{name: String.duplicate("a", 65), state: :online},
+        %{name: "/home/runner/actions-runner", state: :online},
+        %{name: "the PLANTED_SECRET runner", state: :online},
+        %{name: "air-1;rm -rf /", state: :busy},
+        %{name: "café", state: :online},
+        %{name: "", state: :online},
+        %{name: nil, state: :online},
+        # A state the collector never sends
+        %{name: "air-3", state: :offline},
+        # The same name twice is sent once
+        %{name: "kyroco-air-1", state: :online}
+      ]
+
+      message = Filter.runners(list)
+
+      assert Enum.map(message.runners, &{&1.name, &1.state}) == [
+               {"kyroco-air-1", :BUSY},
+               {"build_box.2", :ONLINE},
+               {String.duplicate("a", 64), :ONLINE}
+             ]
+
+      # A runner state holds a name and a state, nothing else, so no folder,
+      # job or log can ride along.
+      assert Proto.RunnerState.__message_props__().field_props
+             |> Map.values()
+             |> Enum.map(& &1.name_atom)
+             |> Enum.sort() == [:name, :state]
+
+      bytes = Proto.FromCollector.encode(%Proto.FromCollector{body: {:runners, message}})
+      assert planted(bytes) == []
+      refute bytes =~ "/home/runner"
+
+      assert strings([message]) ==
+               Enum.sort(["build_box.2", "kyroco-air-1", String.duplicate("a", 64)])
+    end
+
+    test "at most 100 runners leave" do
+      list = for i <- 1..150, do: %{name: "air-#{i}", state: :online}
+      assert length(Filter.runners(list).runners) == 100
+      assert Filter.runners([]) == %Proto.RunnerStates{runners: []}
+    end
+  end
 end

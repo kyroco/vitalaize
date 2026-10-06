@@ -44,6 +44,16 @@ shape `gh api repos/<owner>/<name>/actions/workflows` answers in, per GitHub's
 REST documentation, with made-up workflows: two files and one of GitHub's own
 (Dependabot), whose path is not a file.
 
+`github/jobs_runners.json` and `github/runners.json` are not captures. They
+are written by hand, with made-up runners, in the shape GitHub answered on
+2026-10-05 for `gh api repos/<owner>/<name>/actions/runs/<id>/jobs` and
+`gh api repos/<owner>/<name>/actions/runners`. The job GitHub ran keeps the
+runner name and group a real job of this repository showed that day
+("GitHub Actions 1000041223", group "GitHub Actions"). The other jobs ran, or
+wait to run, on self-hosted runners in the group "Default"; no real
+self-hosted job was at hand to copy, so that group name is GitHub's default
+for a new runner, not a capture.
+
 The `collector/` files are not captures. They are written by hand in the
 shape Claude Code 2.1.284 and codex-cli 0.155.1 write their session files,
 with made-up content, for the tests of what a collector may send to the hub

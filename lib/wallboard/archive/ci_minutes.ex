@@ -5,8 +5,9 @@ defmodule Wallboard.Archive.CiMinutes do
 
   Minutes are counted the way GitHub bills them: each job's time is rounded
   up to a whole minute, a Windows job counts 2 and a macOS job 10 against the
-  plan's included minutes, and a job on one of your own machines (a runner
-  labelled `self-hosted`) counts nothing. GitHub's standard runners are free
+  plan's included minutes, and a job on one of your own machines (labelled
+  `self-hosted`, or on a runner GitHub lists as the repository's own; see
+  `Wallboard.Runners`) counts nothing. GitHub's standard runners are free
   on a public repository, so a public repository's minutes are kept apart
   from the ones that use up the plan. Three kinds, then:
 
@@ -51,10 +52,17 @@ defmodule Wallboard.Archive.CiMinutes do
   # Events no session causes by pushing.
   @not_pushed ~w(schedule merge_group dynamic)
 
-  # A job that ran on one of your own machines: GitHub labels it
-  # "self-hosted" (checked on kyroco's own runners, whose jobs read
-  # "self-hosted,Linux,ARM64,kyroco-gate"), the rule #87 also uses.
-  @own "(',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%'"
+  # A job that ran on one of your own machines, by the rule of
+  # `Wallboard.Runners.kind/2`: not in GitHub's own runner group, and
+  # labelled "self-hosted" (as kyroco's own runners' jobs read
+  # "self-hosted,Linux,ARM64,kyroco-gate") or on a runner GitHub has listed
+  # as the repository's own. The Trends and Git tab tests hold the two to
+  # the same answer.
+  @own """
+  (coalesce(j.runner_group_name, '') <> 'GitHub Actions' AND
+    ((',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%' OR
+      j.runner_name IN (SELECT g.name FROM gh_runners g WHERE g.repo = j.repo)))
+  """
 
   # A job's minutes as GitHub rounds them.
   @rounded "((coalesce(j.duration_s, 0) + 59) / 60)"

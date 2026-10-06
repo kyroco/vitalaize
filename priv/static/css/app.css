@@ -336,6 +336,14 @@ button { font: inherit; }
 .dtable th { text-align: right; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); padding: 7px 10px 3px; }
 .dtable td { padding: 5px 10px; border-top: 1px solid var(--track); text-align: right; white-space: nowrap; }
 .dtable td:first-child, .dtable th:first-child { text-align: left; color: var(--text); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+/* Your own (self-hosted) runners: a run's "on kyroco-air-1", and each
+   runner's state in a repository's panel. */
+.own-tag { color: var(--text-body); font-weight: 600; }
+.dtable.runners td:last-child { text-align: left; white-space: normal; color: var(--text-muted); }
+.runner-busy { color: var(--info); font-weight: 700; }
+.runner-online { color: var(--ok); }
+.runner-offline { color: var(--accent); }
+.runner-unknown { color: var(--text-muted); }
 .tap-row { cursor: pointer; }
 .tap-row td { height: 44px; }
 .row-link { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

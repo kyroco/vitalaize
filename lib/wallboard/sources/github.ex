@@ -10,6 +10,10 @@ defmodule Wallboard.Sources.GitHub do
     * every `deploy_poll_seconds`, one REST call for the repository's
       workflow files and one per deploy workflow among them, so the last dev
       and prod deploys show even when they are days old
+    * every `deploy_poll_seconds`, one REST call for the repository's own
+      (self-hosted) runners, to show each one online, busy or offline. That
+      call needs admin rights on the repository; when GitHub refuses it, it
+      is asked again only once an hour (see `Wallboard.Runners`)
 
   At the default 30 seconds with two runs going that is about 600 calls an
   hour for each repository, so six repositories stay inside GitHub's 5,000.
@@ -24,7 +28,10 @@ defmodule Wallboard.Sources.GitHub do
   the reason; only when every one fails is the whole poll an error.
   """
 
-  alias Wallboard.{Cmd, Settings}
+  alias Wallboard.{Cmd, Runners, Settings, Store}
+
+  # How long to wait before asking again for runners GitHub refused to list.
+  @runners_hidden_s 3600
 
   @gql """
   query($owner: String!, $name: String!, $branch: String!) {
@@ -86,7 +93,7 @@ defmodule Wallboard.Sources.GitHub do
   # When the deploys were last checked is bookkeeping, not news.
   def fingerprint(%{repos: entries}) do
     Enum.map(entries, fn e ->
-      %{e | facts: e.facts && Map.delete(e.facts, :deploys_checked_at)}
+      %{e | facts: e.facts && Map.drop(e.facts, [:deploys_checked_at, :runners_checked_at])}
     end)
   end
 
@@ -122,6 +129,9 @@ defmodule Wallboard.Sources.GitHub do
           end
         end)
 
+      runners = fetch_runners(gh, prev, now)
+      listed = known_runners(gh.repo, runners, now)
+
       {:ok,
        %{
          runs: runs,
@@ -130,7 +140,10 @@ defmodule Wallboard.Sources.GitHub do
          workflows: deploys.workflows,
          queue: repo.queue,
          prs: repo.prs,
-         jobs: jobs
+         jobs: jobs,
+         own_by_run: own_by_run(gh.repo, runs, jobs, prev, now, listed),
+         runners: runners.listed,
+         runners_checked_at: runners.checked_at
        }}
     end
   end
@@ -188,6 +201,35 @@ defmodule Wallboard.Sources.GitHub do
     end
   end
 
+  # The repository's own runners: GitHub's list, `:hidden` when GitHub
+  # refused it (no admin rights), or the last list read when the call
+  # failed some other way.
+  defp fetch_runners(gh, prev, now) do
+    last = prev && prev[:runners]
+    wait = if last == :hidden, do: @runners_hidden_s, else: gh.deploy_poll_seconds
+
+    fresh? =
+      prev && prev[:runners_checked_at] &&
+        DateTime.diff(now, prev.runners_checked_at, :second) < wait
+
+    if fresh? do
+      %{listed: last, checked_at: prev.runners_checked_at}
+    else
+      case api(["repos/#{gh.repo}/actions/runners?per_page=100"]) do
+        {:ok, json} ->
+          case parse_runners(json) do
+            {:ok, list} -> %{listed: list, checked_at: now}
+            {:error, _} -> %{listed: last, checked_at: now}
+          end
+
+        {:error, reason} ->
+          if refused?(reason),
+            do: %{listed: :hidden, checked_at: now},
+            else: %{listed: last, checked_at: now}
+      end
+    end
+  end
+
   @doc """
   One run's jobs, as the archive saves them, in one call: for a finished
   run's panel when its jobs are not saved yet. {:ok, rows} or {:error, why}.
@@ -202,6 +244,55 @@ defmodule Wallboard.Sources.GitHub do
           {:error, "GitHub returned jobs in an unexpected shape"}
       end
     end
+  end
+
+  # The names of the runners GitHub lists as the repository's own, and,
+  # with the archive on, every one it listed before: the archive keeps
+  # them (when a list was just read) so Trends judges a job as this does,
+  # after a runner made for one job is gone.
+  defp known_runners(repo, runners, now) do
+    names = Runners.listed_names(runners.listed)
+
+    if Process.whereis(Store) do
+      if is_list(runners.listed) and runners.checked_at == now,
+        do: Store.put_runner_names(repo, names, DateTime.to_unix(now))
+
+      Enum.uniq(names ++ Store.runner_names(repo))
+    else
+      names
+    end
+  end
+
+  defp refused?(reason), do: reason =~ "(HTTP 403)" or reason =~ "(HTTP 404)"
+
+  # Which of your own runners ran each run, by run id: what this poll's
+  # jobs say, what the last poll knew (a run's last jobs can start after the
+  # last poll that saw it running), and what the archive saved, for every
+  # run still in the last day's list. `listed` is the names of the runners
+  # GitHub lists for the repository.
+  defp own_by_run(repo, runs, jobs, prev, now, listed) do
+    ids = MapSet.new(runs, & &1.id)
+
+    known =
+      ((prev && prev[:own_by_run]) || %{})
+      |> Map.filter(fn {id, _} -> MapSet.member?(ids, id) end)
+
+    saved =
+      if Process.whereis(Store) do
+        repo
+        |> Store.job_runners(DateTime.to_unix(now) - 24 * 3600)
+        |> Enum.filter(&MapSet.member?(ids, &1.run_id))
+        |> Enum.group_by(& &1.run_id)
+        |> Map.new(fn {id, rows} -> {id, Runners.own_names(rows, listed)} end)
+      else
+        %{}
+      end
+
+    live = for {id, %{list: rs}} <- jobs, into: %{}, do: {id, Runners.own_names(rs, listed)}
+
+    [known, saved, live]
+    |> Enum.reduce(%{}, &Map.merge(&2, &1, fn _id, a, b -> Enum.uniq(a ++ b) end))
+    |> Map.reject(fn {_, names} -> names == [] end)
   end
 
   defp api(args), do: Cmd.run("gh", ["api" | args], timeout: 30_000)
@@ -330,11 +421,36 @@ defmodule Wallboard.Sources.GitHub do
           done: Enum.count(jobs, &(&1["status"] == "completed")),
           current_job: current && current["name"],
           current_step: step,
+          # Each job also carries what says whose runner took it (see
+          # Wallboard.Runners), which with the repository's runner list
+          # marks the run and its runners.
           list: Wallboard.Archive.GitHubCollector.job_rows(jobs, nil, nil)
         }
 
       _ ->
         nil
+    end
+  end
+
+  @doc """
+  Parses a repository's list of its own runners:
+  `{:ok, [%{name, status, busy, labels}]}`.
+  """
+  def parse_runners(text) do
+    case Jason.decode(text) do
+      {:ok, %{"runners" => list}} when is_list(list) ->
+        {:ok,
+         for %{"name" => name} = r when is_binary(name) <- list do
+           %{
+             name: name,
+             status: r["status"],
+             busy: r["busy"] == true,
+             labels: for(%{"name" => l} <- r["labels"] || [], do: l)
+           }
+         end}
+
+      _ ->
+        {:error, "GitHub returned runners in an unexpected shape"}
     end
   end
 
@@ -416,16 +532,30 @@ defmodule Wallboard.Sources.GitHub do
   # Summary for the board (pure). Everything here depends on `now`, so the
   # page recomputes it on its own clock; the poller only compares the facts.
 
-  @doc "One repository's summary. `gh` is its settings (see Settings.github_repos/1)."
-  def summary(facts, gh, now) do
+  @doc """
+  One repository's summary. `gh` is its settings (see
+  Settings.github_repos/1); `reported` is what collectors say about runners
+  (see `Wallboard.Runners.states/4`).
+  """
+  def summary(facts, gh, now, reported \\ %{}) do
     all = Enum.uniq_by(facts.runs ++ facts.deploys, & &1.id)
     typical = typical_durations(all)
+    own = facts[:own_by_run] || %{}
 
     running =
       all
       |> Enum.filter(&(&1.status in [:in_progress, :queued]))
       |> Enum.sort_by(&DateTime.to_unix(&1.started_at || now))
       |> Enum.map(&running_run(&1, facts.jobs[&1.id], typical, now))
+      |> Enum.map(&Map.put(&1, :own, own[&1.id] || []))
+
+    listed = Runners.listed_names(facts[:runners])
+    seen = own |> Map.values() |> List.flatten()
+
+    busy =
+      for {_id, %{list: rs}} <- facts.jobs, reduce: %{} do
+        acc -> Map.merge(acc, Runners.busy(rs, listed))
+      end
 
     completed =
       all |> Enum.filter(&(&1.status == :completed)) |> Enum.sort_by(&unix(&1.updated_at), :desc)
@@ -460,7 +590,12 @@ defmodule Wallboard.Sources.GitHub do
       failures: failures,
       dev: deploy_state(all, gh.dev_deploy),
       prod: deploy_state(all, gh.prod_deploy),
-      recent: completed |> Enum.take(6) |> Enum.map(&recent_run(&1, gh)),
+      recent:
+        completed
+        |> Enum.take(6)
+        |> Enum.map(&(recent_run(&1, gh) |> Map.put(:own, own[&1.id] || []))),
+      runners: Runners.states(facts[:runners], reported, seen, busy),
+      runners_unreported: Runners.unreported(facts[:runners], reported, seen),
       prs: facts.prs,
       lanes: rows,
       # How many more workflows ran in the window than the rows shown.
@@ -474,14 +609,14 @@ defmodule Wallboard.Sources.GitHub do
   until its first read) and `name` is the short name, like "api", unless
   two repositories share it.
   """
-  def repos(facts, settings, now) do
+  def repos(facts, settings, now, reported \\ %{}) do
     got = Map.new((facts && facts[:repos]) || [], &{&1.repo, &1})
     configs = Settings.github_repos(settings)
     short = configs |> Enum.map(&short_repo/1) |> Enum.frequencies()
 
     Enum.map(configs, fn gh ->
       entry = got[gh.repo] || %{facts: nil, error: nil}
-      s = entry.facts && summary(entry.facts, gh, now)
+      s = entry.facts && summary(entry.facts, gh, now, reported)
       name = short_repo(gh)
 
       %{

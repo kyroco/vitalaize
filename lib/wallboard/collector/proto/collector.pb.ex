@@ -46,6 +46,20 @@ defmodule Wallboard.Collector.Proto.Status.Why do
   field(:OTHER, 7)
 end
 
+defmodule Wallboard.Collector.Proto.RunnerState.State do
+  @moduledoc false
+
+  use Protobuf,
+    enum: true,
+    full_name: "wallboard.collector.proto.RunnerState.State",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:STATE_UNKNOWN, 0)
+  field(:ONLINE, 1)
+  field(:BUSY, 2)
+end
+
 defmodule Wallboard.Collector.Proto.FromCollector do
   @moduledoc false
 
@@ -59,6 +73,7 @@ defmodule Wallboard.Collector.Proto.FromCollector do
   field(:hello, 1, type: Wallboard.Collector.Proto.Hello, oneof: 0)
   field(:event, 2, type: Wallboard.Collector.Proto.Event, oneof: 0)
   field(:ack, 3, type: Wallboard.Collector.Proto.Ack, oneof: 0)
+  field(:runners, 5, type: Wallboard.Collector.Proto.RunnerStates, oneof: 0)
   field(:seq, 4, type: :uint64)
 end
 
@@ -278,6 +293,29 @@ defmodule Wallboard.Collector.Proto.Ack do
     syntax: :proto3
 
   field(:id, 1, type: :uint64)
+end
+
+defmodule Wallboard.Collector.Proto.RunnerStates do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.RunnerStates",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:runners, 1, repeated: true, type: Wallboard.Collector.Proto.RunnerState)
+end
+
+defmodule Wallboard.Collector.Proto.RunnerState do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.RunnerState",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:name, 1, type: :string)
+  field(:state, 2, type: Wallboard.Collector.Proto.RunnerState.State, enum: true)
 end
 
 defmodule Wallboard.Collector.Proto.FromHub do

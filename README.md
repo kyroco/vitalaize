@@ -28,7 +28,9 @@ machines, known limits, building from source and how it works.
   session's title, its folder and branch, and the start of your prompts),
   never the agent's replies, the commands it ran or your files; the
   [wiki](https://github.com/kyroco/vitalaize/wiki/How-it-works) lists what
-  crosses the network.
+  crosses the network. A collector built after 0.3.0 also sends the name
+  and state of any GitHub runner on its machine, and nothing more about it
+  (see "Your own CI machines" below).
 - **Connect a machine by code**: the new machine shows a six-digit code, and
   you approve the same code in the mailbox on the hub's board. There is no
   key to copy. At most you type the hub's address.
@@ -162,6 +164,45 @@ machine you approved in the mailbox can send. See the known limits in the
 
 To try a hub and a collector on two machines step by step, with what you
 should see at each step, follow the [test guide](docs/test-guide.md).
+
+## Your own CI machines
+
+If some of your GitHub Actions jobs run on your own machines (self-hosted
+runners), the Git tab says so: a run your machines worked on reads "on" and
+the runner's name. A job counts as yours when it carries the `self-hosted`
+label or its runner is in GitHub's list of the repository's runners; any
+other job outside GitHub's own runner group, such as one on GitHub's paid
+larger runners, is counted apart as not known.
+
+A repository's panel lists its runners that GitHub or a collector reports,
+each online, busy or offline, with the job it is running. Runners that ran
+the repository's jobs in the last day but that nothing reports, such as
+runners made for a single job and gone since, are counted on one line with
+the reason, and the column's runner count leaves them out.
+
+Trends splits runner time into GitHub's and your own, and counts the paid
+minutes your machines avoided: GitHub bills each job in whole minutes,
+rounded up, and does not bill your own runners. The board does not know
+your plan, so minutes inside your plan's allowance, or on a public
+repository, are counted too, though GitHub would not have charged them.
+
+A runner's state comes from GitHub when the board's GitHub login has admin
+rights on the repository. Otherwise a collector on the runner's machine
+reports it, for a runner that ran the repository's jobs in the last day:
+only the runner's name and its state cross the network, never its folder,
+its jobs or its logs. The collector finds the runner in the
+machine's list of running programs and reads its name from the `.runner`
+file in the runner's folder, so it can report a runner only when its user
+may read that file. A runner set up under a user of its own, with a folder
+other users cannot open, is left out, and the collector's log says so
+once. When neither GitHub nor a collector can tell, the board says the
+state is not known, and why; that is also what it says once the collector
+disconnects.
+
+VitalAIze only shows runners. It does not install, start or change one.
+GitHub's own advice applies: self-hosted runners "should almost never be used
+for public repositories", because anyone who opens a pull request could run
+code on your machine.
 
 ## Questions and ideas
 

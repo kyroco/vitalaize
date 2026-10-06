@@ -414,14 +414,24 @@ defmodule Wallboard.Archive.Trends do
         value: &(&1.deploys_dev + &1.deploys_prod),
         sub: &"dev #{&1.deploys_dev} · prod #{&1.deploys_prod}"
       },
+      # Runner time, split by whose machine ran the job (see
+      # Wallboard.Runners). GitHub's time is what the plan pays for.
       %{
         key: :runner_hours,
         group: :github,
-        label: "Runner time",
+        label: "Runner time on GitHub",
         fmt: :hours,
         good: :down,
-        value: fn d -> d.runner_s / 3600 end,
-        sub: &"#{thousands(&1.jobs)} jobs saved"
+        value: fn d -> d.github_s / 3600 end,
+        sub: &runner_sub(&1.github_jobs, &1.unknown_s)
+      },
+      %{
+        key: :own_runner_hours,
+        group: :github,
+        label: "Runner time on your machines",
+        fmt: :hours,
+        value: fn d -> d.own_s / 3600 end,
+        sub: &runner_sub(&1.own_jobs, &1.unknown_s)
       },
       %{
         key: :ci_minutes,
@@ -431,9 +441,27 @@ defmodule Wallboard.Archive.Trends do
         good: :down,
         value: & &1.ci_paid,
         sub: &ci_note/1
+      },
+      # Beside CI minutes: your own runners' minutes, which GitHub does not
+      # bill, counted the way it would have (each job rounded up to a whole
+      # minute; see CiMinutes).
+      %{
+        key: :minutes_avoided,
+        group: :github,
+        label: "Paid minutes avoided",
+        fmt: :count,
+        value: & &1.ci_own,
+        sub: &"#{thousands(&1.own_jobs)} jobs on your machines"
       }
     ]
   end
+
+  defp runner_sub(jobs, unknown_s) when unknown_s > 0,
+    do: "#{thousands(jobs)} jobs · #{hours_text(unknown_s)} not known"
+
+  defp runner_sub(jobs, _), do: "#{thousands(jobs)} jobs"
+
+  defp hours_text(s), do: "#{:erlang.float_to_binary(s / 3600, decimals: 1)} h"
 
   # What the CI minutes card's number leaves out, beside the part agents
   # caused: minutes that use up no plan.
@@ -488,6 +516,11 @@ defmodule Wallboard.Archive.Trends do
     deploys_prod: 0,
     runner_s: 0,
     jobs: 0,
+    github_s: 0,
+    github_jobs: 0,
+    own_s: 0,
+    own_jobs: 0,
+    unknown_s: 0,
     ci_paid: 0,
     ci_free: 0,
     ci_own: 0,
@@ -520,6 +553,9 @@ defmodule Wallboard.Archive.Trends do
   # Prod deploys count only for the first repository, as on the status line.
   defp github_hours({gh, index}, from) do
     {dev, prod} = if index == 0, do: {gh.dev_deploy, gh.prod_deploy}, else: {"", ""}
+    # The runners GitHub has listed as the repository's own: a job on one
+    # is yours here as on the Git tab, with or without the label.
+    listed = Store.runner_names(gh.repo)
 
     Store.query(
       """
@@ -532,12 +568,15 @@ defmodule Wallboard.Archive.Trends do
       """,
       [from, dev, prod, gh.repo]
     ) ++
-      Store.query(
-        """
-        SELECT completed_at / 3600 AS h, sum(duration_s) AS runner_s, count(*) AS jobs
-        FROM gh_jobs WHERE repo = ?2 AND completed_at >= ?1 GROUP BY h
-        """,
-        [from, gh.repo]
+      Enum.map(
+        Store.query(
+          """
+          SELECT completed_at / 3600 AS h, duration_s, runner_name, runner_group_name, labels
+          FROM gh_jobs WHERE repo = ?2 AND completed_at >= ?1
+          """,
+          [from, gh.repo]
+        ),
+        &job_hour(&1, listed)
       ) ++
       Enum.map(
         Store.query(
@@ -550,6 +589,18 @@ defmodule Wallboard.Archive.Trends do
         ),
         &%{h: &1.h, gate_durations: [&1.duration_s]}
       )
+  end
+
+  # One saved job as an hour's sums, by whose machine ran it.
+  defp job_hour(%{h: h, duration_s: d} = job, listed) do
+    d = d || 0
+    base = %{h: h, runner_s: d, jobs: 1}
+
+    case Wallboard.Runners.kind(job, listed) do
+      :github -> Map.merge(base, %{github_s: d, github_jobs: 1})
+      :own -> Map.merge(base, %{own_s: d, own_jobs: 1})
+      :unknown -> Map.put(base, :unknown_s, d)
+    end
   end
 
   @doc """

@@ -236,7 +236,22 @@ defmodule Wallboard.Store do
     # another one for a fork's, and empty when that fork is deleted.
     "ALTER TABLE gh_prs ADD COLUMN head_repo TEXT",
     # The repository's default branch when the pull request was read.
-    "ALTER TABLE gh_prs ADD COLUMN default_branch TEXT"
+    "ALTER TABLE gh_prs ADD COLUMN default_branch TEXT",
+    # The runner group of the machine that ran a job: "GitHub Actions" for
+    # GitHub's own machines, another name for your own (see
+    # Wallboard.Runners). Jobs saved before this column have none.
+    "ALTER TABLE gh_jobs ADD COLUMN runner_group_name TEXT",
+    # The runners GitHub has listed as each repository's own, so a job on
+    # one counts as yours in Trends as it does on the Git tab, after the
+    # runner is gone (see Wallboard.Runners).
+    """
+    CREATE TABLE gh_runners (
+      repo TEXT NOT NULL,
+      name TEXT NOT NULL,
+      seen_at INTEGER NOT NULL,
+      PRIMARY KEY (repo, name)
+    )
+    """
   ]
 
   # The columns of `sessions`, in the order a saved session map fills them.
@@ -253,7 +268,7 @@ defmodule Wallboard.Store do
     created_at started_at updated_at duration_s pr url)a
 
   @job_columns ~w(repo job_id run_id attempt name status conclusion created_at started_at
-    completed_at queue_s duration_s runner_name labels failed_step)a
+    completed_at queue_s duration_s runner_name labels failed_step runner_group_name)a
 
   @pr_columns ~w(repo number title branch base head_sha author created_at closed_at merged_at
     url head_repo default_branch)a
@@ -337,6 +352,38 @@ defmodule Wallboard.Store do
       [%{n: n}] -> n
       _ -> 0
     end
+  end
+
+  @doc """
+  Who ran each saved job of a repository that finished since `since` (Unix
+  seconds): `%{run_id, runner_name, runner_group_name, labels}` each.
+  """
+  def job_runners(repo, since) do
+    query(
+      """
+      SELECT run_id, runner_name, runner_group_name, labels FROM gh_jobs
+      WHERE repo = ?1 AND completed_at >= ?2 AND runner_name IS NOT NULL
+      """,
+      [repo, since]
+    )
+  end
+
+  @doc """
+  Keeps the names of the runners GitHub listed as `repo`'s own at `at`
+  (Unix seconds). Names are added, never taken away: a runner made for one
+  job is gone from GitHub's list minutes later, and its jobs still ran on
+  your machine.
+  """
+  def put_runner_names(_repo, [], _at), do: :ok
+
+  def put_runner_names(repo, names, at),
+    do: GenServer.call(__MODULE__, {:put_runner_names, repo, names, at}, 30_000)
+
+  @doc "Every runner GitHub has listed as `repo`'s own, sorted."
+  def runner_names(repo) do
+    "SELECT name FROM gh_runners WHERE repo = ?1 ORDER BY name"
+    |> query([repo])
+    |> Enum.map(& &1.name)
   end
 
   @doc "A small saved setting, such as how far the GitHub backfill got."
@@ -569,6 +616,20 @@ defmodule Wallboard.Store do
         insert(c, "gh_jobs", @job_columns, jobs)
 
         run(c, "UPDATE gh_runs SET jobs_saved = 1 WHERE repo = ?1 AND run_id = ?2", [repo, run_id])
+      end)
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:put_runner_names, repo, names, at}, _from, %{conn: c} = state) do
+    result =
+      transaction(c, fn ->
+        insert(
+          c,
+          "gh_runners",
+          [:repo, :name, :seen_at],
+          for(n <- names, do: %{repo: repo, name: n, seen_at: at})
+        )
       end)
 
     {:reply, result, state}

@@ -21,12 +21,13 @@ message FromCollector {
     Hello hello = 1;
     Event event = 2;
     Ack ack = 3;
+    RunnerStates runners = 5;
   }
 
   // Counts up from 1 for every hello and event a collector sends, and keeps
   // counting across streams. The hub answers with Stored once it has saved
   // everything up to a number, so the collector knows what it may forget.
-  // 0 on a message that asks for no answer.
+  // 0 on a message that asks for no answer, and on RunnerStates.
   uint64 seq = 4;
 }
 
@@ -202,6 +203,29 @@ message Korium {
 // The collector got the hub message with this id.
 message Ack {
   uint64 id = 1;
+}
+
+// The GitHub Actions runners running on the collector's machine now, each
+// by its name and state and nothing else: no job names, folders or logs.
+// Sent whole each time one changes, and once after each connect. The hub
+// keeps only the latest one, in memory: it is not saved, not answered and
+// has no seq. A runner left out of a later list has stopped.
+message RunnerStates {
+  repeated RunnerState runners = 1;
+}
+
+message RunnerState {
+  enum State {
+    STATE_UNKNOWN = 0;
+    // Connected to GitHub and waiting for a job.
+    ONLINE = 1;
+    // Running a job.
+    BUSY = 2;
+  }
+
+  // The runner's name, as GitHub knows it.
+  string name = 1;
+  State state = 2;
 }
 
 // ---------------------------------------------------------------------------

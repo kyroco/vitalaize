@@ -22,6 +22,9 @@ defmodule Wallboard.Link do
     * `Wallboard.Link.Sessions`: on the hub, turns the saved events into
       live cards on the board and rows in the archive
       (`Wallboard.Link.Session` is one session's picture).
+    * `Wallboard.Link.RunnerStates`: on the hub, holds in memory the GitHub
+      runners each connected collector reports, by name and state only,
+      for the Git tab.
     * `Wallboard.Pairing`: how a new machine gets its certificate, by a
       code the owner approves in the mailbox.
     * `Wallboard.Link.Machines`: the connected machines, for the settings
@@ -74,6 +77,16 @@ defmodule Wallboard.Link do
   An open stream looks its certificate up again every few seconds, so a
   certificate revoked or replaced by another program (the `mix` task)
   stops working on a live stream too.
+
+  ## Runner states
+
+  A collector also sends `RunnerStates`: the GitHub Actions runners on its
+  machine now, each by name and online or busy (see
+  `Wallboard.Collector.Runners`). It is not an event and none of the above
+  applies to it. It has no `seq`, skips the buffer, is never written to
+  disk on either side and gets no `Stored`: only the latest list counts,
+  and the collector sends it when it changes and again after each connect.
+  A hub older than this message skips it and keeps the stream.
 
   ## Reconnects
 

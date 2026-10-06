@@ -10,7 +10,7 @@ defmodule WallboardWeb.BoardLive do
   """
   use WallboardWeb, :live_view
 
-  alias Wallboard.{Mailbox, Poller, RunJobs, Settings, Store}
+  alias Wallboard.{Mailbox, Poller, RunJobs, Runners, Settings, Store}
   alias Wallboard.Archive.{CiMinutes, Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
 
@@ -99,6 +99,8 @@ defmodule WallboardWeb.BoardLive do
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(stream: Wallboard.Link.Sessions.cards())
+      # What collectors say about the GitHub runners on their machines.
+      |> assign(runners: Wallboard.Link.RunnerStates.states())
       |> assign(github: github.facts, github_meta: github.meta)
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
@@ -149,6 +151,10 @@ defmodule WallboardWeb.BoardLive do
   # Sessions that collectors stream from other machines.
   def handle_info({:stream, cards}, socket),
     do: {:noreply, socket |> assign(stream: cards) |> derive_sessions()}
+
+  # The GitHub runners collectors report, `%{name => state}`.
+  def handle_info({:runners, states}, socket) when is_map(states),
+    do: {:noreply, socket |> assign(runners: states) |> derive_github()}
 
   def handle_info({:source, :github, facts, meta}, socket),
     do:
@@ -457,10 +463,11 @@ defmodule WallboardWeb.BoardLive do
   # rest, and the first one's summary, which the Dev and Prod tiles read.
   # The repository list comes from the settings as they are now, like the
   # poller's, so one added or removed on the settings page shows without a
-  # reload.
+  # reload. A runner GitHub does not list takes its state from a collector
+  # on its machine, when one reports it.
   defp derive_github(socket) do
     %{github: facts, now: now} = socket.assigns
-    repos = GitHub.repos(facts, Settings.get(), now)
+    repos = GitHub.repos(facts, Settings.get(), now, socket.assigns[:runners] || %{})
     {columns, quiet} = GitHub.arrange(repos)
 
     assign(socket,
@@ -485,8 +492,22 @@ defmodule WallboardWeb.BoardLive do
 
       run ->
         {socket, jobs} = run_jobs(socket, repo, run)
-        assign(socket, run_view: %{repo: repo, run: run, jobs: jobs})
+
+        assign(socket,
+          run_view: %{repo: repo, run: run, jobs: jobs, listed: listed_runners(socket, repo)}
+        )
     end
+  end
+
+  # The runners GitHub lists as the repository's own, now and before (see
+  # Wallboard.Runners), so a job's line can say it ran on your machine.
+  defp listed_runners(socket, repo) do
+    now =
+      for %{repo: ^repo, facts: %{runners: list}} <- (socket.assigns.github || %{})[:repos] || [],
+          do: Runners.listed_names(list)
+
+    saved = if Process.whereis(Store), do: Store.runner_names(repo), else: []
+    Enum.uniq(List.flatten(now) ++ saved)
   end
 
   defp run_jobs(socket, repo, %{status: :completed} = run) do
@@ -2260,7 +2281,8 @@ defmodule WallboardWeb.BoardLive do
 
   # One repository: its name and main, what runs now, what finished, and
   # the last 6 hours. Tapping the name opens its details.
-  defp git_column(assigns) do
+  @doc false
+  def git_column(assigns) do
     ~H"""
     <section class="git-col" aria-label={@r.repo}>
       <button
@@ -2276,6 +2298,9 @@ defmodule WallboardWeb.BoardLive do
           <.ago :if={@r.s.main} at={@r.s.main.updated_at} fmt="clock" /></span>
           <span>Queue <b>{queue_word(@r.s.queue)}</b></span>
           <span>Failed <b>{length(@r.s.failures)}</b></span>
+        </span>
+        <span :if={runners(@r) != []} class="repo-stats">
+          <span>Runners <b>{Runners.count_line(runners(@r))}</b></span>
         </span>
         <span :if={@r.error} class="stale-note small">stale: {@r.error}</span>
       </button>
@@ -2344,6 +2369,53 @@ defmodule WallboardWeb.BoardLive do
   defp queue_word([]), do: "0"
   defp queue_word(queue), do: "#{length(queue)} waiting"
 
+  # A repository's own (self-hosted) runners, none when it has no summary.
+  defp runners(%{s: %{runners: list}}), do: list
+  defp runners(_), do: []
+
+  # " · on kyroco-air-1" for a run your own machines ran; nothing for one
+  # GitHub ran.
+  defp on_own(%{own: [_ | _] = names}), do: " · on " <> Enum.join(names, ", ")
+  defp on_own(_), do: nil
+
+  # The runners that ran its jobs but that nothing reports, nil for none.
+  defp unreported(%{s: %{runners_unreported: u}}), do: u
+  defp unreported(_), do: nil
+
+  attr :runners, :list, required: true
+  attr :unreported, :map, default: nil
+
+  # A repository's own runners, each with its state and what it runs, and
+  # one line for those that ran its jobs but whose state nothing reports.
+  # Nothing when it has none.
+  @doc false
+  def runners_table(assigns) do
+    ~H"""
+    <%= if @runners != [] or @unreported do %>
+      <h3 class="kicker gap-top">Your runners</h3>
+      <table class="dtable runners">
+        <tr :for={x <- @runners}>
+          <td>{x.name}</td>
+          <td class={"runner-#{x.state}"}>{Runners.word(x.state)}</td>
+          <td>{runner_note(x)}</td>
+        </tr>
+        <tr :if={@unreported}>
+          <td>{if @runners == [], do: "", else: "#{@unreported.count} more"}</td>
+          <td class="runner-unknown">{Runners.word(:unknown)}</td>
+          <td>
+            {@unreported.count} {if @unreported.count == 1, do: "runner", else: "runners"} ran this repository's jobs in the last day. {@unreported.why}.
+          </td>
+        </tr>
+      </table>
+    <% end %>
+    """
+  end
+
+  defp runner_note(%{state: :busy, job: job}) when is_binary(job), do: job
+  defp runner_note(%{from: :github}), do: "from GitHub"
+  defp runner_note(%{from: :collector}), do: "from the collector on that machine"
+  defp runner_note(_), do: nil
+
   attr :r, :map, required: true
   attr :repo, :string, required: true
 
@@ -2377,7 +2449,7 @@ defmodule WallboardWeb.BoardLive do
       <span class="bar">
         <span class="bar-fill" style={"width: #{@r.progress}%"}></span>
       </span>
-      <span class="rc-step">{@r.step}</span>
+      <span class="rc-step">{@r.step}<span :if={on_own(@r)} class="own-tag">{on_own(@r)}</span></span>
     </button>
     """
   end
@@ -2404,7 +2476,9 @@ defmodule WallboardWeb.BoardLive do
         <span class={["icon", result_class(x.conclusion)]}>{result_icon(x.conclusion)}</span>
         <span class="rr-text">
           <span class="rr-name">{x.label}</span>
-          <span class="rr-what">{x.what}</span>
+          <span class="rr-what">
+            {x.what}<span :if={on_own(x)} class="own-tag">{on_own(x)}</span>
+          </span>
         </span>
         <span class="rr-when">
           <span class="rr-time"><.ago at={x.updated_at} fmt="clock" /></span>
@@ -2468,6 +2542,8 @@ defmodule WallboardWeb.BoardLive do
               <h3 class="kicker">Running now</h3>
               <div :if={@r.s.running == []} class="empty-box small">Nothing running</div>
               <.run_card :for={x <- @r.s.running} r={x} repo={@r.repo} />
+
+              <.runners_table runners={runners(@r)} unreported={unreported(@r)} />
 
               <h3 class="kicker gap-top">Merge queue</h3>
               <div :if={@r.s.queue == []} class="empty-box small">Empty</div>
@@ -2608,7 +2684,7 @@ defmodule WallboardWeb.BoardLive do
             <% _ -> %>
               <div :if={@jobs == []} class="empty-box small">No jobs</div>
               <div :if={@jobs != []} class="job-list">
-                <.job_line :for={j <- @jobs} j={j} />
+                <.job_line :for={j <- @jobs} j={j} listed={@v[:listed] || []} />
               </div>
           <% end %>
         </div>
@@ -2618,9 +2694,13 @@ defmodule WallboardWeb.BoardLive do
   end
 
   attr :j, :map, required: true
+  attr :listed, :list, default: []
 
-  # One job: its state, name, the step that failed, the runner and how long.
+  # One job: its state, name, the step that failed, the runner (marked when
+  # it is one of your own machines; see Wallboard.Runners) and how long.
   defp job_line(assigns) do
+    assigns = assign(assigns, own?: Runners.kind(assigns.j, assigns.listed) == :own)
+
     ~H"""
     <div class="job-line">
       <span class={["job-icon", job_class(@j)]}>
@@ -2651,7 +2731,7 @@ defmodule WallboardWeb.BoardLive do
           @j.runner_name not in [nil, ""] -> "on " <> @j.runner_name
           @j.status in ["queued", "waiting", "pending"] -> "waiting for a runner"
           true -> ""
-        end}
+        end}<span :if={@own? and @j.runner_name not in [nil, ""]} class="own-tag"> · your machine</span>
       </span>
       <span class="job-time">
         <%= cond do %>

@@ -97,7 +97,14 @@ defmodule Wallboard.CollectorProtoTest do
       folders: ["/Users/r/.claude", "/Users/r/.codex"]
     }
 
-    [{:hello, hello}, {:ack, %Proto.Ack{id: 9}}] ++ events
+    runners = %Proto.RunnerStates{
+      runners: [
+        %Proto.RunnerState{name: "kyroco-air-1", state: :BUSY},
+        %Proto.RunnerState{name: "kyroco-air-2", state: :ONLINE}
+      ]
+    }
+
+    [{:hello, hello}, {:ack, %Proto.Ack{id: 9}}, {:runners, runners}] ++ events
   end
 
   defp from_hub do
@@ -139,6 +146,31 @@ defmodule Wallboard.CollectorProtoTest do
     assert MapSet.new(from_collector(), &elem(&1, 0)) == kinds(Proto.FromCollector)
     assert MapSet.new(Keyword.keys(bodies())) == kinds(Proto.Item)
     assert MapSet.new(Keyword.keys(from_hub())) == kinds(Proto.FromHub)
+  end
+
+  # The collector message as a hub before RunnerStates knew it: fields 1 to
+  # 4 only, built with the same protobuf library.
+  defmodule OldFromCollector do
+    @moduledoc false
+    use Protobuf, full_name: "wallboard.collector.proto.FromCollector", syntax: :proto3
+
+    oneof(:body, 0)
+    field(:hello, 1, type: Proto.Hello, oneof: 0)
+    field(:event, 2, type: Proto.Event, oneof: 0)
+    field(:ack, 3, type: Proto.Ack, oneof: 0)
+    field(:seq, 4, type: :uint64)
+  end
+
+  test "an older hub reads runner states as a message with no body it knows" do
+    runners = %Proto.RunnerStates{runners: [%Proto.RunnerState{name: "air-1", state: :BUSY}]}
+    bytes = Proto.FromCollector.encode(%Proto.FromCollector{body: {:runners, runners}})
+
+    # No error, no body and seq 0: the older hub's stream skips it (see the
+    # last case of Wallboard.Link.Server.handle/2), saves nothing and does
+    # not answer, so it never moves its count of what it saved.
+    old = OldFromCollector.decode(bytes)
+    assert old.body == nil
+    assert old.seq == 0
   end
 
   test "the answer to a waiting agent is kept but empty" do
