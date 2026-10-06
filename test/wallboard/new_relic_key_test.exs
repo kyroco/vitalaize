@@ -774,12 +774,30 @@ defmodule Wallboard.NewRelicKeyTest do
       refused = opts ++ [chmod: fn _, _ -> {:error, :eperm} end]
       assert {:error, why} = KeyStore.File.fetch("new_relic", refused)
 
+      # The person's own chmod just failed, so the advice is one that works
+      # for them: the file is theirs to delete, in their own keys folder.
       assert why ==
-               "#{file} can be read by other users of this machine, and could not be made " <>
-                 "private (not owner). Run chmod 600 #{file} to use it."
+               "#{file} can be read by other users of this machine, and it belongs to " <>
+                 "another user, so it could not be made private. Delete it, then type the " <>
+                 "key again in Settings or vitalaize setup."
 
       refute why =~ @key
+      refute why =~ "chmod"
       assert Bitwise.band(File.stat!(file).mode, 0o777) == 0o640
+
+      # Any other reason, such as a disk that cannot be written to, is named.
+      read_only = opts ++ [chmod: fn _, _ -> {:error, :erofs} end]
+      assert {:error, why} = KeyStore.File.fetch("new_relic", read_only)
+
+      assert why ==
+               "#{file} can be read by other users of this machine, and could not be made " <>
+                 "private (read-only file system). Delete it, then type the key again in " <>
+                 "Settings or vitalaize setup."
+
+      # Following it: deleted and typed again, the key is private and used.
+      File.rm!(file)
+      assert :ok = KeyStore.File.put("new_relic", @key, opts)
+      assert KeyStore.File.fetch("new_relic", refused) == {:ok, @key}
     end
 
     test "each store says where a key is" do

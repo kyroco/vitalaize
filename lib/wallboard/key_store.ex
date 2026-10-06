@@ -190,7 +190,8 @@ defmodule Wallboard.KeyStore.File do
 
   A key file others can read, such as one restored from a backup, is made
   0600 again before it is read, with a warning in the log. When that
-  cannot be done (another user owns it), the key is not read at all.
+  cannot be done (another user owns it), the key is not read at all, and
+  the message says to delete the file and type the key again.
 
   Options: `:dir` names another folder (tests); `:settings`, the settings
   to find the data folder in, for a caller that may have none loaded;
@@ -200,6 +201,8 @@ defmodule Wallboard.KeyStore.File do
   @behaviour Wallboard.KeyStore
 
   require Logger
+
+  @again "Delete it, then type the key again in Settings or vitalaize setup."
 
   @impl true
   def place, do: "a file only you can read"
@@ -266,10 +269,17 @@ defmodule Wallboard.KeyStore.File do
 
           :ok
 
+        # This user's own chmod just failed, so the way back is one that
+        # needs no more than that: the file is in their own keys folder.
+        {:error, :eperm} ->
+          {:error,
+           "#{path} can be read by other users of this machine, and it belongs to another " <>
+             "user, so it could not be made private. #{@again}"}
+
         {:error, reason} ->
           {:error,
            "#{path} can be read by other users of this machine, and could not be made " <>
-             "private (#{:file.format_error(reason)}). Run chmod 600 #{path} to use it."}
+             "private (#{:file.format_error(reason)}). #{@again}"}
       end
     else
       _ -> :ok
