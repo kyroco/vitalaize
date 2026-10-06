@@ -4,7 +4,8 @@ defmodule Wallboard.Link.Server do
 
   Each stream runs in its own process. It asks `Wallboard.Link.Hub` who the
   certificate belongs to, then reads messages until the collector goes: the
-  first must be a `Hello`, answered with `Resume`; every event after it is
+  first must be a `Hello`, answered with `Resume` and then `Board`, the
+  board's port, when the hub was given one; every event after it is
   saved under the certificate's machine and confirmed with `Stored`. A
   `RunnerStates` is handed to `Wallboard.Link.RunnerStates` and neither
   saved nor answered; a message of a kind this hub does not know is
@@ -50,7 +51,7 @@ defmodule Wallboard.Link.Server do
     cert = Cowboy.get_cert(stream.payload)
 
     case Hub.attach(cert, stream, counter) do
-      {:ok, machine, limits, dir} ->
+      {:ok, machine, limits, dir, board_port} ->
         now = System.monotonic_time(:millisecond)
 
         loop(%{
@@ -61,6 +62,7 @@ defmodule Wallboard.Link.Server do
           stream: stream,
           counter: counter,
           limits: limits,
+          board_port: board_port,
           rest: "",
           hello?: false,
           seq: 0,
@@ -187,6 +189,7 @@ defmodule Wallboard.Link.Server do
     Store.put_collector_machine(s.machine, info, System.os_time(:second))
     Hub.hello(s.machine, info)
     resume(s)
+    board(s)
     handle(rest, %{s | hello?: true})
   end
 
@@ -230,6 +233,11 @@ defmodule Wallboard.Link.Server do
 
     %{s | seq: seq}
   end
+
+  defp board(%{board_port: port} = s) when is_integer(port),
+    do: send_to(s.stream, s.counter, {:board, %Proto.Board{port: port}})
+
+  defp board(_s), do: :ok
 
   defp resume(s) do
     l = s.limits

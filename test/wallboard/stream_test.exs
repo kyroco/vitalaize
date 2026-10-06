@@ -77,11 +77,12 @@ defmodule Wallboard.StreamTest do
   # ---------------------------------------------------------------------------
   # The two sides
 
-  defp start_hub(c) do
+  # `hub` adds to the hub's options.
+  defp start_hub(c, hub \\ []) do
     once({Store, path: Path.join(c.dir, "wallboard.db")})
     once({Sessions, save_ms: 100})
     once(RunnerStates)
-    once({Hub, dir: c.link, port: c.port})
+    once({Hub, [dir: c.link, port: c.port] ++ hub})
     :ok
   end
 
@@ -1051,6 +1052,43 @@ defmodule Wallboard.StreamTest do
 
     assert stopped?(w)
     assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
+  end
+
+  test "a collector learns the board's port from the hub, and is told removed there", c do
+    # The board, with its pairing door, on a port of its own. The
+    # collector was paired while the board was on another port.
+    once({Wallboard.Pairing.Door, dir: c.link, link_port: c.port})
+
+    web =
+      once({Bandit, plug: WallboardWeb.Router, ip: :loopback, port: 0, startup_log: false},
+        id: :web
+      )
+
+    {:ok, {_, board}} = ThousandIsland.listener_info(web)
+    start_hub(c, board_port: board)
+    pair(c, "papa", %{port: free_port()})
+    w = start_collector(c)
+    dir = c.collector.collector.dir
+    hub_json = fn -> dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() end
+
+    wait_until(fn -> hub_json.()["port"] == board end)
+    # The rest of what pairing saved is kept.
+    assert %{"host" => "127.0.0.1", "link_port" => link_port, "machine" => "papa"} = hub_json.()
+    assert link_port == c.port
+
+    # Its own write is not taken for a pairing again: the client stays.
+    client = :sys.get_state(w.sender).client
+    tick(w)
+    assert :sys.get_state(w.sender).client == client
+
+    # The machine goes off, and is removed on the hub meanwhile. Back, it
+    # asks the door on the board's port as it is now.
+    kill_collector(w)
+    {:ok, [_]} = Authority.revoke(c.link, "papa")
+
+    w = start_collector(c)
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
+    assert stopped?(w)
   end
 
   test "a collector that is not paired sends nothing, and starts once it is", c do

@@ -5,6 +5,9 @@ defmodule Wallboard.Link.Hub do
 
   Start it with `{Wallboard.Link.Hub, dir: folder, port: port}`. It makes
   the certificate authority in `dir` when there is none, then listens.
+  With `board_port`, the port the board itself is running on, each
+  collector is told that port when it connects, so it asks the pairing
+  door in the right place after the owner changes it.
   `Wallboard.Store` must already be running: that is where events go.
 
   Other parts of the board hear about the link on the `"link"` topic of
@@ -53,7 +56,9 @@ defmodule Wallboard.Link.Hub do
     children = [
       %{
         id: :registry,
-        start: {GenServer, :start_link, [__MODULE__, {dir, limits}, [name: __MODULE__]]}
+        start:
+          {GenServer, :start_link,
+           [__MODULE__, {dir, limits, opts[:board_port]}, [name: __MODULE__]]}
       },
       listener(Keyword.get(opts, :port, 0),
         cred: GRPC.Credential.new(ssl: Authority.hub_tls(dir)),
@@ -162,12 +167,12 @@ defmodule Wallboard.Link.Hub do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def init({dir, limits}) do
+  def init({dir, limits, board_port}) do
     # Each machine's rate buckets (see Wallboard.Link.Server). Kept here so
     # they outlive a stream; each stream's own process reads and writes
     # them without waiting on this one.
     :ets.new(@buckets, [:named_table, :public, :set])
-    {:ok, %{dir: dir, limits: limits, streams: %{}}}
+    {:ok, %{dir: dir, limits: limits, board_port: board_port, streams: %{}}}
   end
 
   @impl true
@@ -193,7 +198,7 @@ defmodule Wallboard.Link.Hub do
 
         Logger.info("Link: #{machine} connected.")
         broadcast({:link, :up, machine})
-        {:reply, {:ok, machine, s.limits, s.dir}, put_in(s.streams[machine], entry)}
+        {:reply, {:ok, machine, s.limits, s.dir, s.board_port}, put_in(s.streams[machine], entry)}
 
       {:error, reason} ->
         {:reply, {:error, reason}, s}

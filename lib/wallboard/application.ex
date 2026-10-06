@@ -47,7 +47,7 @@ defmodule Wallboard.Application do
         Wallboard.Link.Sessions,
         # Holds the GitHub runners collectors report, in memory only.
         Wallboard.Link.RunnerStates,
-        {Wallboard.Link.Hub, dir: dir, port: settings.link.port},
+        {Wallboard.Link.Hub, dir: dir, port: settings.link.port, board_port: settings.port},
         {Wallboard.Pairing.Door,
          dir: dir,
          link_port: settings.link.port,

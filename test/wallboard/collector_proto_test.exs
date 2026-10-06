@@ -115,7 +115,8 @@ defmodule Wallboard.CollectorProtoTest do
       back_soon: %Proto.BackSoon{},
       disconnected: %Proto.Disconnected{},
       answer: %Proto.Answer{},
-      stored: %Proto.Stored{seq: 41}
+      stored: %Proto.Stored{seq: 41},
+      board: %Proto.Board{port: 4800}
     ]
   end
 
@@ -171,6 +172,29 @@ defmodule Wallboard.CollectorProtoTest do
     old = OldFromCollector.decode(bytes)
     assert old.body == nil
     assert old.seq == 0
+  end
+
+  defmodule OldFromHub do
+    @moduledoc false
+    use Protobuf, full_name: "wallboard.collector.proto.FromHub", syntax: :proto3
+
+    oneof(:body, 0)
+    field(:id, 1, type: :uint64)
+    field(:resume, 2, type: Proto.Resume, oneof: 0)
+    field(:back_soon, 3, type: Proto.BackSoon, oneof: 0)
+    field(:disconnected, 4, type: Proto.Disconnected, oneof: 0)
+    field(:answer, 5, type: Proto.Answer, oneof: 0)
+    field(:stored, 6, type: Proto.Stored, oneof: 0)
+  end
+
+  test "an older collector reads the board's port as a message with no body it knows" do
+    bytes = Proto.FromHub.encode(%Proto.FromHub{id: 3, body: {:board, %Proto.Board{port: 4800}}})
+
+    # No error and no body: the older client skips it (see the last case of
+    # Wallboard.Link.Client.hub/2) and still answers its id.
+    old = OldFromHub.decode(bytes)
+    assert old.body == nil
+    assert old.id == 3
   end
 
   test "the answer to a waiting agent is kept but empty" do

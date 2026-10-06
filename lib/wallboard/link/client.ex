@@ -364,6 +364,13 @@ defmodule Wallboard.Link.Client do
 
   defp hub({:disconnected, _}, s), do: removed(s, "the hub removed this machine.")
 
+  # The board's port as the hub runs it now: the door is asked there from
+  # now on, and the listener keeps it for the next start.
+  defp hub({:board, %Proto.Board{port: port}}, s) when port > 0 and port < 65_536 do
+    notify(s, {:board_port, port})
+    if s.door, do: %{s | door: %{s.door | port: port}}, else: s
+  end
+
   defp hub(_, s), do: s
 
   defp removed(s, why) do
