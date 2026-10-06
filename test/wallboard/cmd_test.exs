@@ -75,6 +75,46 @@ defmodule Wallboard.CmdTest do
     wait_until(fn -> gone?(pid) and gone?(child) end)
   end
 
+  test "output never sets the limit again: it is set once, when the program starts",
+       %{dir: dir, pids: pids} do
+    # Watch the run's process: each time it sets a timer, and each message
+    # it is sent. It waits for :go so the watch is on before it starts.
+    stuck = stand_in(dir, ~s(read line\necho $$ > "$1"\necho tick\nexec sleep 600\n))
+
+    task =
+      Task.async(fn ->
+        receive do
+          :go -> Cmd.run(stuck, [pids], input: "a key", timeout: 600_000)
+        end
+      end)
+
+    :erlang.trace_pattern({:erlang, :send_after, :_}, true, [:global])
+    :erlang.trace(task.pid, true, [:call, :receive, {:tracer, self()}])
+
+    on_exit(fn -> :erlang.trace_pattern({:erlang, :send_after, :_}, false, [:global]) end)
+
+    send(task.pid, :go)
+    started(pids)
+
+    # The line it printed has reached the run, so it is read before the
+    # limit fired next.
+    assert_receive {:trace, _, :receive, {_port, {:data, _}}}, 5_000
+    time_up(task)
+    assert {:error, _} = Task.await(task)
+
+    timers =
+      Stream.repeatedly(fn ->
+        receive do
+          {:trace, _, :call, {:erlang, :send_after, _}} -> 1
+        after
+          0 -> nil
+        end
+      end)
+      |> Enum.take_while(& &1)
+
+    assert length(timers) == 1
+  end
+
   test "the kill takes a program and what it started, in every shell /bin/sh may be" do
     # dash is /bin/sh on Ubuntu and Debian, bash on a Mac.
     for shell <- ["/bin/sh", "/bin/dash", "/bin/bash"], File.exists?(shell) do
