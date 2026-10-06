@@ -7,7 +7,8 @@ defmodule Wallboard.Link.RunnerStates do
 
   Each collector sends its whole list when it changes and once after each
   connect. A runner that a connected collector listed before and lists no
-  more has stopped, so it shows offline. When the collector's stream
+  more has stopped, so it shows offline; each machine keeps at most 100 of
+  those, the latest to stop first. When the collector's stream
   closes, its runners are dropped: the hub no longer knows, and the board
   says "state not known" unless GitHub says otherwise.
 
@@ -21,6 +22,9 @@ defmodule Wallboard.Link.RunnerStates do
   use GenServer
 
   @busiest [:busy, :online, :offline]
+  # The most runners a machine keeps shown offline, besides the at most 100
+  # it lists (Wallboard.Collector.Filter caps a list).
+  @offline_max 100
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -85,8 +89,19 @@ defmodule Wallboard.Link.RunnerStates do
         _ -> Process.monitor(stream)
       end
 
+    # What it stopped listing now comes first, then what was already off.
+    # Only so many are kept: a collector that keeps naming new runners
+    # must not grow the hub without end.
+    {was_off, was_on} =
+      before
+      |> Enum.reject(fn {name, _} -> Map.has_key?(runners, name) end)
+      |> Enum.split_with(fn {_, state} -> state == :offline end)
+
     gone =
-      for {name, _} <- before, not Map.has_key?(runners, name), into: %{}, do: {name, :offline}
+      (Enum.map(was_on, &elem(&1, 0)) |> Enum.sort()) ++
+        (Enum.map(was_off, &elem(&1, 0)) |> Enum.sort())
+
+    gone = gone |> Enum.take(@offline_max) |> Map.new(&{&1, :offline})
 
     entry = %{stream: stream, ref: ref, runners: Map.merge(gone, runners)}
     {:noreply, publish(s, put_in(s.machines[machine], entry))}
