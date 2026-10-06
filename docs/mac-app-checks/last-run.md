@@ -1,9 +1,9 @@
 # The Mac app's last full run
 
-Written by `macos/uitest/record.py` from the run of `macos/uitest/run.sh --all` on October 1, 2026.
+Written by `macos/uitest/record.py` from the run of `macos/uitest/run.sh --all` on October 5, 2026.
 Do not edit it by hand: run the script again.
 
-898 of 898 steps and checks passed. 85 pictures are in `pictures/`, one folder for each scenario.
+912 of 912 steps and checks passed. 85 pictures are in `pictures/`, one folder for each scenario.
 
 A step is one line of a file in `macos/uitest/steps/`: `click`, `type`, `toggle` and `press` use a control,
 `wait`, `expect`, `absent`, `value`, `enabled` and `disabled` look at the screen, `opened` checks what the app
@@ -57,7 +57,7 @@ ok    toggle "Also delete the database and settings"
 ok    snap 15-remove-sheet-delete
 ok    press "Remove"
 ok    wait 60 "VitalAIze was removed from this Mac"
-ok    expect "Its database and settings were deleted too."
+ok    expect "Its database and settings were deleted too, and any key typed in Settings was taken out of the keychain."
 ok    snap 15-removed-all
 ok    click "Set up again"
 ok    wait 90 "What this Mac does"
@@ -266,7 +266,8 @@ ok    pick "Prod: same build as dev?" "acme-prod-read"
 ok    toggle "Show the New Relic page"
 ok    wait 5 "Account ID"
 ok    type "Account ID" "1234567"
-ok    type "1Password reference for the API key" "op://Private/NewRelic/key"
+ok    type "New Relic API key" "NRAK-UITEST0WIZARD0KEY00000001"
+ok    type "Or where it is in 1Password" "op://Private/NewRelic/key"
 ok    type "Phone number" "+15550100"
 ok    pick "Send as" "SMS"
 ok    scroll bottom
@@ -282,7 +283,6 @@ ok    expect "to +15550100 by SMS"
 ok    snap 05-review
 ok    click "Back"
 ok    wait "Name at the top"
-ok    toggle "Show the New Relic page"
 ok    type "Phone number" ""
 ok    pick "Send as" "iMessage"
 ok    pick "Prod: same build as dev?" ""
@@ -403,7 +403,8 @@ ok    type "ntfy server" "http://localhost:9"
 ok    type "Pushover user key" "acmeuser1"
 ok    type "Pushover app token" "acmetoken1"
 ok    type "Account number" "7654321"
-ok    type "Where the API key is in 1Password (restarts)" "op://Private/Acme/key"
+ok    type "New Relic API key" "NRAK-UITEST0SETTINGS0KEY000001"
+ok    type "Or where it is in 1Password" "op://Private/Acme/key"
 ok    pick "Region" "eu"
 ok    toggle "Take collectors (restarts)"
 ok    type "Port they stream to (restarts)" "4761"
@@ -421,7 +422,6 @@ ok    type "Dev profile (restarts)" "acme-dev-read"
 ok    type "Prod profile (restarts)" "acme-prod-read"
 ok    type "Days to save on first start" "7"
 ok    type "Save a session after it is quiet for (seconds)" "60"
-ok    type "Address other Macs use" "http://acme-hub.local:4991"
 ok    type "Phone number (Messages)" "+15550100"
 ok    type "Phone number (Messages)" ""
 ok    toggle "New Relic page (restarts)"
@@ -499,7 +499,7 @@ ok    toggle "Also delete the database and settings"
 ok    snap 15-remove-sheet-delete
 ok    press "Remove"
 ok    wait 60 "VitalAIze was removed from this Mac"
-ok    expect "Its database and settings were deleted too."
+ok    expect "Its database and settings were deleted too, and any key typed in Settings was taken out of the keychain."
 ok    snap 15-removed-all
 ok    click "Set up again"
 ok    wait 90 "What this Mac does"
@@ -512,6 +512,9 @@ ok    wait 90 "What this Mac does"
 - ok: the wizard's board name is in use
 - ok: the wizard's repositories are in use
 - ok: a workflow left at None is none, not a made-up name
+- ok: the New Relic key typed in the wizard is in the keychain
+- ok: the board read it from there
+- ok: and it is in no file, list or log of the run
 - ok: a new port saved in Settings is where the board answers
 - ok: the old port no longer answers
 - ok: the name saved in Settings is in use
@@ -519,9 +522,14 @@ ok    wait 90 "What this Mac does"
 - ok: the name typed in Reconfigure is in use
 - ok: a setting the wizard does not ask about is still as saved
 - ok: Reconfigure's Send as is in use
+- ok: Reconfigure with the key field left empty keeps the key
 - ok: the time zone saved in Settings is in use
 - ok: the ntfy server too
 - ok: the region too
+- ok: the New Relic key typed in Settings is in the keychain
+- ok: and shows as set, not as itself
+- ok: and is in no file, picture or list of the run
+- ok: its 1Password address is saved beside it
 - ok: the hub takes collectors
 - ok: on the port typed
 - ok: the repositories too
@@ -540,10 +548,12 @@ ok    wait 90 "What this Mac does"
 - ok: set up again, the board answers
 - ok: the name typed in the new setup is in use
 - ok: a setting saved before Remove is still in use
+- ok: the New Relic key saved before Remove is still kept
 - ok: one the setup asks about and was left alone, too
 - ok: the history from before Remove is still in the database
 - ok: after Remove with delete the login item is gone
 - ok: after Remove with delete the data folder is gone
+- ok: and the New Relic key is out of the keychain
 
 
 ## hub-only
@@ -588,7 +598,7 @@ ok    toggle "Also delete the database and settings"
 ok    snap 15-remove-sheet-delete
 ok    press "Remove"
 ok    wait 60 "VitalAIze was removed from this Mac"
-ok    expect "Its database and settings were deleted too."
+ok    expect "Its database and settings were deleted too, and any key typed in Settings was taken out of the keychain."
 ok    snap 15-removed-all
 ok    click "Set up again"
 ok    wait 90 "What this Mac does"
@@ -645,7 +655,7 @@ ok    toggle "Also delete the database and settings"
 ok    snap 15-remove-sheet-delete
 ok    press "Remove"
 ok    wait 60 "VitalAIze was removed from this Mac"
-ok    expect "Its database and settings were deleted too."
+ok    expect "Its database and settings were deleted too, and any key typed in Settings was taken out of the keychain."
 ok    snap 15-removed-all
 ok    click "Set up again"
 ok    wait 90 "What this Mac does"
@@ -721,6 +731,10 @@ ok    snap v02-reconfigured
 - ok: Reconfigure wrote the settings file in the new form
 - ok: the name typed in Reconfigure wins over the one 0.2.0's page saved
 - ok: the 0.2.0 settings file is in the backup folder
+- ok: Reconfigure took 0.2.0's upload hook out of Claude's settings
+- ok: the person's own hook is still in Claude's settings
+- ok: Claude's settings from before are kept beside the file
+- ok: 0.2.0's upload script is gone
 
 
 ## over-renamed

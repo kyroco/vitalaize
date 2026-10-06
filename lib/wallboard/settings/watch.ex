@@ -38,6 +38,7 @@ defmodule Wallboard.Settings.Watch do
     state = %{
       every_ms: Keyword.get(opts, :every_ms, @every_ms),
       listener: opts[:listener],
+      opts: opts,
       place: place(),
       moved?: false
     }
@@ -119,6 +120,11 @@ defmodule Wallboard.Settings.Watch do
     # at the next round.
     if [:github, :repos] in paths, do: Wallboard.RepoPrompts.refresh()
 
+    # A New Relic key typed in, replaced, removed, or a new 1Password
+    # address: the key is read again, with no restart.
+    if Enum.any?(paths, &(&1 in [[:new_relic, :api_key], [:new_relic, :api_key_ref]])),
+      do: reload_new_relic_key(now, state)
+
     if state.listener, do: send(state.listener, {:settings, :reloaded})
   rescue
     e ->
@@ -129,5 +135,15 @@ defmodule Wallboard.Settings.Watch do
       Logger.warning("The settings could not be read, so the earlier ones stay. #{why}")
 
       if state.listener, do: send(state.listener, {:settings, :unreadable})
+  end
+
+  # Only where the board reads it: a board with the New Relic page on (that
+  # one is only read at the start, so it is as the board started). In the
+  # background, since 1Password may wait for a person to approve.
+  defp reload_new_relic_key(settings, state) do
+    if settings.role != :collector and settings.new_relic.enabled do
+      load = Keyword.get(state.opts, :load_key, &Wallboard.Secrets.load_new_relic/1)
+      Task.Supervisor.start_child(Wallboard.TaskSupervisor, fn -> load.(settings) end)
+    end
   end
 end

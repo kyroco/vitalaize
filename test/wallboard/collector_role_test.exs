@@ -132,7 +132,9 @@ defmodule Wallboard.CollectorRoleTest do
           Wallboard.Store,
           Wallboard.Archive.StatusRecorder,
           Wallboard.Archive.Collector,
-          Wallboard.Archive.GitHubCollector
+          Wallboard.Archive.GitHubCollector,
+          # The run panel on the Git tab reads finished runs' jobs through it.
+          Wallboard.RunJobs
         ] do
       assert id in both
     end

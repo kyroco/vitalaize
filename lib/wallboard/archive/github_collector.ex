@@ -14,14 +14,21 @@ defmodule Wallboard.Archive.GitHubCollector do
       not have them yet, newest first. At 100 every 5 minutes that is 1,200
       calls an hour, which with the board's own ~600 stays well inside
       GitHub's 5,000; two weeks of jobs fill in over about two hours.
+    * once a day, reads whether each repository is public and its default
+      branch, for `Wallboard.Archive.CiMinutes`
+    * saves the closed pull requests changed since the last good round (the
+      last `backfill_days` on the first round), newest first, 100 a call:
+      usually one call. `Wallboard.Archive.PullRequests` reads them.
 
-  A run that is rerun or finishes gets its jobs fetched again.
+  A run that is rerun or finishes gets its jobs fetched again, every
+  attempt's, since each attempt is billed.
   """
 
   use GenServer
   require Logger
 
   alias Wallboard.{Cmd, Store}
+  alias Wallboard.Archive.CiMinutes
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -127,20 +134,50 @@ defmodule Wallboard.Archive.GitHubCollector do
       :ok = Store.put_runs(runs)
       if !Store.get_meta(key), do: Store.put_meta(key, Date.to_iso8601(today))
 
+      refresh_facts(repo, today)
+
+      # Every attempt's jobs, not only the latest's: a rerun is billed again.
       jobs =
         repo
         |> Store.runs_missing_jobs(jobs_per_round)
         |> Enum.count(fn run_id ->
-          case api("repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=100") do
+          case api("repos/#{repo}/actions/runs/#{run_id}/jobs?filter=all&per_page=100") do
             {:ok, json} -> Store.put_jobs(repo, run_id, parse_jobs(json, repo, run_id)) == :ok
             {:error, _} -> false
           end
         end)
 
-      {:ok, length(runs), jobs}
+      prs_key = "github_prs_backfill:" <> repo
+      through_key = "github_prs_through:" <> repo
+
+      with {:ok, prs} <- fetch_prs(repo, prs_from(prs_key, through_key, today, a, now)) do
+        :ok = Store.put_prs(prs)
+        if !Store.get_meta(prs_key), do: Store.put_meta(prs_key, Date.to_iso8601(today))
+        Store.put_meta(through_key, Integer.to_string(DateTime.to_unix(now)))
+        {:ok, length(runs), jobs}
+      end
     end
   rescue
     e -> {:error, Exception.message(e)}
+  end
+
+  # Where a round's pull requests start, in Unix seconds: the backfill on
+  # the first round, then an hour before the last good round began, so a
+  # pull request merged while the board was off is still read. A merged one
+  # is rarely changed again, so a fixed window would miss it for good.
+  defp prs_from(prs_key, through_key, today, archive, now) do
+    midnight = &(&1 |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix())
+
+    cond do
+      !Store.get_meta(prs_key) ->
+        midnight.(Date.add(today, -archive.backfill_days))
+
+      (through = Store.get_meta(through_key)) && match?({_, ""}, Integer.parse(through)) ->
+        min(String.to_integer(through), DateTime.to_unix(now)) - 3600
+
+      true ->
+        midnight.(Date.add(today, -1))
+    end
   end
 
   defp fetch_days(repo, days) do
@@ -163,6 +200,37 @@ defmodule Wallboard.Archive.GitHubCollector do
 
       if runs != [] and length(acc) < total and page < 10,
         do: fetch_day(repo, day, page + 1, acc),
+        else: {:ok, acc}
+    end
+  end
+
+  # Whether the repository is public (its minutes on GitHub's runners are
+  # then free) and its default branch, read once a day. A failed read keeps
+  # what was read before.
+  defp refresh_facts(repo, today) do
+    day = Date.to_iso8601(today)
+
+    if CiMinutes.repo_facts(repo)[:day] != day do
+      with {:ok, json} <- api("repos/#{repo}"),
+           {:ok, facts} <- parse_repo(json) do
+        Store.put_meta(CiMinutes.meta_key(repo), Jason.encode!(Map.put(facts, :day, day)))
+      end
+    end
+  end
+
+  # Closed pull requests changed at or after `from` (Unix seconds), newest
+  # change first, a page of 100 at a time until a page reaches back before it.
+  defp fetch_prs(repo, from, page \\ 1, acc \\ []) do
+    path =
+      "repos/#{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=#{page}"
+
+    with {:ok, json} <- api(path),
+         {:ok, prs} <- parse_prs(json, repo) do
+      recent = Enum.filter(prs, &((&1.updated_at || 0) >= from))
+      acc = acc ++ Enum.map(recent, &Map.delete(&1, :updated_at))
+
+      if length(prs) == 100 and length(recent) == 100 and page < 10,
+        do: fetch_prs(repo, from, page + 1, acc),
         else: {:ok, acc}
     end
   end
@@ -213,40 +281,105 @@ defmodule Wallboard.Archive.GitHubCollector do
     }
   end
 
+  @doc "A repository's visibility and default branch from a REST reply."
+  def parse_repo(text) do
+    case Jason.decode(text) do
+      {:ok, %{"private" => private} = r} when is_boolean(private) ->
+        {:ok, %{private: private, default_branch: r["default_branch"]}}
+
+      _ ->
+        {:error, "GitHub returned a repository in an unexpected shape"}
+    end
+  end
+
+  @doc """
+  Closed pull requests from a REST reply, as rows for the database, each
+  with `updated_at` for knowing when to stop paging.
+  """
+  def parse_prs(text, repo) do
+    case Jason.decode(text) do
+      {:ok, prs} when is_list(prs) ->
+        {:ok,
+         for %{"number" => n} = p when is_integer(n) <- prs do
+           %{
+             repo: repo,
+             number: n,
+             title: p["title"],
+             branch: get_in(p, ["head", "ref"]),
+             head_repo: get_in(p, ["head", "repo", "full_name"]),
+             default_branch: get_in(p, ["base", "repo", "default_branch"]),
+             base: get_in(p, ["base", "ref"]),
+             head_sha: get_in(p, ["head", "sha"]),
+             author: get_in(p, ["user", "login"]),
+             created_at: unix(p["created_at"]),
+             closed_at: unix(p["closed_at"]),
+             merged_at: unix(p["merged_at"]),
+             url: p["html_url"],
+             updated_at: unix(p["updated_at"])
+           }
+         end}
+
+      _ ->
+        {:error, "GitHub returned pull requests in an unexpected shape"}
+    end
+  end
+
   @doc "A run's jobs from a REST reply, as rows for the database."
   def parse_jobs(text, repo, run_id) do
     case Jason.decode(text) do
-      {:ok, %{"jobs" => jobs}} when is_list(jobs) ->
-        Enum.map(jobs, fn j ->
-          created = unix(j["created_at"])
-          started = unix(j["started_at"])
-          completed = unix(j["completed_at"])
-
-          %{
-            repo: repo,
-            job_id: j["id"],
-            run_id: j["run_id"] || run_id,
-            attempt: j["run_attempt"],
-            name: j["name"],
-            status: j["status"],
-            conclusion: j["conclusion"],
-            created_at: created,
-            started_at: started,
-            completed_at: completed,
-            queue_s: created && started && max(started - created, 0),
-            duration_s: started && completed && max(completed - started, 0),
-            runner_name: j["runner_name"],
-            labels: j["labels"] && Enum.join(j["labels"], ","),
-            failed_step:
-              (j["steps"] || [])
-              |> Enum.find(&(&1["conclusion"] == "failure"))
-              |> then(&(&1 && &1["name"]))
-          }
-        end)
-
-      _ ->
-        []
+      {:ok, %{"jobs" => jobs}} when is_list(jobs) -> job_rows(jobs, repo, run_id)
+      _ -> []
     end
+  end
+
+  @doc """
+  Whether job rows are a finished run's final jobs for `attempt`: every job
+  done and none from a later attempt. Right after a rerun starts, GitHub
+  already answers with the new attempt's jobs, still waiting.
+  """
+  def final_jobs?(rows, attempt) do
+    Enum.all?(rows, fn j ->
+      j.status == "completed" and (is_nil(attempt) or is_nil(j.attempt) or j.attempt <= attempt)
+    end)
+  end
+
+  @doc """
+  Rows for jobs already decoded from a REST reply. The board's own check
+  reads running runs' jobs with this too, so a run's panel shows the same
+  job whether it came from that check or from the database.
+  """
+  def job_rows(jobs, repo, run_id) do
+    Enum.map(jobs, fn j ->
+      created = unix(j["created_at"])
+      started = unix(j["started_at"])
+      completed = unix(j["completed_at"])
+
+      %{
+        repo: repo,
+        job_id: j["id"],
+        run_id: j["run_id"] || run_id,
+        attempt: j["run_attempt"],
+        name: j["name"],
+        status: j["status"],
+        conclusion: j["conclusion"],
+        created_at: created,
+        started_at: started,
+        completed_at: completed,
+        queue_s: created && started && max(started - created, 0),
+        duration_s: started && completed && max(completed - started, 0),
+        runner_name: j["runner_name"],
+        labels: j["labels"] && Enum.join(j["labels"], ","),
+        failed_step:
+          (j["steps"] || [])
+          |> Enum.find(&(&1["conclusion"] == "failure"))
+          |> then(&(&1 && &1["name"])),
+        # Not saved: the step a running job is on, for the run's panel.
+        current_step:
+          (j["steps"] || [])
+          |> Enum.find(&(&1["status"] == "in_progress"))
+          |> then(&(&1 && &1["name"]))
+      }
+    end)
   end
 
   defp unix(s) when is_binary(s) do

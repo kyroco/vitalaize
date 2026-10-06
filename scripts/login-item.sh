@@ -6,8 +6,8 @@
 #   scripts/login-item.sh off    turn it off (and stop it now)
 #
 # It runs the release in _build/prod/rel/wallboard with settings.exs from
-# this folder. Run it from your own Terminal: at startup the board reads the
-# New Relic key through your 1Password session.
+# this folder. Run it from your own Terminal: at startup a board that reads
+# the New Relic key from 1Password does so through your 1Password session.
 set -e
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

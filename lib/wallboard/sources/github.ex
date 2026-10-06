@@ -188,6 +188,22 @@ defmodule Wallboard.Sources.GitHub do
     end
   end
 
+  @doc """
+  One run's jobs, as the archive saves them, in one call: for a finished
+  run's panel when its jobs are not saved yet. {:ok, rows} or {:error, why}.
+  """
+  def fetch_run_jobs(repo, run_id) do
+    with {:ok, json} <- api(["repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=100"]) do
+      case Jason.decode(json) do
+        {:ok, %{"jobs" => jobs}} when is_list(jobs) ->
+          {:ok, Wallboard.Archive.GitHubCollector.job_rows(jobs, repo, run_id)}
+
+        _ ->
+          {:error, "GitHub returned jobs in an unexpected shape"}
+      end
+    end
+  end
+
   defp api(args), do: Cmd.run("gh", ["api" | args], timeout: 30_000)
 
   defp graphql(gh) do
@@ -245,9 +261,20 @@ defmodule Wallboard.Sources.GitHub do
       created_at: time(r["created_at"]),
       updated_at: time(r["updated_at"]),
       pr: pr_number(r),
-      url: r["html_url"]
+      url: r["html_url"],
+      attempt: r["run_attempt"],
+      # Who the run is for, and who started this attempt of it (another
+      # person on a rerun).
+      actor: get_in(r, ["actor", "login"]),
+      started_by: get_in(r, ["triggering_actor", "login"]),
+      commit: first_line(get_in(r, ["head_commit", "message"]))
     }
   end
+
+  defp first_line(text) when is_binary(text),
+    do: text |> String.split("\n", parts: 2) |> hd() |> String.trim()
+
+  defp first_line(_), do: nil
 
   @doc """
   Parses the list of a repository's workflows from the REST API into their
@@ -283,7 +310,10 @@ defmodule Wallboard.Sources.GitHub do
 
   defp pr_number(_), do: nil
 
-  @doc "Summarizes a run's jobs: how many are done and what is running now."
+  @doc """
+  Summarizes a run's jobs: how many are done and what is running now, and
+  every job as the archive saves it (`list`), for the run's panel.
+  """
   def parse_jobs(text) do
     case Jason.decode(text) do
       {:ok, %{"jobs" => jobs}} when is_list(jobs) ->
@@ -299,7 +329,8 @@ defmodule Wallboard.Sources.GitHub do
           total: length(jobs),
           done: Enum.count(jobs, &(&1["status"] == "completed")),
           current_job: current && current["name"],
-          current_step: step
+          current_step: step,
+          list: Wallboard.Archive.GitHubCollector.job_rows(jobs, nil, nil)
         }
 
       _ ->

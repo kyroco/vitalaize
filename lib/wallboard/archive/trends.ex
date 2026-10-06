@@ -10,15 +10,23 @@ defmodule Wallboard.Archive.Trends do
 
   Session totals (Korium use, tool calls, lines) count on the day the
   session last did something, so a session that ran for days lands on its
-  last day. Spend and requests use each request's own time.
+  last day. Spend and requests use each request's own time. CI minutes
+  count on the day each run attempt began, and the part agents caused goes
+  to the tool of the session that pushed (see `CiMinutes`).
+
+  The Shipped cards count merged pull requests on the day each merged, with
+  what the sessions behind it spent (see `Wallboard.Archive.PullRequests`).
+  A pull request no session was found for counts as merged but not in the
+  per-PR numbers, and the cards say how many were matched.
 
   The Claude cards count Claude sessions only, the Codex cards Codex
   sessions only. Korium cards count calls from both. With Codex on,
   `compare` holds the measures shown for both tools side by side, one pair
-  of bars per day, led by tokens per 1,000 lines added: what a thousand
-  lines of code cost each tool, in tokens, since Codex has no dollar price.
+  of bars per day, led by tokens per merged pull request: what a shipped
+  change costs each tool, in tokens, since Codex has no dollar price.
   """
 
+  alias Wallboard.Archive.{CiMinutes, PullRequests}
   alias Wallboard.Store
 
   @doc "The cards for the last `days` days, ending today."
@@ -30,7 +38,9 @@ defmodule Wallboard.Archive.Trends do
 
     sums = day_sums(settings, since)
     history = history_start(settings, today)
-    prev_ok? = history != nil and Date.compare(List.first(previous), history) != :lt
+    shipped = shipped_start(settings, today, history)
+    saved_since? = &(&1 != nil and Date.compare(List.first(previous), &1) != :lt)
+    prev_ok? = fn group -> saved_since?.(if group == :shipped, do: shipped, else: history) end
 
     # A tool with nothing in the period has no section, and the comparison
     # shows only when both have something to compare.
@@ -51,7 +61,7 @@ defmodule Wallboard.Archive.Trends do
     %{
       days: current,
       history_start: history,
-      loading: %{github: github_loading(settings)},
+      loading: %{github: github_loading(settings), shipped: shipped_loading(settings)},
       compare:
         if claude_data? and codex_data? do
           Enum.map(compare_metrics(), fn m ->
@@ -74,7 +84,7 @@ defmodule Wallboard.Archive.Trends do
       cards:
         Enum.map(shown, fn m ->
           cur = merge(Enum.map(current, &sums[&1]))
-          prev = if prev_ok?, do: merge(Enum.map(previous, &sums[&1])), else: nil
+          prev = if prev_ok?.(m.group), do: merge(Enum.map(previous, &sums[&1])), else: nil
           value = m.value.(cur)
           prev_value = prev && m.value.(prev)
 
@@ -115,17 +125,25 @@ defmodule Wallboard.Archive.Trends do
     end
   end
 
+  @doc "Words for the Shipped heading until every repository's pull requests are saved."
+  def shipped_loading(settings) do
+    if settings
+       |> Wallboard.Settings.repo_names()
+       |> Enum.any?(&(!Store.get_meta("github_prs_backfill:" <> &1))),
+       do: "Loading…"
+  end
+
   defp codex?(settings), do: get_in(settings, [:codex, :enabled]) == true
 
   # Measures shown for Claude and Codex in one chart.
   defp compare_metrics do
     [
       %{
-        key: :tokens_per_kline,
-        label: "Tokens per 1,000 lines added",
+        key: :tokens_per_pr,
+        label: "Tokens per merged PR",
         fmt: :tokens,
-        claude: &per_kline(&1.tokens, &1.lines_added),
-        codex: &per_kline(&1.codex_tokens, &1.codex_lines_added)
+        claude: &per(&1.pr_tokens, &1.pr_claude),
+        codex: &per(&1.pr_codex_tokens, &1.pr_codex)
       },
       %{
         key: :tokens,
@@ -147,18 +165,42 @@ defmodule Wallboard.Archive.Trends do
         fmt: :pct,
         claude: &ratio(&1.tool_errors, &1.tool_calls),
         codex: &ratio(&1.codex_tool_errors, &1.codex_tool_calls)
+      },
+      %{
+        key: :ci_minutes,
+        label: "CI minutes",
+        fmt: :count,
+        claude: & &1.ci_agent,
+        codex: & &1.codex_ci_agent
       }
     ]
   end
 
   # The first day every source had saved, or nil before anything is saved.
   defp history_start(settings, today) do
-    back = settings.archive.backfill_days
+    repos = Wallboard.Settings.repo_names(settings)
+    latest_start([{"claude_since", 0}] ++ backfills(settings, repos, "github_backfill:"), today)
+  end
 
+  # The same for the Shipped cards, which also need the pull requests saved.
+  # Those were first saved later than sessions and runs on a board that ran
+  # before, so they hold only the Shipped cards back, never the others.
+  defp shipped_start(settings, today, history) do
+    repos = Wallboard.Settings.repo_names(settings)
+
+    case latest_start(backfills(settings, repos, "github_prs_backfill:"), today) do
+      prs when history != nil and prs != nil -> Enum.max([history, prs], Date)
+      _ -> nil
+    end
+  end
+
+  defp backfills(settings, repos, prefix),
+    do: Enum.map(repos, &{prefix <> &1, settings.archive.backfill_days})
+
+  # The latest of the saved starts, or nil when none is saved.
+  defp latest_start(keys, today) do
     starts =
-      ([{"claude_since", 0}] ++
-         Enum.map(Wallboard.Settings.repo_names(settings), &{"github_backfill:" <> &1, back}))
-      |> Enum.flat_map(fn {key, days_back} ->
+      Enum.flat_map(keys, fn {key, days_back} ->
         with v when is_binary(v) <- Store.get_meta(key),
              {:ok, d} <- Date.from_iso8601(v) do
           [Date.add(d, -days_back)]
@@ -186,6 +228,32 @@ defmodule Wallboard.Archive.Trends do
       end
 
     [
+      %{
+        key: :merged_prs,
+        group: :shipped,
+        label: "Merged PRs",
+        fmt: :count,
+        value: & &1.merged_prs,
+        sub: &sessions_per_pr/1
+      },
+      %{
+        key: :pr_cost,
+        group: :shipped,
+        label: "Cost per merged PR",
+        fmt: :money,
+        good: :down,
+        value: &per(&1.pr_cost, &1.pr_claude),
+        sub: &matched(&1.pr_claude, &1.merged_prs, "Claude sessions")
+      },
+      %{
+        key: :pr_tokens,
+        group: :shipped,
+        label: "Tokens per merged PR",
+        fmt: :tokens,
+        good: :down,
+        value: &per(&1.pr_tokens + &1.pr_codex_tokens, &1.matched_prs),
+        sub: &matched(&1.matched_prs, &1.merged_prs, "sessions")
+      },
       %{
         key: :spend,
         group: :claude,
@@ -354,8 +422,29 @@ defmodule Wallboard.Archive.Trends do
         good: :down,
         value: fn d -> d.runner_s / 3600 end,
         sub: &"#{thousands(&1.jobs)} jobs saved"
+      },
+      %{
+        key: :ci_minutes,
+        group: :github,
+        label: "CI minutes",
+        fmt: :count,
+        good: :down,
+        value: & &1.ci_paid,
+        sub: &ci_note/1
       }
     ]
+  end
+
+  # What the CI minutes card's number leaves out, beside the part agents
+  # caused: minutes that use up no plan.
+  defp ci_note(d) do
+    [
+      "#{thousands(d.ci_agent + d.codex_ci_agent)} from agent sessions",
+      d.ci_free > 0 && "#{thousands(d.ci_free)} free on public repositories",
+      d.ci_own > 0 && "#{thousands(d.ci_own)} on your own machines"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
   end
 
   # ---------------------------------------------------------------------------
@@ -364,7 +453,7 @@ defmodule Wallboard.Archive.Trends do
   # What each tool counts on its own; Codex rows carry them as codex_<name>.
   # Korium counts are shared: a search is a search whichever tool made it.
   @per_tool ~w(cost requests prompt cache_read tokens sessions prompts turns turn_ms tool_calls
-    tool_errors lines_added lines_removed api_errors denials)a
+    tool_errors lines_added lines_removed api_errors denials ci_agent)a
 
   @zero_codex Map.new(@per_tool, &{:"codex_#{&1}", 0})
 
@@ -398,7 +487,22 @@ defmodule Wallboard.Archive.Trends do
     deploys_dev: 0,
     deploys_prod: 0,
     runner_s: 0,
-    jobs: 0
+    jobs: 0,
+    ci_paid: 0,
+    ci_free: 0,
+    ci_own: 0,
+    ci_agent: 0,
+    # Merged pull requests, those with any session found, and those with a
+    # Claude or a Codex session; then their sessions, Claude dollars and
+    # each tool's tokens.
+    merged_prs: 0,
+    matched_prs: 0,
+    pr_claude: 0,
+    pr_codex: 0,
+    pr_sessions: 0,
+    pr_cost: 0.0,
+    pr_tokens: 0,
+    pr_codex_tokens: 0
   }
 
   @doc "Adds up day sums; days with nothing saved count as zero."
@@ -492,10 +596,12 @@ defmodule Wallboard.Archive.Trends do
         ) ++
         if(github?,
           do:
-            settings
-            |> Wallboard.Settings.github_repos()
-            |> Enum.with_index()
-            |> Enum.flat_map(&github_hours(&1, from)),
+            (settings
+             |> Wallboard.Settings.github_repos()
+             |> Enum.with_index()
+             |> Enum.flat_map(&github_hours(&1, from))) ++
+              CiMinutes.hourly(settings, from) ++
+              Enum.map(PullRequests.merged(settings, from), &pr_hour/1),
           else: []
         )
 
@@ -511,6 +617,23 @@ defmodule Wallboard.Archive.Trends do
     end)
   end
 
+  # One merged pull request, on the hour it merged.
+  defp pr_hour(pr) do
+    one = fn yes? -> if yes?, do: 1, else: 0 end
+
+    %{
+      h: div(pr.merged_at, 3600),
+      merged_prs: 1,
+      matched_prs: one.(pr.sessions != []),
+      pr_claude: one.(pr.claude_sessions > 0),
+      pr_codex: one.(pr.codex_sessions > 0),
+      pr_sessions: length(pr.sessions),
+      pr_cost: pr.cost,
+      pr_tokens: round(pr.tokens),
+      pr_codex_tokens: round(pr.codex_tokens)
+    }
+  end
+
   defp nils_to_zero(row), do: Map.new(row, fn {k, v} -> {k, v || 0} end)
 
   @doc "Moves a Codex row's own counts to their codex_ names; Korium counts stay shared."
@@ -524,9 +647,16 @@ defmodule Wallboard.Archive.Trends do
 
   # ---------------------------------------------------------------------------
 
-  @doc "Tokens spent per 1,000 lines added, or nil with no lines added."
-  def per_kline(_tokens, lines) when lines in [0, nil], do: nil
-  def per_kline(tokens, lines), do: tokens * 1000 / lines
+  @doc "An amount per pull request, or nil with no pull requests."
+  def per(_amount, prs) when prs in [0, nil], do: nil
+  def per(amount, prs), do: amount / prs
+
+  defp sessions_per_pr(%{matched_prs: 0}), do: "no sessions matched"
+
+  defp sessions_per_pr(d),
+    do: "#{:erlang.float_to_binary(d.pr_sessions / d.matched_prs, decimals: 1)} sessions per PR"
+
+  defp matched(n, of, what), do: "#{thousands(n)} of #{thousands(of)} matched to #{what}"
 
   defp turn_minutes(_ms, 0), do: "no turns"
 

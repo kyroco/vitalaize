@@ -6,6 +6,10 @@ defmodule WallboardWeb.PairController do
   `Wallboard.Pairing.Door`, and nothing they send is trusted until the
   owner approves a matching code in the mailbox.
 
+  A fourth, `check`, is for a machine that paired and whose link keeps
+  failing: it asks whether its certificate still works, and is answered
+  only when it signs the door's challenge with that certificate's key.
+
   Each call is a small JSON body. Nothing else is accepted here.
   """
 
@@ -59,6 +63,43 @@ defmodule WallboardWeb.PairController do
       {:error, reason, conn} -> refuse(conn, reason)
       {:error, reason} -> refuse(conn, reason)
       _ -> refuse(conn, :bad_request)
+    end
+  end
+
+  # A paired machine whose link keeps failing asks whether its certificate
+  # still works: first with an empty body for a challenge, then with the
+  # challenge signed by its key.
+  def check(conn, _params) do
+    case read(conn) do
+      {:ok, %{"challenge" => challenge, "cert" => cert, "proof" => proof}, conn}
+      when is_binary(challenge) and is_binary(cert) and is_binary(proof) ->
+        with {:ok, challenge} <- Base.decode16(challenge, case: :mixed),
+             {:ok, proof} <- Base.decode16(proof, case: :mixed),
+             {:ok, said} <- Door.check(from(conn), challenge, cert, proof) do
+          json(conn, 200, %{
+            answer: said.answer,
+            signature: Base.encode16(said.signature, case: :lower),
+            hub: said.hub_pem
+          })
+        else
+          {:error, reason} -> refuse(conn, reason)
+          _ -> refuse(conn, :bad_request)
+        end
+
+      {:ok, empty, conn} when map_size(empty) == 0 ->
+        case Door.challenge(from(conn)) do
+          {:ok, challenge} ->
+            json(conn, 200, %{challenge: Base.encode16(challenge, case: :lower)})
+
+          {:error, reason} ->
+            refuse(conn, reason)
+        end
+
+      {:ok, _, conn} ->
+        refuse(conn, :bad_request)
+
+      {:error, reason, conn} ->
+        refuse(conn, reason)
     end
   end
 
