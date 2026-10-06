@@ -554,12 +554,7 @@ defmodule Wallboard.PairingTest do
       paired = pair!(port, dir, "air")
       {:ok, _} = Authority.revoke(Path.join(dir, "link"), "air")
 
-      # A port nothing listens on.
-      {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
-      {:ok, closed} = :inet.port(socket)
-      :gen_tcp.close(socket)
-
-      start_client(dir, paired, :air, door: %{host: "127.0.0.1", port: closed})
+      start_client(dir, paired, :air, door: %{host: "127.0.0.1", port: closed_port()})
       start_client(dir, paired, :bee)
 
       for tag <- [:air, :bee], _ <- 1..7, do: assert_receive({^tag, {:down, _}}, 5_000)
@@ -675,6 +670,68 @@ defmodule Wallboard.PairingTest do
       assert {:ok, :approved} = Pairing.check(%{host: "127.0.0.1", port: port}, air.tls)
     end
 
+    test "a machine the hub still takes keeps trying, however often the door is asked",
+         %{dir: dir} do
+      port = start_hub(dir)
+      paired = pair!(port, dir, "air")
+      asked = fn -> :sys.get_state(Door).window.calls[{127, 0, 0, 1}] || 0 end
+      before = asked.()
+
+      # The link's port answers nothing, the board's does: every try
+      # fails, and every third the door says "approved".
+      start_client(dir, %{paired | port: closed_port()}, :air,
+        door: %{host: "127.0.0.1", port: port}
+      )
+
+      for _ <- 1..9, do: assert_receive({:air, {:down, _}}, 5_000)
+      wait_until(fn -> :sys.get_state(:air).asking == nil end)
+
+      # Two asks of two calls each, at the third and sixth tries.
+      assert asked.() - before >= 4
+      refute :removed in said(:air)
+      assert %{phase: phase} = Client.status(:air)
+      assert phase in [:waiting, :connecting]
+    end
+
+    test "a machine whose first ask found no door asks again, and learns it was removed",
+         %{dir: dir} do
+      paired = pair!(start_hub(dir), dir, "air")
+      board = closed_port()
+      {:ok, _} = Authority.revoke(Path.join(dir, "link"), "air")
+
+      start_client(dir, paired, :air, door: %{host: "127.0.0.1", port: board})
+
+      # Its first ask, at the third try, finds nothing at the board's port.
+      wait_until(fn ->
+        s = :sys.get_state(:air)
+        s.failed > 3 and s.asking == nil
+      end)
+
+      refute :removed in said(:air)
+
+      # The board comes back where the machine looks for it.
+      start_supervised!(
+        {Bandit, plug: WallboardWeb.Router, ip: :loopback, port: board, startup_log: false},
+        id: :board
+      )
+
+      assert_receive {:air, :removed}, 10_000
+    end
+
+    test "a list of machines that cannot be read is busy, never removed", %{dir: dir} do
+      port = start_hub(dir)
+      paired = pair!(port, dir, "air")
+      list = Path.join([dir, "link", "machines.json"])
+      good = File.read!(list)
+      File.write!(list, "half a file")
+      door = %{host: "127.0.0.1", port: port}
+
+      assert {:error, :busy} = Pairing.check(door, paired.tls)
+
+      File.write!(list, good)
+      assert {:ok, :approved} = Pairing.check(door, paired.tls)
+    end
+
     test "a collector paired before the board's port was saved asks on the usual one",
          %{dir: dir} do
       port = start_hub(dir)
@@ -685,6 +742,28 @@ defmodule Wallboard.PairingTest do
       hub = folder |> Path.join("hub.json") |> File.read!() |> Jason.decode!()
       File.write!(Path.join(folder, "hub.json"), Jason.encode!(Map.delete(hub, "port")))
       assert {:ok, %{door: %{host: "127.0.0.1", port: 4747}}} = Sender.paired(folder)
+    end
+  end
+
+  # A port nothing listens on.
+  defp closed_port do
+    {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+    {:ok, port} = :inet.port(socket)
+    :gen_tcp.close(socket)
+    port
+  end
+
+  defp wait_until(check, tries \\ 200) do
+    cond do
+      check.() ->
+        :ok
+
+      tries == 0 ->
+        flunk("waited too long")
+
+      true ->
+        Process.sleep(25)
+        wait_until(check, tries - 1)
     end
   end
 
