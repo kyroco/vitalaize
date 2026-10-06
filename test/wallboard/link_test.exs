@@ -161,6 +161,7 @@ defmodule Wallboard.LinkTest do
     cond do
       fun.() -> :ok
       left == 0 -> flunk("waited too long")
+      # A pause between looks at a condition, not a wait for a timer.
       true -> Process.sleep(50) && wait_until(fun, left - 1)
     end
   end
@@ -249,9 +250,10 @@ defmodule Wallboard.LinkTest do
       )
 
       assert_receive {:wallboard_link, {:resume, %{}}}, 5_000
-      refute_receive {:wallboard_link, {:stored, _}}, 500
-      assert saved("papa") == []
+      # Holding, it sends nothing at all, so there is nothing to wait for.
       assert %{phase: :holding, waiting: 3} = Client.status(:holder)
+      refute_received {:wallboard_link, {:stored, _}}
+      assert saved("papa") == []
 
       # The reader sends this file again from the start: the old lines go,
       # and only then does anything leave.
@@ -419,8 +421,11 @@ defmodule Wallboard.LinkTest do
       assert_receive {:link, :down, "papa"}, 5_000
       assert %{phase: :removed} = Client.status(client)
 
-      # It does not try again, and the other machine is untouched.
-      refute_receive {:wallboard_link, {:down, _}}, 300
+      # It does not try again, even when a try comes due, and the other
+      # machine is untouched.
+      send(Process.whereis(client), :connect)
+      assert %{phase: :removed} = Client.status(client)
+      refute_received {:wallboard_link, {:down, _}}
       assert Map.keys(Hub.connected()) == ["mama"]
       :ok = Client.push(:mama, event(1, "m1"))
       assert_receive {:wallboard_link, {:stored, 1}}, 5_000
@@ -536,21 +541,27 @@ defmodule Wallboard.LinkTest do
   describe "what must not stop a healthy collector" do
     test "a list of machines the hub cannot read for a moment costs no open stream",
          %{dir: dir, link: link} do
-      port = start_hub(dir, limits: %{recheck_ms: 30})
+      # The hub looks at the list each time the collector sends something.
+      port = start_hub(dir, limits: %{recheck_ms: 0})
       {:ok, papa} = Authority.issue(link, "papa")
-      client = start_client(dir, port, papa, pace: %{keepalive_ms: 60})
+      client = start_client(dir, port, papa)
       assert_receive {:wallboard_link, {:resume, _}}, 5_000
 
       file = Path.join(link, "machines.json")
       good = File.read!(file)
       File.write!(file, "{half a fi")
-      # Long enough for several looks at the list.
-      Process.sleep(400)
+
+      # Several looks at the list while it is half written.
+      for n <- 1..3 do
+        :ok = Client.push(client, event(n))
+        assert_receive {:wallboard_link, {:stored, ^n}}, 5_000
+      end
+
       File.write!(file, good)
 
       refute_received {:wallboard_link, :removed}
-      :ok = Client.push(client, event(1))
-      assert_receive {:wallboard_link, {:stored, 1}}, 5_000
+      :ok = Client.push(client, event(4))
+      assert_receive {:wallboard_link, {:stored, 4}}, 5_000
       assert %{phase: :live} = Client.status(client)
     end
 
@@ -565,7 +576,8 @@ defmodule Wallboard.LinkTest do
       # The hub's database stops answering, so nothing is confirmed.
       :sys.suspend(Store)
       :ok = Client.push(client, Enum.map(1..20, &event/1))
-      Process.sleep(300)
+      # All 20 went out as they were pushed.
+      assert %{in_flight: 20} = :sys.get_state(client)
 
       # 45 sessions' statuses push the 20 sent file events out of the buffer.
       statuses = for n <- 1..45, do: status("x#{n}", :working, at: ~U[2026-09-30 12:00:00Z])
@@ -593,7 +605,7 @@ defmodule Wallboard.LinkTest do
       # confirmed, which fills the client's window.
       :sys.suspend(Store)
       :ok = Client.push(client, working.(1..20))
-      Process.sleep(300)
+      assert %{in_flight: 20} = :sys.get_state(client)
 
       # 40 newer ones of the same session replace them in the buffer.
       :ok = Client.push(client, working.(21..60))
@@ -698,8 +710,9 @@ defmodule Wallboard.LinkTest do
       {:ok, papa} = Authority.issue(link, "papa")
 
       # Without "back soon" this collector would try again after 20 to 40 ms
-      # and then at growing waits: four or five tries while the hub is away.
-      backoff = [base_ms: 40, cap_ms: 2_000, back_soon_ms: 600]
+      # and then at growing waits. With it, the wait is a minute, longer
+      # than this test: the try that ends it is made here, by hand.
+      backoff = [base_ms: 40, cap_ms: 180_000, back_soon_ms: 60_000]
       client = start_client(dir, port, papa, backoff: backoff)
       assert_receive {:wallboard_link, {:resume, _}}, 5_000
 
@@ -707,16 +720,19 @@ defmodule Wallboard.LinkTest do
       Wallboard.Application.prep_stop(:state)
       assert_receive {:wallboard_link, :back_soon}, 5_000
       stop_hub()
-      Process.sleep(400)
+
+      # One wait, the long one.
+      assert_receive {:wallboard_link, {:down, wait}}, 5_000
+      assert wait >= 60_000
       start_hub(dir, port: port)
 
-      # It comes back by itself once the hub is up.
+      # The wait is over, and the hub is up: one try reaches it.
+      send(Process.whereis(client), :connect)
       assert_receive {:wallboard_link, {:resume, _}}, 10_000
       wait_until(fn -> Client.status(client).phase == :live end)
 
-      # One wait, the long one, and so one try: no burst while the hub was away.
-      assert [wait] = for({:wallboard_link, {:down, wait}} <- flush(), do: wait)
-      assert wait >= 600
+      # No burst of tries while the hub was away.
+      assert [] = for({:wallboard_link, {:down, wait}} <- flush(), do: wait)
     end
 
     test "a hub that vanishes without a word gets the short first wait", %{dir: dir, link: link} do
