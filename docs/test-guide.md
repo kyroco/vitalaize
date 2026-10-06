@@ -17,8 +17,8 @@ It takes about 30 minutes. You need:
 - **A second machine** on the same network, with Claude Code or Codex: another
   Mac, or a Linux machine.
 - **A build of main.** On the Mac that has the signing certificates, run
-  `macos/build.sh`. The package is `macos/dist/VitalAIze-0.3.0.pkg`. For a
-  Linux collector, see step 3b.
+  `macos/build.sh`. The package is `macos/dist/VitalAIze-<version>.pkg`,
+  such as `VitalAIze-0.4.0.pkg`. For a Linux collector, see step 3b.
 
 Two names used below: the **board log** is `~/Library/Logs/VitalAIze/board.log`
 on a Mac (the app's **Show the log** opens it). On Linux it is
@@ -30,7 +30,7 @@ terminal you started it in. A collector writes to the same log as a board.
 1. Close any Installer window left open from an earlier install. While one sits
    on its last page, opening a new package only brings that old window forward
    and installs nothing.
-2. Open `VitalAIze-0.3.0.pkg` and go through its pages. VitalAIze opens.
+2. Open `VitalAIze-<version>.pkg` and go through its pages. VitalAIze opens.
 3. On a Mac that already had VitalAIze (0.2.0, or an older install), the first
    screen says what it mended or restarted. It keeps a copy of every file it
    changed in `backups/(date and time)/` in the data folder
@@ -217,10 +217,10 @@ away, and shows no code. Then approve the new code.
 Skip this if no machine of yours ran 0.2.0's Connect command.
 
 A machine connected the old way still has upload hooks in its Claude and Codex
-settings. The 0.3.0 hub refuses their uploads with "This hub no longer takes
+settings. A 0.3.0 or newer hub refuses their uploads with "This hub no longer takes
 uploads from the old collector (VitalAIze 0.2.0)."
 
-Install 0.3.0 on that machine as a collector (step 3a or 3b). Setup takes
+Install the newest version on that machine as a collector (step 3a or 3b). Setup takes
 VitalAIze's old hooks out and deletes the old upload script.
 
 **You should see:** in `~/.claude/settings.json`, no entry that runs
