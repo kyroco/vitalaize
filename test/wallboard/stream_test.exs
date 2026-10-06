@@ -286,13 +286,38 @@ defmodule Wallboard.StreamTest do
   # so after `drained/1` this is everything the collector sent.
   defp heard_all, do: :sys.get_state(Sessions)
 
-  # What the hub has done about alerts: how many it sent, and the wait
-  # (by when it began) of each session it asked one for. Another alert
-  # needs another entry here or a new wait, so comparing this says what
-  # waiting for one to arrive would, without the wait.
-  defp alerts_asked do
-    state = :sys.get_state(Sessions)
-    {length(state.sent), state.alerted}
+  # From here on, each alert the hub's sessions set a timer for comes to
+  # this test as a trace message the moment the timer is set. So a second
+  # alert for one wait shows at once, not a second later when it would be
+  # sent. `:next` watches the sessions process the hub starts next.
+  defp watch_alerts(which \\ :running) do
+    for arity <- [3, 4],
+        do: :erlang.trace_pattern({:erlang, :send_after, arity}, true, [:global])
+
+    on_exit(fn ->
+      :erlang.trace(:new_processes, false, [:call])
+      :erlang.trace_pattern({:erlang, :send_after, :_}, false, [:global])
+    end)
+
+    target = if which == :next, do: :new_processes, else: Process.whereis(Sessions)
+    :erlang.trace(target, true, [:call])
+  end
+
+  # The alerts the hub's sessions set a timer for since the last look, as
+  # `{session key, start of the wait}`, once everything sent to them is
+  # taken in.
+  defp alerts_set do
+    :sys.get_state(Sessions)
+    receive_alerts()
+  end
+
+  defp receive_alerts do
+    receive do
+      {:trace, _, :call, {:erlang, :send_after, [_, _, {:alert, key, since} | _]}} ->
+        [{key, since} | receive_alerts()]
+    after
+      0 -> []
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -405,6 +430,7 @@ defmodule Wallboard.StreamTest do
     test "a Claude and a Codex session show as cards, change status, and alert once per channel",
          c do
       start_hub(c)
+      watch_alerts()
       pair(c)
       w = start_collector(c)
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Wallboard.Poller.topic())
@@ -426,7 +452,7 @@ defmodule Wallboard.StreamTest do
       assert claude.account == "papa"
       assert claude.key == "stream:papa:" <> @claude_id
       assert %{status: :working, tool: :codex, machine: "papa"} = card(@codex_id)
-      assert alerts_asked() == {0, %{}}
+      assert alerts_set() == []
 
       # The rest of the Claude session's lines fill its card in: what it
       # works on, its repository, context, model, cost and lines.
@@ -454,8 +480,7 @@ defmodule Wallboard.StreamTest do
 
       # One wait, one alert on each channel: nothing else on the hub
       # alerts for a session on another machine.
-      assert {1, asked} = alerts_asked()
-      assert Map.keys(asked) == [{"papa", @claude_id}]
+      assert [{{"papa", @claude_id}, _}] = alerts_set()
       refute_received {:alert, _, _}
 
       # Codex asks to run something.
@@ -470,8 +495,7 @@ defmodule Wallboard.StreamTest do
       assert card(@codex_id).why == "Asks for your approval to use shell"
       assert_receive {:alert, "/slack", _}, 4_000
       assert_receive {:alert, "/topic", _}, 4_000
-      assert {2, asked} = alerts_asked()
-      assert map_size(asked) == 2
+      assert [{{"papa", @codex_id}, _}] = alerts_set()
       refute_received {:alert, _, _}
 
       # Both move on.
@@ -493,7 +517,7 @@ defmodule Wallboard.StreamTest do
       mark(c, %{"hook_event_name" => "SessionEnd"})
       look(w)
       wait_until(fn -> Sessions.cards() == [] end)
-      assert alerts_asked() == {2, asked}
+      assert alerts_set() == []
       refute_received {:alert, _, _}
 
       # Each status change is in the archive's history.
@@ -771,11 +795,12 @@ defmodule Wallboard.StreamTest do
 
       kill_collector(w)
       kill_hub()
+      watch_alerts(:next)
       start_hub(c)
       wait_until(fn -> card(@claude_id) != nil end)
       assert %{stale: true, status: :working} = card(@claude_id)
       # Reading what it knew back sends no alert.
-      assert alerts_asked() == {0, %{}}
+      assert alerts_set() == []
       refute_received {:alert, _, _}
 
       start_collector(c)
@@ -816,10 +841,9 @@ defmodule Wallboard.StreamTest do
       assert_receive {:alert, "/slack", _}, 4_000
       assert_receive {:alert, "/topic", _}, 4_000
       # The same wait said again, as after a reconnect, sends nothing more.
-      asked = alerts_asked()
-      assert {1, %{{"mama", "s-1"} => _}} = asked
+      watch_alerts()
       tell([status_row("s-1", :needs, why: :question, since: at.(9), at: at.(9))])
-      assert alerts_asked() == asked
+      assert alerts_set() == []
       refute_received {:alert, _, _}
       assert Sessions.cards() |> hd() |> Map.fetch!(:waiting_since) == at.(2)
     end
@@ -873,11 +897,10 @@ defmodule Wallboard.StreamTest do
 
       # Back, and saying the same wait again: nothing more.
       Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
-      asked = alerts_asked()
-      assert {1, %{{"mama", "s-4"} => _}} = asked
+      watch_alerts()
       later = DateTime.add(now, 30)
       tell([status_row("s-4", :needs, why: :question, since: later, at: later)])
-      assert alerts_asked() == asked
+      assert alerts_set() == []
       refute_received {:alert, _, _}
     end
 
