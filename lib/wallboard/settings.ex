@@ -260,6 +260,11 @@ defmodule Wallboard.Settings do
     },
     new_relic: %{
       enabled: true,
+      # A key typed in the app or in `vitalaize setup` is kept in the
+      # keychain or a file only you can read (see Wallboard.KeyStore). Here
+      # is only a note that it is kept and when it was saved, written by
+      # those saves. With none, api_key_ref is used.
+      api_key: nil,
       api_key_ref: nil,
       account_id: nil,
       region: "us",
@@ -522,7 +527,10 @@ defmodule Wallboard.Settings do
           {saved, Map.put(errors, key, "#{key} is not a setting")}
 
         {path, label, type, _, _} ->
-          case if(type == :secret and raw == kept(), do: :kept, else: parse(type, raw, path)) do
+          case if(type in [:secret, :key] and raw == kept(),
+                 do: :kept,
+                 else: parse(type, raw, path)
+               ) do
             :kept ->
               {saved, errors}
 
@@ -618,11 +626,103 @@ defmodule Wallboard.Settings do
 
   @doc """
   Writes the saved settings (what `change/2` returned) and reloads. Only this user can read the file: it may
-  hold the board password and alert keys.
+  hold the board password and alert keys. A key typed in goes to the key
+  store first (`keep_keys/1`); raises when it cannot be kept, with nothing
+  written.
   """
   def save!(overrides) do
-    write_saved!(overrides)
-    load!()
+    case keep_keys(overrides) do
+      {:ok, overrides} ->
+        write_saved!(overrides)
+        load!()
+
+      {:error, errors} ->
+        raise ArgumentError, errors |> Map.values() |> Enum.join(" ")
+    end
+  end
+
+  # The settings kept in the key store (`Wallboard.KeyStore`), and the
+  # name each is kept under there.
+  @kept_keys [{[:new_relic, :api_key], "new_relic"}]
+
+  @doc """
+  Puts each key typed in a save (what `change/1` returned) in the key
+  store, and a note in its place in the saved settings: where it is kept
+  and when it was saved, never the key. A key emptied in the save is taken
+  out of the store. The note changing is what tells a running board to
+  read the key again (`Wallboard.Settings.Watch`).
+
+  Returns `{:ok, saved}` to hand to `save!/1`, or `{:error, %{path =>
+  message}}` when the store would not take a key or let one go.
+  """
+  def keep_keys(saved) do
+    before = read_saved!()
+
+    Enum.reduce_while(@kept_keys, {:ok, saved}, fn {path, name}, {:ok, acc} ->
+      field = Enum.join(path, ".")
+      label = label(path)
+
+      case {saved_at(acc, path), saved_at(before, path)} do
+        {{:store, typed}, _} ->
+          case Wallboard.KeyStore.put(name, typed.()) do
+            :ok ->
+              {:cont, {:ok, put_path(acc, path, key_note())}}
+
+            {:error, why} ->
+              {:halt,
+               {:error,
+                %{
+                  field => "#{label}: could not be kept in #{Wallboard.KeyStore.place()} (#{why})"
+                }}}
+          end
+
+        {nil, %{}} ->
+          case Wallboard.KeyStore.delete(name) do
+            :ok ->
+              {:cont, {:ok, acc}}
+
+            {:error, why} ->
+              {:halt,
+               {:error,
+                %{
+                  field =>
+                    "#{label}: could not be taken out of #{Wallboard.KeyStore.place()} (#{why})"
+                }}}
+          end
+
+        _ ->
+          {:cont, {:ok, acc}}
+      end
+    end)
+  end
+
+  @doc "The name a setting's key is kept under in the key store, or nil."
+  def key_name(path), do: Enum.find_value(@kept_keys, fn {p, name} -> p == path && name end)
+
+  @doc "Every setting kept in the key store, as `{name, label}`."
+  def kept_keys, do: for({path, name} <- @kept_keys, do: {name, label(path)})
+
+  defp saved_at(map, [k | rest]) do
+    case map do
+      %{^k => inner} when rest == [] -> inner
+      %{^k => %{} = inner} -> saved_at(inner, rest)
+      _ -> nil
+    end
+  end
+
+  # String keys, as the note reads back from settings.json, so a note just
+  # written and one read again are the same.
+  defp key_note do
+    %{
+      "kept_in" => Wallboard.KeyStore.place(),
+      "saved_at" => DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601()
+    }
+  end
+
+  defp label(path) do
+    Enum.find_value(editable(), fn {_, fs} ->
+      Enum.find_value(fs, fn {p, label, _, _, _} -> p == path && label end)
+    end)
   end
 
   # Writes the saved settings and nothing else: the settings file is not
@@ -665,7 +765,9 @@ defmodule Wallboard.Settings do
   @doc """
   The settings a person can change on the settings page, in page order:
   {section, [{path, label, type, restart?, help}]}. Types: :string,
-  :integer, :lines (a list, one per line), :secret, and {:choice, options}.
+  :integer, :lines (a list, one per line), :secret, :key (a secret kept in
+  the key store, not in the settings, see `keep_keys/1`), and
+  {:choice, options}.
   `restart?` marks the few that only take effect when the board restarts.
   """
   def editable do
@@ -713,8 +815,12 @@ defmodule Wallboard.Settings do
       {"New Relic",
        [
          {[:new_relic, :account_id], "Account number", :string, false, nil},
-         {[:new_relic, :api_key_ref], "Where the API key is in 1Password", :string, true,
-          "An op:// address. Read once, when the board starts"},
+         {[:new_relic, :api_key], "New Relic API key", :key, false,
+          "Paste the User key (it starts with NRAK-). Kept in your keychain on a Mac, in a " <>
+            "file only you can read on Linux. Type a new one to replace it; empty the field " <>
+            "(- in vitalaize setup) to remove it"},
+         {[:new_relic, :api_key_ref], "Or where it is in 1Password", :string, false,
+          "An op:// address, read with 1Password's op command. Used when no key is typed above"},
          {[:new_relic, :region], "Region", {:choice, ["us", "eu"]}, false, nil}
        ]},
       {"Collectors on other machines",
@@ -803,7 +909,7 @@ defmodule Wallboard.Settings do
   def shown(settings) do
     for {_, fs} <- editable(), {path, _, type, _, _} <- fs, into: %{} do
       value = current(settings, path, type)
-      text = if type == :secret and value != nil, do: @kept, else: to_text(type, value)
+      text = if type in [:secret, :key] and value != nil, do: @kept, else: to_text(type, value)
       {Enum.join(path, "."), text}
     end
   end
@@ -939,6 +1045,27 @@ defmodule Wallboard.Settings do
     if raw in options, do: {:ok, raw}, else: {:error, "pick one of #{Enum.join(options, ", ")}"}
   end
 
+  # A key for the key store. It is held inside a function until it is
+  # kept, so printing what a save holds never shows it (see keep_keys/1).
+  # No message here repeats what was typed.
+  defp parse(:key, raw, _path) do
+    value = String.trim(raw)
+
+    cond do
+      value == "" ->
+        {:ok, nil}
+
+      String.starts_with?(value, "op://") ->
+        {:error, "that is a 1Password address: put it in Or where it is in 1Password"}
+
+      not (value =~ ~r/\A[\w.\-]{8,256}\z/) ->
+        {:error, "use the key exactly as New Relic shows it"}
+
+      true ->
+        {:ok, {:store, fn -> value end}}
+    end
+  end
+
   defp parse(_type, raw, path) do
     value = String.trim(raw)
 
@@ -951,7 +1078,8 @@ defmodule Wallboard.Settings do
         {:error, "use a profile name from ~/.aws/config"}
 
       path == [:new_relic, :api_key_ref] and not String.starts_with?(value, "op://") ->
-        {:error, "use the op:// address from 1Password, not the key itself"}
+        {:error,
+         "use the op:// address from 1Password. To give the key itself, put it in New Relic API key"}
 
       path == [:alerts, :slack_webhook] and not (value =~ ~r{^https://\S+$}) ->
         {:error, "use the https:// address Slack gave you"}
@@ -1393,6 +1521,12 @@ defmodule Wallboard.Settings do
       )
     end)
     |> update_in([:token], &blank_to_nil/1)
+    # Only a note that a key is kept counts; a settings file never holds
+    # the key itself.
+    |> update_in([:new_relic, :api_key], fn
+      %{} = note -> note
+      _ -> nil
+    end)
     |> Map.update(:updates, @defaults.updates, &updates/1)
     |> update_in([:archive, :path], &db_path/1)
     |> update_in([:brand, :logo], fn

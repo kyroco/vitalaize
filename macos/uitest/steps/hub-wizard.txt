@@ -116,7 +116,8 @@ pick "Prod: same build as dev?" "acme-prod-read"
 toggle "Show the New Relic page"
 wait 5 "Account ID"
 type "Account ID" "1234567"
-type "1Password reference for the API key" "op://Private/NewRelic/key"
+type "New Relic API key" "NRAK-UITEST0WIZARD0KEY00000001"
+type "Or where it is in 1Password" "op://Private/NewRelic/key"
 type "Phone number" "+15550100"
 pick "Send as" "SMS"
 scroll bottom
@@ -132,11 +133,11 @@ expect "ci.yml"
 expect "dev acme-dev-read, prod acme-prod-read"
 expect "to +15550100 by SMS"
 snap 05-review
-# The board would read 1Password and could send texts: both go off again
-# before the install, so the run touches neither.
+# Texts go off again before the install, so the run sends none. The New
+# Relic page stays on with the key typed above: with no checks in the
+# settings the board never calls New Relic, so the run reaches nothing.
 click "Back"
 wait "Name at the top"
-toggle "Show the New Relic page"
 type "Phone number" ""
 pick "Send as" "iMessage"
 pick "Prod: same build as dev?" ""

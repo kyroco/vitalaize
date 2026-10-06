@@ -149,9 +149,9 @@ defmodule Wallboard.Application do
     ] ++
       archive_children(settings) ++
       if(new_relic?,
-        # Reads the New Relic key once, in the background, so a 1Password
-        # prompt never holds up the rest of the board. With page 2 turned
-        # off, 1Password is never asked.
+        # Reads the New Relic key in the background, so a 1Password prompt
+        # never holds up the rest of the board. Settings.Watch reads it
+        # again when it changes. With page 2 turned off, it is never read.
         do: [
           Supervisor.child_spec({Task, fn -> Wallboard.Secrets.load_new_relic(settings) end},
             id: :load_new_relic_key
