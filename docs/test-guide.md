@@ -203,10 +203,10 @@ machine as removed, not as down. It asks the hub on every third failed try, and
 tries grow to a minute apart while it is away, so after a long time off this can
 take up to about three minutes. The hub tells each collector the board's port
 every time it connects, so a collector asks in the right place even after the
-board's port was changed in Settings. Only a collector that has not connected
-since the board moved, and was paired by an older VitalAIze that did not save
-the board's port, asks on the board's usual port, 4747, and stays on down until
-it is paired again.
+board's port was changed in Settings. A collector that has not connected since
+the board moved asks on the port it last knew (4747 if an older VitalAIze
+paired it); if it was removed meanwhile, it stays on down until it is paired
+again.
 
 To connect it again: **Pair again…** in the app. On Linux, run
 `bin/vitalaize setup` and, at "A hub's address to pair again, or Enter to keep
