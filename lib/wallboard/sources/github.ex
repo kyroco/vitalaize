@@ -120,9 +120,12 @@ defmodule Wallboard.Sources.GitHub do
          {:ok, repo} <- parse_graphql(gql_json, gh.gate_check) do
       deploys = fetch_deploys(gh, prev, now)
 
-      # A run held for a deploy approval has jobs that ran already.
+      # Every run the running list shows, so the deploys too: a deploy held
+      # for an approval over a weekend is not in the last day's runs. Its
+      # jobs that ran already are what its panel shows.
       jobs =
-        runs
+        (runs ++ deploys.runs)
+        |> Enum.uniq_by(& &1.id)
         |> Enum.filter(&(&1.status in [:in_progress, :waiting]))
         |> Map.new(fn run ->
           case GitHubCollector.fetch_jobs(gh.repo, run.id, timeout: 30_000) do

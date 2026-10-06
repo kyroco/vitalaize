@@ -31,7 +31,8 @@ defmodule Wallboard.GitHubFetchTest do
         elif [ -f "$WALLBOARD_TEST_GH/jobs.json" ]; then cat "$WALLBOARD_TEST_GH/jobs.json"
         else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
       *"/actions/workflows/"*)
-        echo '{"workflow_runs":[]}' ;;
+        if [ -f "$WALLBOARD_TEST_GH/deploy_runs.json" ]; then cat "$WALLBOARD_TEST_GH/deploy_runs.json"
+        else echo '{"workflow_runs":[]}'; fi ;;
       *"/actions/runners?"*)
         if [ -f "$WALLBOARD_TEST_GH/runners.json" ]; then cat "$WALLBOARD_TEST_GH/runners.json"
         elif [ -f "$WALLBOARD_TEST_GH/runners_refused" ]; then
@@ -214,6 +215,38 @@ defmodule Wallboard.GitHubFetchTest do
 
       assert [%{status: :waiting, step: "Waiting for approval"}] =
                GitHub.summary(facts, rockets, @now).running
+    end
+
+    test "a deploy held for an approval since before the last day has its jobs read",
+         %{dir: dir} do
+      lists(dir, ["gate.yml", "prod-deploy.yml"])
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+
+      # Held since two days ago: in the deploy list, not in the last day's runs.
+      File.write!(
+        Path.join(dir, "deploy_runs.json"),
+        Jason.encode!(%{
+          workflow_runs: [
+            %{
+              id: 77,
+              name: "Deploy",
+              path: ".github/workflows/prod-deploy.yml",
+              event: "push",
+              head_branch: "main",
+              head_sha: "abc77",
+              status: "waiting",
+              created_at: "2026-09-28T17:00:00Z",
+              run_started_at: "2026-09-28T17:00:00Z",
+              updated_at: "2026-09-28T17:20:00Z"
+            }
+          ]
+        })
+      )
+
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      assert "runs/77/jobs?per_page=100&page=1" in asked(dir)
+      assert %{list: [_ | _]} = facts.jobs[77]
     end
 
     test "a job without the self-hosted label is yours when GitHub lists its runner",
