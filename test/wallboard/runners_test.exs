@@ -288,6 +288,44 @@ defmodule Wallboard.RunnersTest do
     end
   end
 
+  describe "Trends, with GitHub's list" do
+    test "a job without the label counts as yours when GitHub listed its runner, as on the Git tab" do
+      start_supervised!({Store, path: ":memory:"})
+      now = DateTime.utc_now()
+      done = DateTime.to_unix(now) - 3600
+
+      # As a workflow with `runs-on: acme-mac` asks: no self-hosted label.
+      :ok =
+        Store.put_jobs("acme/shop", 1, [
+          %{
+            repo: "acme/shop",
+            job_id: 1,
+            run_id: 1,
+            completed_at: done,
+            duration_s: 90,
+            runner_name: "acme-mini-1",
+            runner_group_name: "Default",
+            labels: "acme-mac"
+          }
+        ])
+
+      settings = Settings.merge(Settings.defaults(), %{github: %{repos: ["acme/shop"]}})
+      card = fn t, key -> Enum.find(t.cards, &(&1.key == key)).value end
+
+      # Before GitHub's list named it, the job is not known.
+      before = Trends.build(settings, 7, now)
+      assert card.(before, :minutes_avoided) == 0
+
+      # The board read GitHub's list of the repository's runners.
+      :ok = Store.put_runner_names("acme/shop", ["acme-mini-1"], DateTime.to_unix(now))
+      assert Store.runner_names("acme/shop") == ["acme-mini-1"]
+
+      t = Trends.build(settings, 7, now)
+      assert card.(t, :minutes_avoided) == 2
+      assert_in_delta card.(t, :own_runner_hours), 90 / 3600, 1.0e-9
+    end
+  end
+
   describe "Trends" do
     test "runner time is split into GitHub's and your own, with the paid minutes avoided" do
       start_supervised!({Store, path: ":memory:"})

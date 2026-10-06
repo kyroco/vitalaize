@@ -130,6 +130,7 @@ defmodule Wallboard.Sources.GitHub do
         end)
 
       runners = fetch_runners(gh, prev, now)
+      listed = known_runners(gh.repo, runners, now)
 
       {:ok,
        %{
@@ -140,8 +141,7 @@ defmodule Wallboard.Sources.GitHub do
          queue: repo.queue,
          prs: repo.prs,
          jobs: jobs,
-         own_by_run:
-           own_by_run(gh.repo, runs, jobs, prev, now, Runners.listed_names(runners.listed)),
+         own_by_run: own_by_run(gh.repo, runs, jobs, prev, now, listed),
          runners: runners.listed,
          runners_checked_at: runners.checked_at
        }}
@@ -227,6 +227,23 @@ defmodule Wallboard.Sources.GitHub do
             do: %{listed: :hidden, checked_at: now},
             else: %{listed: last, checked_at: now}
       end
+    end
+  end
+
+  # The names of the runners GitHub lists as the repository's own, and,
+  # with the archive on, every one it listed before: the archive keeps
+  # them (when a list was just read) so Trends judges a job as this does,
+  # after a runner made for one job is gone.
+  defp known_runners(repo, runners, now) do
+    names = Runners.listed_names(runners.listed)
+
+    if Process.whereis(Store) do
+      if is_list(runners.listed) and runners.checked_at == now,
+        do: Store.put_runner_names(repo, names, DateTime.to_unix(now))
+
+      Enum.uniq(names ++ Store.runner_names(repo))
+    else
+      names
     end
   end
 

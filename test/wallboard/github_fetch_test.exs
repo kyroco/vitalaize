@@ -269,6 +269,17 @@ defmodule Wallboard.GitHubFetchTest do
       assert kept.runners == facts.runners
     end
 
+    test "are kept in the archive when read, for Trends", %{dir: dir} do
+      start_supervised!({Store, path: ":memory:"})
+      File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
+      [rockets, _] = repos(@rockets)
+
+      assert {:ok, _} = GitHub.fetch(rockets, nil, @now)
+
+      assert Store.runner_names("acme/rockets") ==
+               ["acme-linux-1", "acme-mini-1", "acme-mini-2"]
+    end
+
     test "that GitHub refuses to list are not asked for again within the hour", %{dir: dir} do
       File.write!(Path.join(dir, "runners_refused"), "")
       [rockets, _] = repos(@rockets)

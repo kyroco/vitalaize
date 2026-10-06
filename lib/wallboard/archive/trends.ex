@@ -449,6 +449,9 @@ defmodule Wallboard.Archive.Trends do
   # Prod deploys count only for the first repository, as on the status line.
   defp github_hours({gh, index}, from) do
     {dev, prod} = if index == 0, do: {gh.dev_deploy, gh.prod_deploy}, else: {"", ""}
+    # The runners GitHub has listed as the repository's own: a job on one
+    # is yours here as on the Git tab, with or without the label.
+    listed = Store.runner_names(gh.repo)
 
     Store.query(
       """
@@ -469,7 +472,7 @@ defmodule Wallboard.Archive.Trends do
           """,
           [from, gh.repo]
         ),
-        &job_hour/1
+        &job_hour(&1, listed)
       ) ++
       Enum.map(
         Store.query(
@@ -485,11 +488,11 @@ defmodule Wallboard.Archive.Trends do
   end
 
   # One saved job as an hour's sums, by whose machine ran it.
-  defp job_hour(%{h: h, duration_s: d} = job) do
+  defp job_hour(%{h: h, duration_s: d} = job, listed) do
     d = d || 0
     base = %{h: h, runner_s: d, jobs: 1}
 
-    case Wallboard.Runners.kind(job) do
+    case Wallboard.Runners.kind(job, listed) do
       :github -> Map.merge(base, %{github_s: d, github_jobs: 1})
       :own -> Map.merge(base, %{own_s: d, own_jobs: 1, own_minutes: div(d + 59, 60)})
       :unknown -> Map.put(base, :unknown_s, d)
