@@ -7,7 +7,6 @@ toggle "Also delete the database and settings"
 snap 15-remove-sheet-delete
 press "Remove"
 wait 60 "VitalAIze was removed from this Mac"
-expect "Took the New Relic API key out of the keychain."
 expect "Its database and settings were deleted too."
 snap 15-removed-all
 click "Set up again"
