@@ -27,6 +27,7 @@ defmodule Wallboard.RunnerStatesTest do
 
   test "past the limit, the runners that stopped longest ago are the ones let go" do
     start_supervised!(RunnerStates)
+    # Stands in for the collector's stream; it stays up the whole test.
     stream = spawn(fn -> Process.sleep(:infinity) end)
 
     # 100 runners made for one job each, a-000 to a-099, stop one by one.
@@ -50,6 +51,7 @@ defmodule Wallboard.RunnerStatesTest do
 
   test "a runner the collector stops listing shows offline" do
     start_supervised!(RunnerStates)
+    # Stands in for the collector's stream; it stays up the whole test.
     stream = spawn(fn -> Process.sleep(:infinity) end)
 
     RunnerStates.put("air", stream, %{"air-1" => :busy, "air-2" => :online})

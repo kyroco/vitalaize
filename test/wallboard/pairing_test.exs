@@ -274,12 +274,17 @@ defmodule Wallboard.PairingTest do
     end
 
     test "a request nobody answers runs out, and gives no certificate", %{dir: dir} do
-      port = start_hub(dir, %{expire_ms: 400, confirm_ms: 100})
+      port = start_hub(dir)
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
       task = ask(port, dir, "air")
       assert_receive {:code, "air", _}, 5_000
       assert_receive {:mailbox, :changed}, 5_000
       assert [%{id: id}] = Door.pending()
+
+      # Its time runs out by moving its start back, not by waiting.
+      :sys.replace_state(Door, fn s ->
+        update_in(s.requests[id], &%{&1 | made: &1.made - Pairing.limits().expire_ms})
+      end)
 
       assert {:error, :expired} = Task.await(task, 5_000)
       # The mailbox hears that the item went away without anyone asking.
@@ -553,8 +558,8 @@ defmodule Wallboard.PairingTest do
       # What it said before it stopped: at least three failed tries.
       assert length(said(:air)) >= 3
 
-      # Longer than its longest wait between tries: it has stopped.
-      Process.sleep(600)
+      # It has stopped: a try that comes due now is not made.
+      send(Process.whereis(:air), :connect)
       assert %{phase: :removed} = Client.status(:air)
       assert said(:air) == []
     end
@@ -576,7 +581,7 @@ defmodule Wallboard.PairingTest do
 
     test "the door answers only the machine that holds the key, on a fresh challenge",
          %{dir: dir} do
-      port = start_hub(dir, %{check_ms: 300})
+      port = start_hub(dir)
       air = pair!(port, dir, "air")
       bee = pair!(port, dir, "bee")
       from = {127, 0, 0, 1}
@@ -618,10 +623,15 @@ defmodule Wallboard.PairingTest do
       assert {:error, :bad_request} =
                Door.check(from, made_up, air.tls.cert_pem, proof.(air.tls.key_pem, made_up))
 
-      Process.sleep(400)
+      # One made just over a minute ago, sealed as this door seals them,
+      # rather than waiting for a real one to run out.
+      secret = :sys.get_state(Door).secret
+      at = System.monotonic_time(:millisecond) - Pairing.limits().check_ms - 1
+      body = :crypto.strong_rand_bytes(16) <> <<at::signed-64>>
+      old = body <> :crypto.mac(:hmac, :sha256, secret, body)
 
       assert {:error, :bad_request} =
-               Door.check(from, challenge, air.tls.cert_pem, proof.(air.tls.key_pem, challenge))
+               Door.check(from, old, air.tls.cert_pem, proof.(air.tls.key_pem, old))
 
       # Over HTTP: anything but an empty body or a whole answer is refused.
       assert {:error, {:hub, _}} = post_check(port, %{challenge: "zz", cert: "x", proof: "y"})
@@ -772,6 +782,7 @@ defmodule Wallboard.PairingTest do
         flunk("waited too long")
 
       true ->
+        # A pause between looks at a condition, not a wait for a timer.
         Process.sleep(25)
         wait_until(check, tries - 1)
     end
@@ -949,9 +960,7 @@ defmodule Wallboard.PairingTest do
     end
 
     test "a machine that gave up before Approve keeps the certificate it holds", %{dir: dir} do
-      stop_supervised!(Door)
       link = Path.join(dir, "link")
-      start_supervised!({Door, dir: link, link_port: Hub.port(), limits: %{gone_ms: 400}})
 
       # The machine holds a certificate already, asks for another, and is
       # stopped. The owner approves a moment later.
@@ -1045,16 +1054,15 @@ defmodule Wallboard.PairingTest do
       assert Door.pending() == []
     end
 
-    test "a request that never shows its number is dropped, and frees its address", %{dir: dir} do
-      stop_supervised!(Door)
-
-      start_supervised!(
-        {Door, dir: Path.join(dir, "link"), link_port: Hub.port(), limits: %{confirm_ms: 50}}
-      )
-
+    test "a request that never shows its number is dropped, and frees its address" do
       {params, nonce} = start_params("air")
       {:ok, %{id: id}} = Door.start({10, 0, 0, 1}, params)
-      Process.sleep(120)
+
+      # Its time to show the number runs out by moving its start back.
+      :sys.replace_state(Door, fn s ->
+        update_in(s.requests[id], &%{&1 | made: &1.made - Pairing.limits().confirm_ms})
+      end)
+
       assert {:error, :gone} = Door.confirm({10, 0, 0, 1}, id, nonce)
       assert {:ok, _} = open({10, 0, 0, 1}, "air")
     end
@@ -1253,8 +1261,7 @@ defmodule Wallboard.PairingTest do
       assert page.assigns.notice =~ "air is disconnected"
       assert Enum.map(page.assigns.linked, & &1.name) == [hub.name, "box"]
       assert_receive {:air, :removed}, 5_000
-      Process.sleep(700)
-      assert Map.keys(Hub.connected()) == ["box"]
+      wait_until(fn -> Map.keys(Hub.connected()) == ["box"] end)
 
       # Its next connect is refused, with the same certificate.
       start_client(dir, air, :air_again)

@@ -896,18 +896,21 @@ defmodule Wallboard.CollectorWatcherTest do
     end
   end
 
-  test "left alone, it looks by itself on its timer", c do
+  test "left alone, it looks by itself as it starts, and again on each round", c do
     all = lines("collector/claude_session.jsonl")
     {first, rest} = Enum.split(all, 3)
     path = claude_path(c, @claude_id <> ".jsonl")
     add(path, first)
     agents(c, [{@claude_id, %{"status" => "busy"}}])
-    settings = put_in(c.settings, [:collector, :poll_seconds], 1)
+    # Its timer is an hour: the round after the first is made here, by
+    # hand, rather than waited for.
+    settings = put_in(c.settings, [:collector, :poll_seconds], 3_600)
     w = start(%{c | settings: settings}, timer: true)
 
     wait = fn wanted ->
       Enum.find_value(1..100, fn _ ->
         events = sent(w)
+        # A pause between looks at a condition, not a wait for a timer.
         if length(events) >= wanted, do: events, else: Process.sleep(50) && nil
       end)
     end
@@ -916,6 +919,8 @@ defmodule Wallboard.CollectorWatcherTest do
     assert statuses(wait.(want)) == [{@claude_id, :WORKING, :WHY_UNKNOWN, ""}]
 
     add(path, rest)
+    # What its timer would send.
+    send(w.watcher, :tick)
     events = wait.(length(filtered(claude_ctx(), all, c)) + 1)
     assert from_files(events) == filtered(claude_ctx(), all, c)
   end

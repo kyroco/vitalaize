@@ -721,7 +721,9 @@ defmodule Wallboard.OldCollectorTest do
       assert Store.counts().total == 0
       refute File.exists?(Path.join(c.dir, "inbox"))
       assert Mailbox.items() == []
-      refute_receive {:mailbox, :changed}, 100
+      # Each call above was answered before it returned, so anything it
+      # announced is here already.
+      refute_received {:mailbox, :changed}
       assert Store.get_meta("ingest_token") == "the-old-shared-key"
     end
   end

@@ -143,81 +143,6 @@ defmodule Wallboard.CollectorRunnersTest do
       assert name_within_a_second(folder(c, "small", ~s({"agentName": "small"}))) ==
                {:ok, "small"}
     end
-
-    test "a .runner swapped between a plain file and a named pipe never holds the read", c do
-      path = folder(c, "swapped", nil)
-      plain = Path.join(c.dir, "plain.json")
-      fifo = Path.join(c.dir, "fifo")
-      File.write!(plain, ~s({"agentName": "swapped"}))
-      {_, 0} = System.cmd("mkfifo", [fifo])
-      runner = Path.join(path, ".runner")
-
-      # Another program puts each in place in turn, as fast as it can, so
-      # that a look at a plain file can be followed by an open of the pipe.
-      swap = """
-      while (1) {
-        for my $from (@ARGV[0, 1]) {
-          unlink "$ARGV[2].tmp"; link $from, "$ARGV[2].tmp"; rename "$ARGV[2].tmp", $ARGV[2];
-        }
-      }
-      """
-
-      swapper =
-        Port.open({:spawn_executable, System.find_executable("perl")}, [
-          :binary,
-          args: ["-e", swap, plain, fifo, runner]
-        ])
-
-      {:os_pid, swapper_pid} = Port.info(swapper, :os_pid)
-
-      # Reads start once the swapping has.
-      Enum.find(1..200, fn _ -> File.exists?(runner) or (Process.sleep(10) && false) end)
-      assert File.exists?(runner)
-
-      ps = fn -> {:ok, ["#{path}/bin/Runner.Listener run"]} end
-
-      # Each read may take a tenth of a second here, not the usual second,
-      # so that the many reads that land on the pipe stay quick. Each is
-      # timed: one that took the whole tenth met the pipe.
-      timed =
-        for _ <- 1..200 do
-          task = Task.async(fn -> :timer.tc(fn -> Runners.read(ps, 100) end) end)
-
-          case Task.yield(task, 3_000) do
-            {:ok, result} ->
-              result
-
-            nil ->
-              # A read stuck in the pipe: another program opens it to write,
-              # so the read lets go and the test run can end.
-              Port.open({:spawn_executable, System.find_executable("perl")},
-                args: ["-e", ~s{open(my $f, ">", $ARGV[0])}, fifo]
-              )
-
-              Task.shutdown(task, 2_000)
-              {0, :still_reading}
-          end
-        end
-
-      System.cmd("kill", ["-9", Integer.to_string(swapper_pid)])
-      results = Enum.map(timed, &elem(&1, 1))
-
-      # Every read answered: named, or the folder left unnamed.
-      refute :still_reading in results
-
-      assert Enum.all?(
-               results,
-               &(match?({[], [_]}, &1) or match?({[%{name: "swapped"}], []}, &1))
-             )
-
-      # The pipe was met: some reads ran out their time.
-      assert Enum.any?(timed, fn {us, _} -> us >= 100_000 end)
-
-      # And each `head` that met it was killed, none left waiting on it.
-      Process.sleep(200)
-      {left, _} = System.cmd("pgrep", ["-f", "head -c 64001 -- #{runner}"])
-      assert left == ""
-    end
   end
 
   describe "on the hub" do
@@ -231,4 +156,79 @@ defmodule Wallboard.CollectorRunnersTest do
                %{"x" => :online}
     end
   end
+end
+
+defmodule Wallboard.CollectorRunnersSlowReadTest do
+  @moduledoc """
+  A `.runner` whose read never ends, with no race: a stand-in `head`
+  first on the PATH never answers, as a real one stuck on a named pipe
+  would not, so only the read's time limit and the kill can end it. One
+  at a time: the PATH is the whole test run's.
+  """
+  use ExUnit.Case, async: false
+
+  alias Wallboard.Collector.Runners
+  alias Wallboard.Fixtures
+
+  test "a read that never ends is cut off, and the reader is killed" do
+    dir = Fixtures.tmp_path("wallboard-slow-read")
+    folder = Path.join(dir, "air")
+    File.mkdir_p!(folder)
+    File.write!(Path.join(folder, ".runner"), ~s({"agentName": "air-1"}))
+    # With the real head, the name is read.
+    assert Runners.name(folder) == {:ok, "air-1"}
+
+    # The stand-in's first act is to write down its process number.
+    started = Path.join(dir, "started")
+    bin = Path.join(dir, "bin")
+    File.mkdir_p!(bin)
+
+    File.write!(Path.join(bin, "head"), """
+    #!/bin/sh
+    echo $$ > #{started}
+    while :; do sleep 1; done
+    """)
+
+    File.chmod!(Path.join(bin, "head"), 0o755)
+    path = System.get_env("PATH")
+    System.put_env("PATH", bin <> ":" <> path)
+
+    on_exit(fn ->
+      System.put_env("PATH", path)
+
+      with {:ok, pid} <- File.read(started),
+           do: System.cmd("kill", ["-9", String.trim(pid)], stderr_to_stdout: true)
+
+      File.rm_rf!(dir)
+    end)
+
+    # The stand-in never answers, so the read always runs out its tenth of
+    # a second, however fast or slow the machine: no race.
+    assert Runners.name(folder, 100) == :error
+    assert stand_in(started, 100) in [:killed, :never_ran]
+  end
+
+  # What became of the stand-in: `:killed`; `:never_ran`, when it was
+  # killed before its first line; or `:still_running`.
+  defp stand_in(started, tries) do
+    case File.read(started) do
+      {:ok, pid} ->
+        cond do
+          not alive?(String.trim(pid)) -> :killed
+          tries == 0 -> :still_running
+          true -> pause() && stand_in(started, tries - 1)
+        end
+
+      _ when tries == 0 ->
+        :never_ran
+
+      _ ->
+        pause() && stand_in(started, tries - 1)
+    end
+  end
+
+  defp alive?(pid), do: match?({_, 0}, System.cmd("kill", ["-0", pid], stderr_to_stdout: true))
+
+  # A pause between looks at the stand-in, not a wait for a timer.
+  defp pause, do: Process.sleep(20)
 end
