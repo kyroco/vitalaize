@@ -3,7 +3,8 @@ defmodule Wallboard.GitHubFetchTest do
   # a time: the PATH is this whole test run's.
   use ExUnit.Case, async: false
 
-  alias Wallboard.{Fixtures, Settings}
+  alias Wallboard.{Fixtures, Settings, Store}
+  alias Wallboard.Archive.GitHubCollector
   alias Wallboard.Sources.GitHub
 
   @now ~U[2026-09-30 18:00:00Z]
@@ -21,7 +22,13 @@ defmodule Wallboard.GitHubFetchTest do
       *"/actions/workflows?"*)
         if [ -f "$WALLBOARD_TEST_GH/workflows.json" ]; then cat "$WALLBOARD_TEST_GH/workflows.json"
         else echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi ;;
-      *"/actions/workflows/"*|*"/actions/runs?"*)
+      *"/actions/runs?"*)
+        if [ -f "$WALLBOARD_TEST_GH/runs.json" ]; then cat "$WALLBOARD_TEST_GH/runs.json"
+        else echo '{"workflow_runs":[]}'; fi ;;
+      *"/actions/runs/"*"/jobs"*)
+        if [ -f "$WALLBOARD_TEST_GH/jobs.json" ]; then cat "$WALLBOARD_TEST_GH/jobs.json"
+        else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
+      *"/actions/workflows/"*)
         echo '{"workflow_runs":[]}' ;;
       *"/actions/runners?"*)
         if [ -f "$WALLBOARD_TEST_GH/runners.json" ]; then cat "$WALLBOARD_TEST_GH/runners.json"
@@ -141,6 +148,71 @@ defmodule Wallboard.GitHubFetchTest do
     assert {:ok, facts} = GitHub.fetch(boosters, prev, @now)
     assert facts.workflows == nil and facts.deploys == []
     refute Enum.any?(asked(dir), &String.starts_with?(&1, "workflows"))
+  end
+
+  describe "which of your runners ran each run" do
+    defp runs(dir, runs) do
+      File.write!(
+        Path.join(dir, "runs.json"),
+        Jason.encode!(%{
+          workflow_runs:
+            for {id, status} <- runs do
+              %{
+                id: id,
+                name: "CI",
+                path: ".github/workflows/ci.yml",
+                event: "push",
+                head_branch: "main",
+                head_sha: "abc#{id}",
+                status: status,
+                conclusion: if(status == "completed", do: "success"),
+                created_at: "2026-09-30T17:00:00Z",
+                run_started_at: "2026-09-30T17:00:00Z",
+                updated_at: "2026-09-30T17:30:00Z"
+              }
+            end
+        })
+      )
+    end
+
+    test "a run keeps its runners after it finishes, until it leaves the last day's list",
+         %{dir: dir} do
+      [rockets, _] = repos(@rockets)
+      File.write!(Path.join(dir, "jobs.json"), Fixtures.read!("github/jobs_runners.json"))
+
+      # While it runs, its jobs say which runners it is on.
+      runs(dir, [{1, "in_progress"}])
+      assert {:ok, first} = GitHub.fetch(rockets, nil, @now)
+      assert first.own_by_run == %{1 => ["acme-mini-1", "acme-mini-2"]}
+      assert "runs/1/jobs?per_page=100" in asked(dir)
+
+      # Finished: its jobs are no longer asked for, and it keeps them.
+      runs(dir, [{1, "completed"}])
+      assert {:ok, done} = GitHub.fetch(rockets, first, DateTime.add(@now, 30))
+      refute Enum.any?(asked(dir), &(&1 =~ "/jobs"))
+      assert done.own_by_run == %{1 => ["acme-mini-1", "acme-mini-2"]}
+
+      # Out of the last day's list: forgotten.
+      runs(dir, [{2, "completed"}])
+      assert {:ok, later} = GitHub.fetch(rockets, done, DateTime.add(@now, 60))
+      assert later.own_by_run == %{}
+    end
+
+    test "a run that started and finished between polls gets its runners from the archive",
+         %{dir: dir} do
+      start_supervised!({Store, path: ":memory:"})
+      [rockets, _] = repos(@rockets)
+
+      jobs =
+        GitHubCollector.parse_jobs(Fixtures.read!("github/jobs_runners.json"), "acme/rockets", 7)
+
+      :ok = Store.put_jobs("acme/rockets", 7, Enum.map(jobs, &%{&1 | run_id: 7}))
+
+      runs(dir, [{7, "completed"}, {8, "completed"}])
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, DateTime.add(@now, 5 * 86_400))
+      # Only the finished jobs are saved: the one on acme-mini-1.
+      assert facts.own_by_run == %{7 => ["acme-mini-1"]}
+    end
   end
 
   describe "the repository's own runners" do
