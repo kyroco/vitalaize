@@ -222,6 +222,17 @@ defmodule Wallboard.Archive.GitHubCollector do
   end
 
   @doc """
+  Whether job rows are a finished run's final jobs for `attempt`: every job
+  done and none from a later attempt. Right after a rerun starts, GitHub
+  already answers with the new attempt's jobs, still waiting.
+  """
+  def final_jobs?(rows, attempt) do
+    Enum.all?(rows, fn j ->
+      j.status == "completed" and (is_nil(attempt) or is_nil(j.attempt) or j.attempt <= attempt)
+    end)
+  end
+
+  @doc """
   Rows for jobs already decoded from a REST reply. The board's own check
   reads running runs' jobs with this too, so a run's panel shows the same
   job whether it came from that check or from the database.

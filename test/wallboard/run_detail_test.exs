@@ -555,6 +555,59 @@ defmodule Wallboard.RunDetailTest do
     assert length(asked(dir)) == 1
   end
 
+  test "jobs of a rerun still going are never kept as a finished run's jobs", %{dir: dir} do
+    use_settings(true)
+    start_supervised!({Store, path: ":memory:"})
+
+    # The board still shows attempt 1 as failed; GitHub already runs attempt 2.
+    File.write!(
+      Path.join(dir, "jobs.json"),
+      jobs_json([
+        job(1, "Build", "completed", "success", started: 890, completed: 760),
+        job(2, "Tests", "queued", nil, attempt: 2, created: 20)
+      ])
+    )
+
+    File.write!(Path.join(dir, "go"), "")
+    view = open_board()
+    send_facts(view, facts([run_json(101, "completed", "failure")]))
+    view |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    html = render_async(view, 5_000)
+
+    refute html =~ "waiting for a runner"
+    assert html =~ "running it again"
+    assert Store.run_jobs(@repo, 101, 2) == nil
+
+    # Jobs of an unfinished attempt saved some other way are not used either.
+    rows =
+      Wallboard.Archive.GitHubCollector.job_rows(
+        [job(2, "Tests", "queued", nil, attempt: 2)],
+        @repo,
+        101
+      )
+
+    :ok = Store.put_jobs(@repo, 101, rows)
+    assert Store.run_jobs(@repo, 101, 2) == nil
+
+    # Once attempt 2 has finished, its final jobs are read.
+    File.write!(
+      Path.join(dir, "jobs.json"),
+      jobs_json([
+        job(1, "Build", "completed", "success", started: 890, completed: 760),
+        job(2, "Tests", "completed", "success", attempt: 2, started: 300, completed: 100)
+      ])
+    )
+
+    other = open_board()
+    send_facts(other, facts([run_json(101, "completed", "success", attempt: 2)]))
+    other |> element(~s|button.recent-row[phx-value-id="101"]|) |> render_click()
+    html = render_async(other, 5_000)
+
+    refute html =~ "waiting for a runner"
+    assert html =~ "Jobs · 2"
+    assert length(asked(dir)) == 2
+  end
+
   test "a run made again while its panel is open reads the new attempt's jobs", %{dir: dir} do
     use_settings(false)
     File.write!(Path.join(dir, "go"), "")

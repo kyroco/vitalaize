@@ -16,6 +16,7 @@ defmodule Wallboard.RunJobs do
 
   use GenServer
 
+  alias Wallboard.Archive.GitHubCollector
   alias Wallboard.Sources.GitHub
   alias Wallboard.Store
 
@@ -94,10 +95,16 @@ defmodule Wallboard.RunJobs do
     end
   end
 
-  defp read({repo, run_id, _attempt}) do
+  # Only a finished run's final jobs are kept or saved: a rerun that starts
+  # between the board's check and this read answers with its own jobs.
+  defp read({repo, run_id, attempt}) do
     with {:ok, rows} <- GitHub.fetch_run_jobs(repo, run_id) do
-      if archive?(), do: Store.put_jobs(repo, run_id, rows)
-      {:ok, rows}
+      if GitHubCollector.final_jobs?(rows, attempt) do
+        if archive?(), do: Store.put_jobs(repo, run_id, rows)
+        {:ok, rows}
+      else
+        {:error, "GitHub is running it again; its jobs show when that run ends"}
+      end
     end
   end
 
