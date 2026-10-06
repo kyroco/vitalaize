@@ -25,6 +25,29 @@ defmodule Wallboard.RunnerStatesTest do
     assert map_size(states) <= 200
   end
 
+  test "past the limit, the runners that stopped longest ago are the ones let go" do
+    start_supervised!(RunnerStates)
+    stream = spawn(fn -> Process.sleep(:infinity) end)
+
+    # 100 runners made for one job each, a-000 to a-099, stop one by one.
+    for n <- 0..99 do
+      RunnerStates.put("air", stream, %{"a-#{String.pad_leading("#{n}", 3, "0")}" => :busy})
+    end
+
+    # Then two more stop, z-1 and then z-2.
+    RunnerStates.put("air", stream, %{"z-1" => :busy})
+    RunnerStates.put("air", stream, %{"z-2" => :busy})
+    RunnerStates.put("air", stream, %{})
+
+    states = RunnerStates.states()
+    # The latest to stop are kept, whatever their names; the oldest went.
+    assert states["z-1"] == :offline and states["z-2"] == :offline
+    refute Map.has_key?(states, "a-000")
+    refute Map.has_key?(states, "a-001")
+    assert states["a-099"] == :offline
+    assert map_size(states) == 100
+  end
+
   test "a runner the collector stops listing shows offline" do
     start_supervised!(RunnerStates)
     stream = spawn(fn -> Process.sleep(:infinity) end)

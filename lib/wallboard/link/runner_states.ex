@@ -62,25 +62,26 @@ defmodule Wallboard.Link.RunnerStates do
 
   @impl true
   def init(_opts) do
-    # machine => %{stream: pid, ref: monitor, runners: %{name => state}}
+    # machine => %{stream: pid, ref: monitor, runners: %{name => state},
+    #             stopped: the offline names, the latest to stop first}
     {:ok, %{machines: %{}}}
   end
 
   @impl true
   def handle_cast({:put, machine, stream, runners}, s) do
-    {before, s} =
+    {before, stopped} =
       case s.machines[machine] do
         # The same stream: what it listed before and lists no more is off.
-        %{stream: ^stream, runners: before} ->
-          {before, s}
+        %{stream: ^stream, runners: before, stopped: stopped} ->
+          {before, stopped}
 
         # A newer stream of the machine: it starts from what it says now.
         %{ref: ref} ->
           Process.demonitor(ref, [:flush])
-          {%{}, s}
+          {%{}, []}
 
         nil ->
-          {%{}, s}
+          {%{}, []}
       end
 
     ref =
@@ -89,21 +90,27 @@ defmodule Wallboard.Link.RunnerStates do
         _ -> Process.monitor(stream)
       end
 
-    # What it stopped listing now comes first, then what was already off.
-    # Only so many are kept: a collector that keeps naming new runners
-    # must not grow the hub without end.
-    {was_off, was_on} =
-      before
-      |> Enum.reject(fn {name, _} -> Map.has_key?(runners, name) end)
-      |> Enum.split_with(fn {_, state} -> state == :offline end)
+    # The stopped runners, the latest to stop first: what it stopped
+    # listing now, then those already off that it still does not list.
+    # Only so many are kept, the oldest let go first: a collector that keeps
+    # naming new runners must not grow the hub without end.
+    now_gone =
+      for {name, state} <- before,
+          state != :offline,
+          not Map.has_key?(runners, name),
+          do: name
 
-    gone =
-      (Enum.map(was_on, &elem(&1, 0)) |> Enum.sort()) ++
-        (Enum.map(was_off, &elem(&1, 0)) |> Enum.sort())
+    stopped =
+      (Enum.sort(now_gone) ++ Enum.reject(stopped, &Map.has_key?(runners, &1)))
+      |> Enum.take(@offline_max)
 
-    gone = gone |> Enum.take(@offline_max) |> Map.new(&{&1, :offline})
+    entry = %{
+      stream: stream,
+      ref: ref,
+      stopped: stopped,
+      runners: Map.merge(Map.new(stopped, &{&1, :offline}), runners)
+    }
 
-    entry = %{stream: stream, ref: ref, runners: Map.merge(gone, runners)}
     {:noreply, publish(s, put_in(s.machines[machine], entry))}
   end
 
