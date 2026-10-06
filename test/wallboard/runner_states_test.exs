@@ -7,6 +7,89 @@ defmodule Wallboard.RunnerStatesTest do
 
   defp names(from, to), do: Map.new(from..to, &{"r-#{&1}", :online})
 
+  # Stands in for Wallboard.Link.Hub, under its name: it holds one stream
+  # for each machine, as the test says, and answers which one it holds.
+  defmodule FakeHub do
+    use GenServer
+
+    def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: Wallboard.Link.Hub)
+    def hold(machine, pid), do: GenServer.call(Wallboard.Link.Hub, {:hold, machine, pid})
+
+    @impl true
+    def init(streams), do: {:ok, streams}
+
+    @impl true
+    def handle_call({:hold, machine, pid}, _from, s), do: {:reply, :ok, Map.put(s, machine, pid)}
+
+    def handle_call({:current?, machine, pid}, _from, s),
+      do: {:reply, Map.get(s, machine) == pid, s}
+  end
+
+  defp stream, do: spawn(fn -> Process.sleep(:infinity) end)
+
+  # Ends a stand-in stream, and waits until its end was seen.
+  defp stop(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, _, _, _}
+  end
+
+  describe "with the hub" do
+    setup do
+      start_supervised!(FakeHub)
+      start_supervised!(RunnerStates)
+      :ok
+    end
+
+    test "a reconnect keeps the machine's runners: the old stream's end drops nothing" do
+      old = stream()
+      FakeHub.hold("air", old)
+      RunnerStates.put("air", old, %{"air-1" => :busy})
+      assert RunnerStates.states() == %{"air-1" => :busy}
+
+      # The hub takes the machine's new stream and closes the old one,
+      # which is not the machine going away: it says nothing of it.
+      new = stream()
+      FakeHub.hold("air", new)
+      stop(old)
+      assert RunnerStates.states() == %{"air-1" => :busy}
+
+      RunnerStates.put("air", new, %{"air-1" => :online})
+      assert RunnerStates.states() == %{"air-1" => :online}
+    end
+
+    test "a late list from the machine's old stream is not taken, and its end drops nothing" do
+      old = stream()
+      new = stream()
+      FakeHub.hold("air", new)
+
+      RunnerStates.put("air", new, %{"air-1" => :busy})
+      RunnerStates.put("air", old, %{"air-2" => :online})
+      assert RunnerStates.states() == %{"air-1" => :busy}
+
+      stop(old)
+      assert RunnerStates.states() == %{"air-1" => :busy}
+    end
+
+    test "the hub saying the machine went drops its runners, unless a newer stream spoke" do
+      first = stream()
+      FakeHub.hold("air", first)
+      RunnerStates.put("air", first, %{"air-1" => :busy})
+
+      # A newer stream came and spoke before word of the old one's end.
+      second = stream()
+      FakeHub.hold("air", second)
+      RunnerStates.put("air", second, %{"air-1" => :online})
+      Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :down, "air"})
+      assert RunnerStates.states() == %{"air-1" => :online}
+
+      # Now it is gone too.
+      FakeHub.hold("air", nil)
+      Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :down, "air"})
+      assert RunnerStates.states() == %{}
+    end
+  end
+
   test "a collector that keeps naming new runners cannot grow the hub without end" do
     start_supervised!(RunnerStates)
     # Stands in for the collector's stream; it stays up the whole test.
