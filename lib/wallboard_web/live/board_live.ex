@@ -2379,7 +2379,9 @@ defmodule WallboardWeb.BoardLive do
   defp runners(_), do: []
 
   # " · on kyroco-air-1" for a run your own machines ran; nothing for one
-  # GitHub ran.
+  # GitHub ran. Past three names, a count: runners made for one job each
+  # leave a name per job, so a big matrix would list dozens.
+  defp on_own(%{own: [_, _, _, _ | _] = names}), do: " · on #{length(names)} of your runners"
   defp on_own(%{own: [_ | _] = names}), do: " · on " <> Enum.join(names, ", ")
   defp on_own(_), do: nil
 

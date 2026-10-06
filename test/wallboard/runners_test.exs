@@ -230,6 +230,22 @@ defmodule Wallboard.RunnersTest do
       assert r.s.runners_unreported.count == 2
     end
 
+    test "a run on more than three of your runners shows a count, not every name" do
+      many = for i <- 1..30, do: "acme-once-#{i}"
+      three = ["acme-mini-1", "acme-mini-2", "acme-mini-3"]
+
+      r =
+        repo(
+          [run(1, name: "Matrix", ago_min: 20), run(2, name: "Nightly", ago_min: 40)],
+          %{own_by_run: %{1 => many, 2 => three}}
+        )
+
+      html = render_component(&WallboardWeb.BoardLive.git_column/1, r: r, now: @now)
+      assert html =~ "on 30 of your runners"
+      refute html =~ "acme-once-1"
+      assert html =~ "on acme-mini-1, acme-mini-2, acme-mini-3"
+    end
+
     test "a repository with no runners of its own looks as it did" do
       r = repo([run(3, name: "Docs")], %{})
       assert r.s.runners == []
