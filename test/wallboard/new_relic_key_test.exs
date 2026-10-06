@@ -650,8 +650,10 @@ defmodule Wallboard.NewRelicKeyTest do
     test "vitalaize remove on Linux says the key file stays, and where", c do
       Application.put_env(:wallboard, :key_store, Wallboard.KeyStore.File)
       settings_file(c.dir)
-      assert :ok = KeyStore.put("new_relic", @key)
+      # This machine's own settings, not whatever an earlier test loaded.
+      assert :ok = KeyStore.put("new_relic", @key, settings: Settings.load!())
       file = Path.join([c.dir, "keys", "new_relic"])
+      assert File.read!(file) == @key
 
       term = io(["yes"])
       home = Path.join(c.dir, "home")
