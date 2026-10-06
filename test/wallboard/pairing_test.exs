@@ -972,25 +972,28 @@ defmodule Wallboard.PairingTest do
                |> Enum.sort(:desc)
     end
 
-    test "a request whose machine stopped asking leaves the mailbox by itself", %{dir: dir} do
-      stop_supervised!(Door)
-
-      start_supervised!(
-        {Door, dir: Path.join(dir, "link"), link_port: Hub.port(), limits: %{gone_ms: 400}}
-      )
-
+    test "a request whose machine stopped asking leaves the mailbox by itself" do
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
       {:ok, id} = open({10, 0, 0, 1}, "air")
       assert_receive {:mailbox, :changed}, 1_000
+      gone = Pairing.limits().gone_ms
+
+      # Time passes by moving the request's last ask back, not by
+      # sleeping, so a slow machine cannot run a request out early.
+      older = fn ms ->
+        :sys.replace_state(Door, fn s ->
+          update_in(s.requests[id], &%{&1 | asked: &1.asked - ms})
+        end)
+      end
 
       # While its machine asks, it stays. Someone else asking does not
       # keep it there.
-      Process.sleep(250)
+      older.(div(gone * 2, 3))
       assert {:ok, :waiting} = Door.status({10, 0, 0, 1}, id)
-      Process.sleep(250)
+      older.(div(gone * 2, 3))
       assert [%{id: ^id}] = Door.pending()
       assert {:ok, :waiting} = Door.status({10, 0, 0, 99}, id)
-      Process.sleep(250)
+      older.(div(gone * 2, 3))
       assert Door.pending() == []
       assert {:error, :gone} = Door.status({10, 0, 0, 1}, id)
       assert {:error, :gone} = Door.approve(id)
