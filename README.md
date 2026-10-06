@@ -28,7 +28,9 @@ machines, known limits, building from source and how it works.
   session's title, its folder and branch, and the start of your prompts),
   never the agent's replies, the commands it ran or your files; the
   [wiki](https://github.com/kyroco/vitalaize/wiki/How-it-works) lists what
-  crosses the network.
+  crosses the network. A collector built after 0.3.0 also sends the name
+  and state of any GitHub runner on its machine, and nothing more about it
+  (see "Your own CI machines" below).
 - **Connect a machine by code**: the new machine shows a six-digit code, and
   you approve the same code in the mailbox on the hub's board. There is no
   key to copy. At most you type the hub's address.
