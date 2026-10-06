@@ -32,6 +32,9 @@ defmodule Wallboard.Archive.GitHubCollector do
   alias Wallboard.{Cmd, Store}
   alias Wallboard.Archive.CiMinutes
 
+  # The most pages of 100 pull requests one round reads.
+  @pr_pages 100
+
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
@@ -146,18 +149,54 @@ defmodule Wallboard.Archive.GitHubCollector do
           end
         end)
 
-      prs_key = "github_prs_backfill:" <> repo
-      through_key = "github_prs_through:" <> repo
-
-      with {:ok, prs} <- fetch_prs(repo, prs_from(prs_key, through_key, today, a, now)) do
-        :ok = Store.put_prs(prs)
-        if !Store.get_meta(prs_key), do: Store.put_meta(prs_key, Date.to_iso8601(today))
-        Store.put_meta(through_key, Integer.to_string(DateTime.to_unix(now)))
-        {:ok, length(runs), jobs}
-      end
+      save_prs(repo, today, a, now)
+      {:ok, length(runs), jobs}
     end
   rescue
     e -> {:error, Exception.message(e)}
+  end
+
+  @doc """
+  The meta key holding why a repository's last pull request read failed:
+  "forbidden" when GitHub refused the sign-in (it may read Actions but not
+  pull requests), "failed" for anything else, empty after a good read.
+  """
+  def prs_error_key(repo), do: "github_prs_error:" <> repo
+
+  # A failed read leaves the runs saved and the round good: the reason is
+  # kept for the Shipped heading and logged once, when it starts.
+  defp save_prs(repo, today, archive, now) do
+    prs_key = "github_prs_backfill:" <> repo
+    through_key = "github_prs_through:" <> repo
+
+    case fetch_prs(repo, prs_from(prs_key, through_key, today, archive, now)) do
+      {:ok, prs} ->
+        :ok = Store.put_prs(prs)
+        if !Store.get_meta(prs_key), do: Store.put_meta(prs_key, Date.to_iso8601(today))
+        Store.put_meta(through_key, Integer.to_string(DateTime.to_unix(now)))
+        put_prs_error(repo, "", nil)
+
+      {:cut, prs} ->
+        :ok = Store.put_prs(prs)
+
+        Logger.warning(
+          "GitHub archive: #{repo} has more than #{@pr_pages * 100} pull requests changed " <>
+            "since the last read; saved the newest and will read them again next round"
+        )
+
+        put_prs_error(repo, "", nil)
+
+      {:error, why} ->
+        error = if why =~ ~r/HTTP 40[34]\b/, do: "forbidden", else: "failed"
+        put_prs_error(repo, error, why)
+    end
+  end
+
+  defp put_prs_error(repo, error, why) do
+    if (Store.get_meta(prs_error_key(repo)) || "") != error do
+      if why, do: Logger.warning("GitHub archive: #{repo}: cannot read pull requests: #{why}")
+      Store.put_meta(prs_error_key(repo), error)
+    end
   end
 
   # Where a round's pull requests start, in Unix seconds: the backfill on
@@ -248,6 +287,9 @@ defmodule Wallboard.Archive.GitHubCollector do
 
   # Closed pull requests changed at or after `from` (Unix seconds), newest
   # change first, a page of 100 at a time until a page reaches back before it.
+  # GitHub's pull request list has no 1,000 cap, unlike its run list; the
+  # stop at @pr_pages only guards against a list that never ends, and
+  # answers {:cut, prs} so nothing is marked read.
   defp fetch_prs(repo, from, page \\ 1, acc \\ []) do
     path =
       "repos/#{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=#{page}"
@@ -257,9 +299,11 @@ defmodule Wallboard.Archive.GitHubCollector do
       recent = Enum.filter(prs, &((&1.updated_at || 0) >= from))
       acc = acc ++ Enum.map(recent, &Map.delete(&1, :updated_at))
 
-      if length(prs) == 100 and length(recent) == 100 and page < 10,
-        do: fetch_prs(repo, from, page + 1, acc),
-        else: {:ok, acc}
+      cond do
+        length(prs) < 100 or length(recent) < 100 -> {:ok, acc}
+        page < @pr_pages -> fetch_prs(repo, from, page + 1, acc)
+        true -> {:cut, acc}
+      end
     end
   end
 
@@ -335,6 +379,7 @@ defmodule Wallboard.Archive.GitHubCollector do
              title: p["title"],
              branch: get_in(p, ["head", "ref"]),
              head_repo: get_in(p, ["head", "repo", "full_name"]),
+             base_repo: get_in(p, ["base", "repo", "full_name"]),
              default_branch: get_in(p, ["base", "repo", "default_branch"]),
              base: get_in(p, ["base", "ref"]),
              head_sha: get_in(p, ["head", "sha"]),

@@ -3,7 +3,7 @@ defmodule Wallboard.GitHubCollectorRoundTest do
   # asked. One at a time: the PATH is this whole test run's.
   use ExUnit.Case, async: false
 
-  alias Wallboard.Archive.{CiMinutes, GitHubCollector}
+  alias Wallboard.Archive.{CiMinutes, GitHubCollector, Trends}
   alias Wallboard.{Fixtures, Settings, Store}
 
   setup do
@@ -27,6 +27,14 @@ defmodule Wallboard.GitHubCollectorRoundTest do
         echo '{"jobs": [#{job.(12, 2)}]}' ;;
       *"/pulls?"*)
         if [ -f "$WALLBOARD_TEST_GH/pulls_down" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+        if [ -f "$WALLBOARD_TEST_GH/pulls_forbidden" ]; then
+          echo "gh: Resource not accessible by personal access token (HTTP 403)" >&2; exit 1
+        fi
+        # Pages of pull requests from files, pulls_page_<n>.json, then none;
+        # or the same full page for every page asked.
+        page=$(echo "$2" | sed -n 's/.*[?&]page=\\([0-9]*\\).*/\\1/p')
+        if [ -f "$WALLBOARD_TEST_GH/pulls_every_page.json" ]; then cat "$WALLBOARD_TEST_GH/pulls_every_page.json"; exit 0; fi
+        if [ -f "$WALLBOARD_TEST_GH/pulls_page_$page.json" ]; then cat "$WALLBOARD_TEST_GH/pulls_page_$page.json"; exit 0; fi
         echo '[]' ;;
       *"/actions/runs?"*)
         if [ -f "$WALLBOARD_TEST_GH/runs_down" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
@@ -160,11 +168,88 @@ defmodule Wallboard.GitHubCollectorRoundTest do
     File.rm!(Path.join(dir, "runs_down"))
     File.write!(Path.join(dir, "pulls_down"), "")
     monday = ~U[2026-10-05 13:05:00Z]
-    assert {:error, _} = GitHubCollector.round(settings, monday)
+    assert {:ok, _, _} = GitHubCollector.round(settings, monday)
     assert [_] = Store.query("SELECT run_id FROM gh_runs WHERE run_id = 2", [])
 
     assert Store.get_meta("github_runs_through:acme/shop") ==
              Integer.to_string(DateTime.to_unix(monday))
+  end
+
+  test "a token that cannot read pull requests still saves runs, and Shipped says why",
+       %{dir: dir, settings: settings} do
+    File.write!(Path.join(dir, "pulls_forbidden"), "")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-09-30 18:00:00Z])
+        assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-09-30 18:05:00Z])
+      end)
+
+    assert [_] = Store.query("SELECT run_id FROM gh_runs WHERE run_id = 1", [])
+
+    assert Trends.shipped_loading(settings) ==
+             "Can't read pull requests in acme/shop: the GitHub sign-in is not allowed to"
+
+    # Said once when it starts, not every round.
+    assert length(Regex.scan(~r/pull requests/, log)) == 1
+
+    # GitHub failing for another reason is said differently.
+    File.rm!(Path.join(dir, "pulls_forbidden"))
+    File.write!(Path.join(dir, "pulls_down"), "")
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      GitHubCollector.round(settings, ~U[2026-09-30 18:10:00Z])
+    end)
+
+    assert Trends.shipped_loading(settings) ==
+             "Can't read pull requests in acme/shop right now, trying again every 5 minutes"
+
+    # A good read clears it.
+    File.rm!(Path.join(dir, "pulls_down"))
+    assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-09-30 18:15:00Z])
+    assert Trends.shipped_loading(settings) == nil
+  end
+
+  # 100 closed pull requests numbered from `first`, all changed at `at`.
+  defp pulls_page(first, at) do
+    Jason.encode!(
+      for n <- first..(first + 99) do
+        %{number: n, title: "PR #{n}", updated_at: at, closed_at: at, merged_at: at}
+      end
+    )
+  end
+
+  test "every pull request of the backfill is read, past 1,000", %{dir: dir, settings: settings} do
+    at = "2026-09-30T12:00:00Z"
+
+    for page <- 1..11,
+        do: File.write!(Path.join(dir, "pulls_page_#{page}.json"), pulls_page(page * 100, at))
+
+    assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-09-30 18:00:00Z])
+    assert [%{n: 1_100}] = Store.query("SELECT count(*) AS n FROM gh_prs", [])
+    assert Store.get_meta("github_prs_backfill:acme/shop") == "2026-09-30"
+  end
+
+  test "a read that stops at its safety limit marks nothing done", %{dir: dir, settings: settings} do
+    File.write!(Path.join(dir, "pulls_every_page.json"), pulls_page(1, "2026-09-30T12:00:00Z"))
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert {:ok, _, _} = GitHubCollector.round(settings, ~U[2026-09-30 18:00:00Z])
+    end)
+
+    assert Enum.count(asked(dir), &String.contains?(&1, "/pulls?")) == 100
+    assert Store.get_meta("github_prs_backfill:acme/shop") == nil
+    assert Store.get_meta("github_prs_through:acme/shop") == nil
+
+    # Once read, the next round's start stays where it was too.
+    Store.put_meta("github_prs_backfill:acme/shop", "2026-09-20")
+    Store.put_meta("github_prs_through:acme/shop", "1790000000")
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      GitHubCollector.round(settings, ~U[2026-09-30 18:05:00Z])
+    end)
+
+    assert Store.get_meta("github_prs_through:acme/shop") == "1790000000"
   end
 
   test "a rerun's jobs are saved for every attempt", %{settings: settings} do
