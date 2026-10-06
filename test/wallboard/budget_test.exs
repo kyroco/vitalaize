@@ -94,6 +94,8 @@ defmodule Wallboard.BudgetTest do
     end
 
     assert spent.(1.4, 1) == "Claude spend today $1.40 of $1"
+    # 1.1 * 100 is 110.00000000000001 in floating point; it must not read $1.11.
+    assert spent.(1.1, 1) == "Claude spend today $1.10 of $1"
     # Rounded up, so a total a fraction of a cent past the limit still reads as past it.
     assert spent.(150.004, 150) == "Claude spend today $150.01 of $150"
     assert spent.(1_000.4, 1_000) == "Claude spend today $1,000.40 of $1,000"

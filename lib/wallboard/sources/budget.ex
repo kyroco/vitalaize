@@ -110,7 +110,7 @@ defmodule Wallboard.Sources.Budget do
 
   # A limit is whole dollars. What was spent shows to the cent, rounded up,
   # so a total just past a limit never reads as the limit itself. The
-  # rounding to 6 places first keeps 1.4 * 100 = 140.00000000000003 at 140.
+  # rounding to 6 places first keeps 1.1 * 100 = 110.00000000000001 at 110.
   defp amount(:claude_dollars, n) when is_integer(n), do: "$" <> Trends.thousands(n)
 
   defp amount(:claude_dollars, n) do
