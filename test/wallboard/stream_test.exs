@@ -137,6 +137,11 @@ defmodule Wallboard.StreamTest do
     world = c.world
     outbox = once({Outbox, dir: Path.join(dir, "outbox"), name: nil}, id: :outbox)
 
+    # The real clock, unless the test set its own (see `later/2`).
+    now = fn ->
+      Agent.get(world, &Map.get(&1, :now)) || DateTime.utc_now() |> DateTime.truncate(:second)
+    end
+
     watcher =
       once(
         {Watcher,
@@ -144,6 +149,7 @@ defmodule Wallboard.StreamTest do
          outbox: outbox,
          home: c.home,
          timer: false,
+         now: now,
          settings: fn -> c.collector end,
          claude: fn folder -> Agent.get(world, &Map.get(&1.agents, folder, {:ok, []})) end},
         id: :watcher
@@ -160,7 +166,8 @@ defmodule Wallboard.StreamTest do
            tick_ms: 30,
            processes: fn ->
              case Agent.get(world, &Map.get(&1, :ps, [])) do
-               # A look at the runners that does not come back.
+               # A look at the runners that does not come back. It stands
+               # for a stuck read, and nothing waits for it to end.
                {:hang, ms} -> Process.sleep(ms) && {:ok, []}
                lines -> {:ok, lines}
              end
@@ -252,6 +259,42 @@ defmodule Wallboard.StreamTest do
 
   defp look(w), do: :ok = Watcher.tick(w.watcher)
 
+  # The collector's clock, moved on by `seconds` from where it stands.
+  defp later(c, seconds) do
+    Agent.update(c.world, fn world ->
+      now = world[:now] || DateTime.utc_now() |> DateTime.truncate(:second)
+      Map.put(world, :now, DateTime.add(now, seconds))
+    end)
+  end
+
+  # The sender's next round, now rather than on its timer.
+  defp tick(w) do
+    send(w.sender, :tick)
+    :sys.get_state(w.sender)
+  end
+
+  # The client the sender started has stopped for good: a try that comes
+  # due now is not made.
+  defp stopped?(w) do
+    client = :sys.get_state(w.sender).client
+    send(client, :connect)
+    Wallboard.Link.Client.status(client).phase == :removed
+  end
+
+  # The hub's sessions have taken in everything the database announced.
+  # The database announces a save before the collector hears it is saved,
+  # so after `drained/1` this is everything the collector sent.
+  defp heard_all, do: :sys.get_state(Sessions)
+
+  # What the hub has done about alerts: how many it sent, and the wait
+  # (by when it began) of each session it asked one for. Another alert
+  # needs another entry here or a new wait, so comparing this says what
+  # waiting for one to arrive would, without the wait.
+  defp alerts_asked do
+    state = :sys.get_state(Sessions)
+    {length(state.sent), state.alerted}
+  end
+
   # ---------------------------------------------------------------------------
   # Looking at the hub
 
@@ -261,6 +304,7 @@ defmodule Wallboard.StreamTest do
     cond do
       fun.() -> :ok
       left == 0 -> flunk("waited too long")
+      # A pause between looks at a condition, not a wait for a timer.
       true -> Process.sleep(50) && wait_until(fun, left - 1)
     end
   end
@@ -371,11 +415,9 @@ defmodule Wallboard.StreamTest do
       {running, later} = Enum.split(lines("collector/codex_rollout.jsonl"), 12)
       add(codex_path(c), running)
 
-      # Both appear within a few seconds of the collector seeing them.
-      began = System.monotonic_time(:millisecond)
+      # Both appear once the collector sees them.
       look(w)
       wait_until(fn -> card(@claude_id) != nil and card(@codex_id) != nil end)
-      assert System.monotonic_time(:millisecond) - began < 5_000
       # The board is told, too.
       assert_receive {:stream, [_ | _]}, 2_000
 
@@ -384,7 +426,7 @@ defmodule Wallboard.StreamTest do
       assert claude.account == "papa"
       assert claude.key == "stream:papa:" <> @claude_id
       assert %{status: :working, tool: :codex, machine: "papa"} = card(@codex_id)
-      refute_receive {:alert, _, _}, 300
+      assert alerts_asked() == {0, %{}}
 
       # The rest of the Claude session's lines fill its card in: what it
       # works on, its repository, context, model, cost and lines.
@@ -412,7 +454,9 @@ defmodule Wallboard.StreamTest do
 
       # One wait, one alert on each channel: nothing else on the hub
       # alerts for a session on another machine.
-      refute_receive {:alert, _, _}, 1_800
+      assert {1, asked} = alerts_asked()
+      assert Map.keys(asked) == [{"papa", @claude_id}]
+      refute_received {:alert, _, _}
 
       # Codex asks to run something.
       mark(c, %{
@@ -426,7 +470,9 @@ defmodule Wallboard.StreamTest do
       assert card(@codex_id).why == "Asks for your approval to use shell"
       assert_receive {:alert, "/slack", _}, 4_000
       assert_receive {:alert, "/topic", _}, 4_000
-      refute_receive {:alert, _, _}, 1_500
+      assert {2, asked} = alerts_asked()
+      assert map_size(asked) == 2
+      refute_received {:alert, _, _}
 
       # Both move on.
       agents(c, [{@claude_id, %{"status" => "idle"}}])
@@ -447,7 +493,8 @@ defmodule Wallboard.StreamTest do
       mark(c, %{"hook_event_name" => "SessionEnd"})
       look(w)
       wait_until(fn -> Sessions.cards() == [] end)
-      refute_receive {:alert, _, _}, 300
+      assert alerts_asked() == {2, asked}
+      refute_received {:alert, _, _}
 
       # Each status change is in the archive's history.
       drained(w)
@@ -728,7 +775,8 @@ defmodule Wallboard.StreamTest do
       wait_until(fn -> card(@claude_id) != nil end)
       assert %{stale: true, status: :working} = card(@claude_id)
       # Reading what it knew back sends no alert.
-      refute_receive {:alert, _, _}, 1_500
+      assert alerts_asked() == {0, %{}}
+      refute_received {:alert, _, _}
 
       start_collector(c)
       wait_until(fn -> not card(@claude_id).stale end)
@@ -768,8 +816,11 @@ defmodule Wallboard.StreamTest do
       assert_receive {:alert, "/slack", _}, 4_000
       assert_receive {:alert, "/topic", _}, 4_000
       # The same wait said again, as after a reconnect, sends nothing more.
+      asked = alerts_asked()
+      assert {1, %{{"mama", "s-1"} => _}} = asked
       tell([status_row("s-1", :needs, why: :question, since: at.(9), at: at.(9))])
-      refute_receive {:alert, _, _}, 1_800
+      assert alerts_asked() == asked
+      refute_received {:alert, _, _}
       assert Sessions.cards() |> hd() |> Map.fetch!(:waiting_since) == at.(2)
     end
 
@@ -822,9 +873,12 @@ defmodule Wallboard.StreamTest do
 
       # Back, and saying the same wait again: nothing more.
       Phoenix.PubSub.broadcast(Wallboard.PubSub, "link", {:link, :up, "mama"})
+      asked = alerts_asked()
+      assert {1, %{{"mama", "s-4"} => _}} = asked
       later = DateTime.add(now, 30)
       tell([status_row("s-4", :needs, why: :question, since: later, at: later)])
-      refute_receive {:alert, _, _}, 1_800
+      assert alerts_asked() == asked
+      refute_received {:alert, _, _}
     end
 
     test "only a collector ends a session: one it stops speaking of keeps its card", c do
@@ -847,7 +901,7 @@ defmodule Wallboard.StreamTest do
       look(w)
       wait_until(fn -> not card(other).stale end)
       drained(w)
-      Process.sleep(500)
+      heard_all()
       assert %{status: :working, stale: false} = card(@claude_id)
       assert Enum.all?(Store.collector_events("papa", @claude_id), &(&1.kind == "status"))
     end
@@ -867,13 +921,15 @@ defmodule Wallboard.StreamTest do
       wait_until(fn -> not card(@claude_id).stale end)
       # Its status has not changed, and is said again all the same.
       look(w)
-      Process.sleep(900)
+      drained(w)
+      heard_all()
       assert %{status: :idle, stale: false} = card(@claude_id)
     end
   end
 
   test "a status said again after a connect is in the session's history once", c do
     start_hub(c)
+    later(c, 0)
     # The collector sees the session before it is connected, so its first
     # status is already made when the hub says where it is.
     w = start_collector(c)
@@ -884,7 +940,7 @@ defmodule Wallboard.StreamTest do
     pair(c)
     wait_until(fn -> card(@claude_id) != nil end)
     # A later second, so a status said again carries a later time.
-    Process.sleep(1_100)
+    later(c, 1)
     look(w)
     drained(w)
 
@@ -894,6 +950,7 @@ defmodule Wallboard.StreamTest do
     # The hub still got it twice: that is how it would learn of it anew.
     statuses = Enum.filter(Store.collector_events("papa", @claude_id), &(&1.kind == "status"))
     assert length(statuses) == 2
+    assert statuses |> Enum.map(& &1.at) |> Enum.uniq() |> length() == 2
   end
 
   test "a collector the hub removed connects again once it is paired again, with no restart", c do
@@ -910,9 +967,12 @@ defmodule Wallboard.StreamTest do
     {:ok, _} = Hub.revoke("papa")
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
 
-    # A file's time is kept to the second.
-    Process.sleep(1_100)
     pair(c)
+    # A file's time is kept to the second: the new files are dated a
+    # second on, as they would be had pairing again taken one.
+    for name <- ["cert.pem", "hub.json"],
+        do: File.touch!(Path.join(dir, name), System.os_time(:second) + 1)
+
     wait_until(link)
     assert Process.alive?(w.sender)
   end
@@ -938,10 +998,7 @@ defmodule Wallboard.StreamTest do
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
     assert Process.alive?(w.sender)
 
-    # Longer than its longest wait between tries: it has stopped for good.
-    client = :sys.get_state(w.sender).client
-    Process.sleep(500)
-    assert %{phase: :removed} = Wallboard.Link.Client.status(client)
+    assert stopped?(w)
     assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
   end
 
@@ -969,10 +1026,7 @@ defmodule Wallboard.StreamTest do
     w = start_collector(c)
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
 
-    # Longer than its longest wait between tries: it has stopped for good.
-    client = :sys.get_state(w.sender).client
-    Process.sleep(500)
-    assert %{phase: :removed} = Wallboard.Link.Client.status(client)
+    assert stopped?(w)
     assert {:ok, %{state: "removed"}} = Sender.link_state(dir)
   end
 
@@ -982,7 +1036,7 @@ defmodule Wallboard.StreamTest do
     add(claude_path(c, @claude_id <> ".jsonl"), lines("collector/claude_session.jsonl"))
     agents(c, [{@claude_id, %{"status" => "busy"}}])
     look(w)
-    Process.sleep(200)
+    tick(w)
     assert Store.collector_events("papa") == []
     assert Outbox.stats(w.outbox).acked == 0
 
@@ -990,7 +1044,7 @@ defmodule Wallboard.StreamTest do
     dir = c.collector.collector.dir
     for name <- ~w(cert.pem key.pem ca.pem), do: File.write!(Path.join(dir, name), "not one")
     File.write!(Path.join(dir, "hub.json"), ~s({"host":"127.0.0.1","link_port":#{c.port}}))
-    Process.sleep(200)
+    tick(w)
     assert Process.alive?(w.sender)
 
     pair(c)
@@ -1150,11 +1204,18 @@ defmodule Wallboard.StreamTest do
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          w = start_collector(c, runners_ms: 30)
+          w = start_collector(c)
           assert_receive {:runners, states}, 5_000
           assert states == %{"air-2" => :online}
-          # Many more looks at the process list, and still one line each.
-          Process.sleep(400)
+
+          # Many more looks at the process list, made now rather than on
+          # the timer, and still one line each.
+          for _ <- 1..5 do
+            send(w.sender, :runners)
+            :sys.get_state(w.sender)
+            wait_until(fn -> :sys.get_state(w.sender).runners_task == nil end)
+          end
+
           assert RunnerStates.states() == %{"air-2" => :online}
           kill_collector(w)
         end)
