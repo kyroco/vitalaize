@@ -15,45 +15,46 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
-## What's new in 0.3.0
+## What's new in 0.4.0
 
-- **Several repositories**, added up in the status line. The Git tab gives
-  the four busiest a column each and lists the rest below.
-- **Alerts anywhere**: Slack, ntfy (iPhone or Android) and Pushover, besides
-  Messages on a Mac.
-- **Your other machines, live**: a small collector on each one watches its
-  own Claude and Codex sessions and streams them to the hub over an encrypted
-  connection. Their sessions get cards on the board as they work, show Needs
-  you, and send your alerts. It sends numbers and a few short lines (a
-  session's title, its folder and branch, and the start of your prompts),
-  never the agent's replies, the commands it ran or your files; the
-  [wiki](https://github.com/kyroco/vitalaize/wiki/How-it-works) lists what
-  crosses the network. A collector built after 0.3.0 also sends the name
-  and state of any GitHub runner on its machine, and nothing more about it
-  (see "Your own CI machines" below).
-- **Connect a machine by code**: the new machine shows a six-digit code, and
-  you approve the same code in the mailbox on the hub's board. There is no
-  key to copy. At most you type the hub's address.
-- **Settings in the app**, or with `vitalaize setup` in a terminal. Most
-  changes are in use within seconds, with no restart.
-- **Codex**: Codex sessions can show Needs you (new, and not yet tried with
-  a real Codex).
-- **A note when a new version is out**, which you can turn off in Settings.
+0.4.0 is about what shipped work costs.
 
-If you run 0.2.0 on Linux, upgrade. Every copy of that download had the same
-built-in secret for remote control, so if you started the board by hand
-(not with `systemd.sh`), anyone on your network who also had the download
-could run commands on your machine. 0.3.0 turns remote control off.
+- **Cost per merged pull request**: a Shipped section on Trends shows merged
+  pull requests per day, Claude's cost per merged pull request, each tool's
+  tokens per merged pull request and sessions per merged pull request. Tokens
+  per merged pull request replaces tokens per 1,000 lines at the head of the
+  Claude and Codex comparison.
+- **CI minutes per session and per pull request**, counted the way GitHub
+  bills them: each job rounded up to a whole minute, Windows twice and macOS
+  ten times. A session's details show the minutes its runs took, and Trends
+  adds them up.
+- **Budget limits**: set a limit on Claude spend, Claude tokens or Codex
+  tokens, per day or per week, in Settings. When a total passes its limit, a
+  strip on the board says so, and one alert goes out on the channels you
+  choose.
+- **Your own CI machines**: the Git tab shows which runs ran on your own
+  machines (self-hosted runners) and whether each runner is up, and Trends
+  counts the paid minutes they saved you (see "Your own CI machines" below).
+- **Tap a run** on the Git tab to see its details over the board: each job,
+  the runner it ran on, the step that failed, and a link to GitHub.
+- **Type the New Relic key in**, in the Mac app or `vitalaize setup`, instead
+  of only pointing at 1Password. It is kept in your login keychain on a Mac
+  and in a file only you can read on Linux, never in the settings file.
+- **A collector removed while it was off finds out** when it comes back, and
+  says "removed" instead of "down".
+- **Runs saved while the board was off**: GitHub runs from the days the board
+  was off now reach Trends.
 
-A machine connected by 0.2.0 or earlier sent its sessions with upload hooks.
-0.3.0 replaces those with the collector, and the hub no longer takes uploads:
-it refuses them, so such a machine's sessions stop arriving until it is moved
-across. On each of those machines, install 0.3.0 and set it up as a collector (the
-app on a Mac, `bin/vitalaize setup` on Linux). Setup takes VitalAIze's old
-hooks out of that machine's Claude and Codex settings, leaves every other
-hook as it was, and keeps a copy of each file it changes beside it
-(`settings.json.before-collector`). Sessions the hub saved before stay in
-the archive and trends.
+Upgrading from 0.3.0: install 0.4.0 the same way, on the hub and on each
+collector. A collector still on 0.3.0 keeps working with a 0.4.0 hub, but
+only a 0.4.0 collector reports the GitHub runners on its machine. Budget
+limits need the archive, which is on unless you turned it off.
+
+If you still run 0.2.0, the
+[0.3.0 release notes](https://github.com/kyroco/vitalaize/releases/tag/v0.3.0)
+say how to move each machine across. On Linux, upgrade now: every copy of
+the 0.2.0 download had the same built-in secret for remote control, which
+0.3.0 turned off.
 
 ## Install on a Mac
 

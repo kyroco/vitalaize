@@ -5,7 +5,7 @@ defmodule WallboardWeb.OldCollectorController do
   whoever makes it. Nothing it sent is looked at or kept, and nothing is
   noted about who called.
 
-  For one release: the release after 0.3.0 takes this out.
+  Kept in 0.4.0 too; #136 takes it out.
   """
 
   use Phoenix.Controller, formats: []

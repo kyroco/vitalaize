@@ -20,7 +20,7 @@ defmodule WallboardWeb.Router do
 
   # Where the upload hooks of VitalAIze 0.2.0 sent sessions. Nothing is
   # taken here any more: every call is refused, and nothing is kept of it.
-  # For one release; the one after 0.3.0 takes this out.
+  # Kept in 0.4.0 too; #136 takes it out.
   scope "/ingest", WallboardWeb do
     match :*, "/*rest", OldCollectorController, :refuse
   end
