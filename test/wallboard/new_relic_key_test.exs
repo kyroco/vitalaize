@@ -489,11 +489,17 @@ defmodule Wallboard.NewRelicKeyTest do
   describe "the key prompt in a real terminal" do
     # `script` gives the prompt a terminal of its own, as a person's would
     # be, and records what that terminal shows. The key is typed once the
-    # prompt is up, as a person would type it.
-    test "leaves the key off the screen, and reads it whole" do
+    # prompt is up, as a person would type it. The next question is asked
+    # the ordinary way, and must show what is typed again and take a
+    # Backspace as a correction.
+    test "leaves the key off the screen, reads it whole, and leaves the next prompt as it was" do
       ebin = Application.app_dir(:wallboard, "ebin")
       elixir = System.find_executable("elixir")
-      code = ~s[IO.inspect(Wallboard.Setup.gets_hidden(:stdio, "key: "), label: "read")]
+
+      code =
+        ~s[key = Wallboard.Setup.gets_hidden(:stdio, "key: "); ] <>
+          ~s[IO.inspect({key, IO.gets("next: ")}, label: "read")]
+
       command = [elixir, "-pa", ebin, "-e", code]
 
       args =
@@ -512,9 +518,13 @@ defmodule Wallboard.NewRelicKeyTest do
 
       shown = until_screen(port, "key: ", "")
       Port.command(port, @key <> "\r")
+      shown = until_screen(port, "next: ", shown)
+      # A slip, Backspace, and the rest.
+      Port.command(port, "abX\x7Fcd\r")
       shown = until_exit(port, shown)
 
-      assert shown =~ ~s(read: "#{@key}")
+      assert shown =~ ~s(read: {"#{@key}", "abcd\\n"})
+      assert shown =~ "next: abX"
       # The only place the key is on the screen is the line the test
       # program printed itself.
       assert shown |> String.split(@key) |> length() == 2

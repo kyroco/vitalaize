@@ -727,27 +727,46 @@ defmodule Wallboard.Setup do
   end
 
   # The same, with what is typed not shown where the terminal allows it:
-  # for a key, so it is not left on the screen. Erlang leaves it off the
-  # screen only when it reads the terminal itself, in its raw mode; asking
-  # for no echo without that is answered :ok and changes nothing. Input
-  # from a pipe or a file has nothing to hide, and is read as it is.
+  # for a key, so it is not left on the screen. Only the terminal can stop
+  # showing it: asking Erlang for no echo is answered :ok and changes
+  # nothing, and Erlang's raw mode hides it but cannot be left, so every
+  # later answer would be typed blind and a Backspace kept as a character.
+  # So echo is turned off on the terminal itself for this one line, the
+  # way a password prompt does. Input from a pipe or a file has no
+  # terminal to change, and is read as it is.
   # Public only for its test, which types into a real terminal.
   @doc false
   def gets_hidden(:stdio = io, prompt) do
-    raw? = :shell.start_interactive({:noshell, :raw}) in [:ok, {:error, :already_started}]
-    hidden? = raw? and :io.setopts(io, echo: false) == :ok
+    hidden? = stty("-echo")
 
     try do
       gets(io, prompt)
     after
       if hidden? do
-        :io.setopts(io, echo: true)
+        stty("echo")
         IO.puts(io, "")
       end
     end
   end
 
   def gets_hidden(io, prompt), do: gets(io, prompt)
+
+  # Changes this program's terminal. The programs Erlang starts have no
+  # terminal of their own, so stty is told which one by its device. False
+  # when there is none, or it could not be changed.
+  defp stty(mode) do
+    flag = if match?({:unix, :darwin}, :os.type()), do: "-f", else: "-F"
+
+    with {name, 0} <- System.cmd("ps", ["-o", "tty=", "-p", System.pid()], stderr_to_stdout: true),
+         tty when tty not in ["", "?", "??"] <- String.trim(name),
+         {_, 0} <- System.cmd("stty", [flag, "/dev/" <> tty, mode], stderr_to_stdout: true) do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
 
   # ---------------------------------------------------------------------------
   # For the VitalAIze app
