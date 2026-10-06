@@ -74,12 +74,30 @@ defmodule Wallboard.BudgetTest do
     assert item.key == :claude_dollars
     assert item.per == "day"
     assert item.total == 162.4
-    assert Budget.describe(item) == "Claude spend today $162 of $150"
+    assert Budget.describe(item) == "Claude spend today $162.40 of $150"
 
     assert Budget.alert_text(item) ==
-             "VitalAIze: Claude spend today passed your $150 limit ($162 so far)."
+             "VitalAIze: Claude spend today passed your $150 limit ($162.40 so far)."
 
     assert Budget.over(settings(%{claude_dollars: 200}), noon(today())) == []
+  end
+
+  test "what was spent shows to the cent, never as the limit it passed" do
+    spent = fn total, limit ->
+      Budget.describe(%{
+        key: :claude_dollars,
+        label: "Claude spend",
+        per: "day",
+        limit: limit,
+        total: total
+      })
+    end
+
+    assert spent.(1.4, 1) == "Claude spend today $1.40 of $1"
+    # Rounded up, so a total a fraction of a cent past the limit still reads as past it.
+    assert spent.(150.004, 150) == "Claude spend today $150.01 of $150"
+    assert spent.(1_000.4, 1_000) == "Claude spend today $1,000.40 of $1,000"
+    assert spent.(12.0, 10) == "Claude spend today $12.00 of $10"
   end
 
   test "a week counts from Monday, and a day only today" do
@@ -91,7 +109,7 @@ defmodule Wallboard.BudgetTest do
     assert [%{total: 5.0, per: "week", since: ^monday}] = Budget.over(week, noon(today()))
 
     assert Budget.describe(hd(Budget.over(week, noon(today())))) ==
-             "Claude spend this week $5 of $4"
+             "Claude spend this week $5.00 of $4"
 
     # The day before Monday is in last week, and in no day of this one.
     assert Budget.over(settings(%{claude_dollars: 6, claude_dollars_per: "week"}), noon(today())) ==
@@ -200,7 +218,7 @@ defmodule Wallboard.BudgetTest do
         |> IO.iodata_to_binary()
 
       assert html =~ "Over budget"
-      assert html =~ "Claude spend today $162 of $150"
+      assert html =~ "Claude spend today $162.00 of $150"
     end
 
     test "the strip names each passed limit, and is not there with none" do
@@ -210,7 +228,7 @@ defmodule Wallboard.BudgetTest do
 
       html = render_component(&BoardLive.budget_banner/1, over: Budget.over(s, noon(today())))
       assert html =~ "Over budget"
-      assert html =~ "Claude spend today $162 of $150"
+      assert html =~ "Claude spend today $162.00 of $150"
       assert html =~ "Codex tokens this week 60,000 of 50,000"
 
       refute render_component(&BoardLive.budget_banner/1, over: []) =~ "Over budget"

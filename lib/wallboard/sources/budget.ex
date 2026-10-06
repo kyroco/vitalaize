@@ -94,7 +94,7 @@ defmodule Wallboard.Sources.Budget do
     Enum.filter(Alerts.channels(settings), &(budget[:"by_#{&1}"] != false))
   end
 
-  @doc ~S(The words for a passed limit: "Claude spend today $162 of $150".)
+  @doc ~S(The words for a passed limit: "Claude spend today $162.40 of $150".)
   def describe(item),
     do:
       "#{item.label} #{period(item.per)} #{amount(item.key, item.total)} of #{amount(item.key, item.limit)}"
@@ -108,7 +108,17 @@ defmodule Wallboard.Sources.Budget do
   defp period("week"), do: "this week"
   defp period(_day), do: "today"
 
-  defp amount(:claude_dollars, n), do: "$" <> Trends.thousands(n)
+  # A limit is whole dollars. What was spent shows to the cent, rounded up,
+  # so a total just past a limit never reads as the limit itself. The
+  # rounding to 6 places first keeps 1.4 * 100 = 140.00000000000003 at 140.
+  defp amount(:claude_dollars, n) when is_integer(n), do: "$" <> Trends.thousands(n)
+
+  defp amount(:claude_dollars, n) do
+    cents = ceil(Float.round(n * 100, 6))
+
+    "$#{Trends.thousands(div(cents, 100))}.#{cents |> rem(100) |> Integer.to_string() |> String.pad_leading(2, "0")}"
+  end
+
   defp amount(_tokens, n), do: Trends.thousands(n)
 
   # Saved before the alert goes, so a send that fails or a crash part way
