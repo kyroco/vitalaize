@@ -18,7 +18,8 @@ defmodule Wallboard.Alerts do
   With none of them set up, alerts are off.
 
   A budget limit that is passed (see `Wallboard.Sources.Budget`) sends its
-  alert the same way, on the channels its settings pick.
+  alert by the same channels, on the ones its settings pick, but waits to
+  learn which of them took it (`send_text_and_wait/4`).
   """
 
   require Logger
@@ -27,6 +28,8 @@ defmodule Wallboard.Alerts do
   @ntfy_server "https://ntfy.sh"
   @pushover_url "https://api.pushover.net/1/messages.json"
   @title "VitalAIze"
+  # How long send_text_and_wait/4 waits for one channel: past Messages' own 30.
+  @wait_ms 45_000
 
   @doc "Sends one alert per session that newly needs you, on every channel. Returns right away."
   def needs_you([], _settings), do: :ok
@@ -46,17 +49,45 @@ defmodule Wallboard.Alerts do
   def send_text(text, what, channels, settings) do
     for channel <- channels do
       Task.Supervisor.start_child(Wallboard.TaskSupervisor, fn ->
-        case deliver(channel, text, settings) do
-          :ok ->
-            Logger.info("Sent by #{name(channel)}: #{what}")
-
-          {:error, reason} ->
-            Logger.warning("Could not send by #{name(channel)} (#{what}): #{reason}")
-        end
+        deliver_and_log(channel, text, what, settings)
       end)
     end
 
     :ok
+  end
+
+  @doc """
+  Sends one text on each of `channels` at the same time, logs how each went
+  under `what`, and returns the channels that took it, in their given order.
+  Waits for every channel; each is already capped (30 seconds for Messages,
+  15 for the others), and one that runs past #{div(@wait_ms, 1000)} seconds
+  counts as not taken.
+  """
+  def send_text_and_wait(text, what, channels, settings) do
+    Wallboard.TaskSupervisor
+    |> Task.Supervisor.async_stream_nolink(
+      channels,
+      &{&1, deliver_and_log(&1, text, what, settings)},
+      timeout: @wait_ms,
+      on_timeout: :kill_task,
+      max_concurrency: max(length(channels), 1)
+    )
+    |> Enum.flat_map(fn
+      {:ok, {channel, :ok}} -> [channel]
+      _ -> []
+    end)
+  end
+
+  defp deliver_and_log(channel, text, what, settings) do
+    case deliver(channel, text, settings) do
+      :ok ->
+        Logger.info("Sent by #{name(channel)}: #{what}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Could not send by #{name(channel)} (#{what}): #{reason}")
+        {:error, reason}
+    end
   end
 
   @doc "The channels that are set up in settings, in a fixed order."
