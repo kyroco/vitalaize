@@ -74,8 +74,11 @@ defmodule Wallboard.Archive.CiMinutes do
   # labelled "self-hosted" (as kyroco's own runners' jobs read
   # "self-hosted,Linux,ARM64,kyroco-gate") or on a runner GitHub has listed
   # as the repository's own. The Trends and Git tab tests hold the two to
-  # the same answer. Runners are kept under the repository's name as typed
-  # in settings, so a job saved under another letter case still finds them.
+  # the same answer, with one difference: runners are saved under the
+  # repository's name as typed in settings, and here the names are compared
+  # in any letter case, so a job saved after the name was retyped still
+  # finds them. `Store.runner_names/1`, which the other two read, still
+  # needs the same spelling.
   @own """
   (coalesce(j.runner_group_name, '') <> 'GitHub Actions' AND
     ((',' || coalesce(j.labels, '') || ',') LIKE '%,self-hosted,%' OR
