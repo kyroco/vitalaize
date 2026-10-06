@@ -15,6 +15,16 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.4.1
+
+0.4.1 fixes one thing: installing a new version over a running board now
+restarts it. Before, the old board kept running with its files replaced, so
+until it was restarted it showed bare text, with no style sheet, scripts or
+icons, whenever VitalAIze did not open after the install (an install from the
+command line, say). The installer now restarts a board or collector that is
+running, for each person on the Mac, and leaves one that was stopped as it
+was. Install it the same way as 0.4.0, over 0.4.0.
+
 ## What's new in 0.4.0
 
 0.4.0 is about what shipped work costs.
@@ -65,7 +75,8 @@ the 0.2.0 download had the same built-in secret for remote control, which
    first: otherwise the new package only brings that window forward and
    installs nothing.
 2. The installer says what it will do, then puts VitalAIze in your
-   Applications folder and opens it.
+   Applications folder, restarts the board or collector if one is running,
+   and opens VitalAIze.
 3. VitalAIze asks what this Mac does:
    - **Hub and collector**, for your main Mac: it runs the board and saves
      this Mac's sessions.

@@ -369,8 +369,9 @@ can do. Do these on a Mac where VitalAIze is set up, in this order.
    brings that old window forward and nothing is installed. Then double-click
    `VitalAIze-(version).pkg`, go through the installer's pages, and open the
    app from Applications. Over an older
-   install, the first screen should say what it mended or restarted, then "The
-   board is running".
+   install that was running, the board should restart during the install, and
+   the first screen should say what it mended, if anything, then "The board is
+   running".
 10. **Restart the Mac** and log in. Without opening the app, the board should
    answer.
 11. **Things that reach outside this Mac**, which the run leaves off on purpose:
