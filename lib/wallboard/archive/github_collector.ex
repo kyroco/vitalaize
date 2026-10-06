@@ -18,9 +18,11 @@ defmodule Wallboard.Archive.GitHubCollector do
       GitHub's 5,000; two weeks of jobs fill in over about two hours.
     * once a day, reads whether each repository is public and its default
       branch, for `Wallboard.Archive.CiMinutes`
-    * saves the closed pull requests changed since the last good round (the
-      last `backfill_days` on the first round), newest first, 100 a call:
-      usually one call. `Wallboard.Archive.PullRequests` reads them.
+    * saves the closed pull requests changed since the last good read of
+      them (the last `backfill_days` on the first round), newest first, 100
+      a call: usually one call. `Wallboard.Archive.PullRequests` reads them.
+      A failed read keeps the round's runs, and its reason shows on the
+      Shipped heading until a read works.
 
   A run that is rerun or finishes gets its jobs fetched again, every
   attempt's, since each attempt is billed.
@@ -200,8 +202,9 @@ defmodule Wallboard.Archive.GitHubCollector do
   end
 
   # Where a round's pull requests start, in Unix seconds: the backfill on
-  # the first round, then an hour before the last good round began, so a
-  # pull request merged while the board was off is still read. A merged one
+  # the first round, then an hour before the round of the last good read of
+  # them began, so a pull request merged while the board was off, or while
+  # GitHub refused the read, is still read. A merged one
   # is rarely changed again, so a fixed window would miss it for good.
   defp prs_from(prs_key, through_key, today, archive, now) do
     midnight = &(&1 |> DateTime.new!(~T[00:00:00]) |> DateTime.to_unix())
