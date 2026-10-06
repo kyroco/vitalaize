@@ -36,6 +36,8 @@ defmodule Wallboard.GitHubFetchTest do
         if [ -f "$WALLBOARD_TEST_GH/runners.json" ]; then cat "$WALLBOARD_TEST_GH/runners.json"
         elif [ -f "$WALLBOARD_TEST_GH/runners_refused" ]; then
           echo "gh: Must have admin rights to Repository. (HTTP 403)" >&2; exit 1
+        elif [ -f "$WALLBOARD_TEST_GH/runners_limited" ]; then
+          echo "gh: API rate limit exceeded for user ID 1. (HTTP 403)" >&2; exit 1
         else echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi ;;
       *)
         echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -368,6 +370,27 @@ defmodule Wallboard.GitHubFetchTest do
 
       assert Store.runner_names("acme/rockets") ==
                ["acme-linux-1", "acme-mini-1", "acme-mini-2"]
+    end
+
+    test "stay through GitHub's rate limit, and are asked for again at the usual time",
+         %{dir: dir} do
+      File.write!(Path.join(dir, "runners.json"), Fixtures.read!("github/runners.json"))
+      [rockets, _] = repos(@rockets)
+      assert {:ok, facts} = GitHub.fetch(rockets, nil, @now)
+      asked(dir)
+
+      File.rm!(Path.join(dir, "runners.json"))
+      File.write!(Path.join(dir, "runners_limited"), "")
+      later = DateTime.add(@now, rockets.deploy_poll_seconds)
+      assert {:ok, limited} = GitHub.fetch(rockets, facts, later)
+      assert "runners?per_page=100" in asked(dir)
+      assert limited.runners == facts.runners
+
+      # Not hidden for an hour: asked again at the deploys' next turn.
+      assert {:ok, _} =
+               GitHub.fetch(rockets, limited, DateTime.add(later, rockets.deploy_poll_seconds))
+
+      assert "runners?per_page=100" in asked(dir)
     end
 
     test "that GitHub refuses to list are not asked for again within the hour", %{dir: dir} do

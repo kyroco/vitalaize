@@ -225,7 +225,9 @@ defmodule Wallboard.Sources.GitHub do
           end
 
         {:error, reason} ->
-          if refused?(reason),
+          # Refused as RepoPrompts judges it: an hourly limit is not a
+          # refusal, so the last list stays and is asked for again soon.
+          if Wallboard.RepoPrompts.sight({:error, reason}) == :hidden,
             do: %{listed: :hidden, checked_at: now},
             else: %{listed: last, checked_at: now}
       end
@@ -258,8 +260,6 @@ defmodule Wallboard.Sources.GitHub do
       names
     end
   end
-
-  defp refused?(reason), do: reason =~ "(HTTP 403)" or reason =~ "(HTTP 404)"
 
   # Which of your own runners ran each run, by run id: what this poll's
   # jobs say, what the last poll knew (a run's last jobs can start after the
@@ -763,7 +763,7 @@ defmodule Wallboard.Sources.GitHub do
     progress =
       cond do
         run.status == :queued -> 0
-        run.status == :waiting and jobs && jobs.total > 0 -> round(jobs.done * 100 / jobs.total)
+        (run.status == :waiting and jobs) && jobs.total > 0 -> round(jobs.done * 100 / jobs.total)
         run.status == :waiting -> 0
         typical_s && typical_s > 0 -> min(round(elapsed * 100 / typical_s), 97)
         jobs && jobs.total > 0 -> round(jobs.done * 100 / jobs.total)
