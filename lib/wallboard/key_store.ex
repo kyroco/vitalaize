@@ -91,12 +91,14 @@ defmodule Wallboard.KeyStore.Keychain do
   @impl true
   def put(name, key, opts) do
     # The words go to security's own parser, so only plain characters are
-    # taken; a key from New Relic has no others.
-    if key =~ ~r/\A[\w.\-]+\z/ do
+    # taken; a key from New Relic has no others. A space would let a key
+    # add an option of its own, such as one that lets any app read it.
+    with true <- key =~ ~r/\A[\w.\-]+\z/ || {:error, "it holds characters a key does not"},
+         {:ok, keychain} <- keychain(opts) do
       line =
         Enum.join(
           ["add-generic-password -U -s #{@service} -a #{name} -l \"VitalAIze #{name}\" -w #{key}"] ++
-            Enum.map(keychain(opts), &~s("#{&1}")),
+            Enum.map(keychain, &~s("#{&1}")),
           " "
         )
 
@@ -107,56 +109,61 @@ defmodule Wallboard.KeyStore.Keychain do
         {:ok, ^key} -> :ok
         _ -> {:error, "the keychain did not keep it"}
       end
-    else
-      {:error, "it holds characters a key does not"}
     end
   end
 
   @impl true
   def fetch(name, opts) do
-    case Cmd.run(
-           "security",
-           ["find-generic-password", "-s", @service, "-a", name, "-w" | keychain(opts)],
-           timeout: 30_000
-         ) do
-      {:ok, out} ->
-        case String.trim(out) do
-          "" -> :none
-          key -> {:ok, key}
-        end
+    with {:ok, keychain} <- keychain(opts) do
+      case Cmd.run(
+             "security",
+             ["find-generic-password", "-s", @service, "-a", name, "-w" | keychain],
+             timeout: 30_000
+           ) do
+        {:ok, out} ->
+          case String.trim(out) do
+            "" -> :none
+            key -> {:ok, key}
+          end
 
-      {:error, why} ->
-        if not_found?(why), do: :none, else: {:error, "the keychain could not be read (#{why})"}
+        {:error, why} ->
+          if not_found?(why), do: :none, else: {:error, "the keychain could not be read (#{why})"}
+      end
     end
   end
 
   @impl true
   def delete(name, opts) do
-    case Cmd.run(
-           "security",
-           ["delete-generic-password", "-s", @service, "-a", name | keychain(opts)],
-           timeout: 30_000
-         ) do
-      {:ok, _} ->
-        :ok
+    with {:ok, keychain} <- keychain(opts) do
+      case Cmd.run(
+             "security",
+             ["delete-generic-password", "-s", @service, "-a", name | keychain],
+             timeout: 30_000
+           ) do
+        {:ok, _} ->
+          :ok
 
-      {:error, why} ->
-        if not_found?(why), do: :ok, else: {:error, "the keychain could not remove it (#{why})"}
+        {:error, why} ->
+          if not_found?(why), do: :ok, else: {:error, "the keychain could not remove it (#{why})"}
+      end
     end
   end
 
   defp not_found?(why), do: String.starts_with?(why, "security exited with #{@not_found}:")
 
-  # The keychain file to use, as the last argument, or none for the
-  # person's own keychains.
+  # `{:ok, [path]}` for the keychain file to use, as the last argument, or
+  # `{:ok, []}` for the person's own keychains. A path `security -i` cannot
+  # take as one word is refused, never passed over: the key would then go
+  # to the person's own keychain instead of the one named.
   defp keychain(opts) do
     case opts[:keychain] || System.get_env("VITALAIZE_KEYCHAIN") do
       path when is_binary(path) and path != "" ->
-        # A path with a quote cannot be passed to `security -i`.
-        if String.contains?(path, "\""), do: [], else: [Path.expand(path)]
+        if String.contains?(path, ["\"", "\\"]),
+          do: {:error, "the keychain named in VITALAIZE_KEYCHAIN has a quote or a backslash"},
+          else: {:ok, [Path.expand(path)]}
 
       _ ->
-        []
+        {:ok, []}
     end
   end
 end

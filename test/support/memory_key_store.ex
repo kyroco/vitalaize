@@ -29,7 +29,12 @@ defmodule Wallboard.KeyStore.Memory do
   end
 
   @impl true
-  def delete(name, _opts), do: :persistent_term.put(@key, Map.delete(all(), name))
+  def delete(name, _opts) do
+    case :persistent_term.get({__MODULE__, :refuse}, false) do
+      true -> {:error, "the test keychain refuses"}
+      false -> :persistent_term.put(@key, Map.delete(all(), name))
+    end
+  end
 
   @doc "Every key held, by name."
   def all, do: :persistent_term.get(@key, %{})
@@ -40,6 +45,6 @@ defmodule Wallboard.KeyStore.Memory do
     :persistent_term.put({__MODULE__, :refuse}, false)
   end
 
-  @doc "Makes every write fail from here on, until `clear/0`."
+  @doc "Makes every write and delete fail from here on, until `clear/0`."
   def refuse, do: :persistent_term.put({__MODULE__, :refuse}, true)
 end

@@ -295,6 +295,24 @@ defmodule Wallboard.NewRelicKeyTest do
       refute json =~ @key
       refute File.exists?(c.saved)
     end
+
+    test "a keychain that will not let it go keeps it, and the note with it", c do
+      settings_file(c.dir)
+      {:ok, _, %{"ok" => true}} = app_save(%{"new_relic.api_key" => @key})
+      before = File.read!(c.saved)
+      Memory.refuse()
+
+      {{:error, _}, json, answer} = app_save(%{"new_relic.api_key" => "", "brand.name" => "X"})
+
+      assert answer["errors"]["new_relic.api_key"] =~
+               "could not be taken out of the test keychain"
+
+      refute json =~ @key
+
+      # Nothing saved: the note still points at the key, which is still kept.
+      assert File.read!(c.saved) == before
+      assert Memory.all() == %{"new_relic" => @key}
+    end
   end
 
   describe "a key typed in vitalaize setup on Linux" do
@@ -484,6 +502,18 @@ defmodule Wallboard.NewRelicKeyTest do
       assert KeyStore.File.fetch("new_relic", opts) == :none
     end
 
+    test "a keychain named with a quote or a backslash is refused, never swapped for the person's own" do
+      # Refused before security runs, so the person's keychain is not reached.
+      for path <- [~s(/tmp/a"b.keychain-db), "/tmp/a\\b.keychain-db"] do
+        for result <- [
+              KeyStore.Keychain.put("new_relic", @key, keychain: path),
+              KeyStore.Keychain.fetch("new_relic", keychain: path),
+              KeyStore.Keychain.delete("new_relic", keychain: path)
+            ],
+            do: assert({:error, "the keychain named in VITALAIZE_KEYCHAIN" <> _} = result)
+      end
+    end
+
     test "a name that is not a plain word is refused before any store sees it" do
       for name <- ["../x", "New", "a b", "", "x/y"],
           do: assert({:error, "not a key name"} = KeyStore.put(name, @key))
@@ -521,6 +551,15 @@ defmodule Wallboard.NewRelicKeyTest do
     # says it worked.
     assert {:error, "the keychain did not keep it"} =
              store.put("new_relic", @key, keychain: Path.join(dir, "missing.keychain-db"))
+
+    # The store's own check, not only the settings': a "key" that would add
+    # words to security's command, such as -A (any app may read it) or a
+    # quote that ends the key early, is refused and nothing is kept.
+    for bad <- ["abcdefgh -A", ~s(abcdefgh" -A "x), "abc\tdefgh", "abcdefgh\\"] do
+      assert {:error, "it holds characters a key does not"} = store.put("new_relic", bad, opts)
+    end
+
+    assert store.fetch("new_relic", opts) == :none
   end
 
   describe "a command given a line of input" do
