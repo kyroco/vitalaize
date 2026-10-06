@@ -220,6 +220,18 @@ defmodule Wallboard.CiMinutesTest do
     end
   end
 
+  test "a session from another machine is matched in the repository it saved" do
+    elsewhere = session("elsewhere", "feature", @t0, @t0 + 3600)
+    Store.query("UPDATE sessions SET repo = 'acme/web' WHERE session_id = 'elsewhere'", [])
+
+    run(1, branch: "feature", created_at: @t0 + 600)
+    jobs(1, [job(1, 60, "ubuntu-latest")])
+
+    assert %{runs: 0} = CiMinutes.for_session(saved(elsewhere))
+    Store.query("UPDATE sessions SET repo = 'Acme/Shop' WHERE session_id = 'elsewhere'", [])
+    assert %{runs: 1} = CiMinutes.for_session(saved(elsewhere))
+  end
+
   test "a session in another repository does not take the run" do
     a = %{repo: "acme/shop", branch: "feature", event: "push", at: 100, default: nil}
 

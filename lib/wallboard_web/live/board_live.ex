@@ -1139,7 +1139,13 @@ defmodule WallboardWeb.BoardLive do
           <.compare_card :for={c <- @t.compare} c={c} days={@t.days} />
         </div>
       <% end %>
-      <%= for {group, label} <- [claude: "Claude", codex: "Codex", korium: "Korium", github: "GitHub"],
+      <%= for {group, label} <- [
+                shipped: "Shipped",
+                claude: "Claude",
+                codex: "Codex",
+                korium: "Korium",
+                github: "GitHub"
+              ],
               Enum.any?(@t.cards, &(&1.group == group)) do %>
         <h3 class="kicker trend-group">
           <span class={["dot8", "g-#{group}"]}></span> {label}
@@ -1185,7 +1191,7 @@ defmodule WallboardWeb.BoardLive do
         @t.days
       )} days before, when those are saved<span :if={@t.history_start}>
         (saved since {day_label(@t.history_start)})</span>. Faded bar: today so far. Dashed line: the average day.
-      Session numbers count on the day a session last worked.
+      Session numbers count on the day a session last worked, pull requests on the day they merged.
     </p>
     """
   end

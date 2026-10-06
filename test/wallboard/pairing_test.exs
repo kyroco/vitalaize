@@ -34,7 +34,7 @@ defmodule Wallboard.PairingTest do
   # One hub at a time: it has one name and one database.
   use ExUnit.Case, async: false
 
-  alias Wallboard.Collector.{Filter, Proto}
+  alias Wallboard.Collector.{Filter, Proto, Sender}
   alias Wallboard.Link.{Authority, Client, Hub, Machines}
   alias Wallboard.{Mailbox, Pairing, Settings, Store}
   alias Wallboard.Pairing.Door
@@ -114,7 +114,7 @@ defmodule Wallboard.PairingTest do
 
   # Messages from a client arrive as `{tag, what}`, so two clients in one
   # test can be told apart.
-  defp start_client(dir, paired, tag) do
+  defp start_client(dir, paired, tag, opts \\ []) do
     me = self()
 
     relay =
@@ -137,14 +137,16 @@ defmodule Wallboard.PairingTest do
 
     start_supervised!(
       {Client,
-       name: tag,
-       host: paired.host,
-       port: paired.port,
-       tls: paired.tls,
-       hello: hello,
-       buffer: Path.join(dir, "#{tag}.buffer"),
-       listener: relay,
-       backoff: [base_ms: 40, cap_ms: 400, back_soon_ms: 600]},
+       [
+         name: tag,
+         host: paired.host,
+         port: paired.port,
+         tls: paired.tls,
+         hello: hello,
+         buffer: Path.join(dir, "#{tag}.buffer"),
+         listener: relay,
+         backoff: [base_ms: 40, cap_ms: 400, back_soon_ms: 600]
+       ] ++ opts},
       id: tag
     )
 
@@ -520,6 +522,272 @@ defmodule Wallboard.PairingTest do
     end
   end
 
+  describe "a machine removed while it was away" do
+    test "is told so after a few failed tries, and its client stops for good", %{dir: dir} do
+      port = start_hub(dir)
+      paired = pair!(port, dir, "air")
+      door = %{host: "127.0.0.1", port: port}
+
+      # Pairing kept the board's own port, where the door is.
+      hub = dir |> Path.join("air/hub.json") |> File.read!() |> Jason.decode!()
+      assert hub["port"] == port
+      assert {:ok, :approved} = Pairing.check(door, paired.tls)
+
+      # Removed on the hub while the machine is off: its next connect is
+      # refused in the handshake, which does not say why.
+      {:ok, [_]} = Authority.revoke(Path.join(dir, "link"), "air")
+      assert {:ok, :removed} = Pairing.check(door, paired.tls)
+
+      start_client(dir, paired, :air, door: door)
+      assert_receive {:air, :removed}, 10_000
+      # What it said before it stopped: at least three failed tries.
+      assert length(said(:air)) >= 3
+
+      # Longer than its longest wait between tries: it has stopped.
+      Process.sleep(600)
+      assert %{phase: :removed} = Client.status(:air)
+      assert said(:air) == []
+    end
+
+    test "a client with no door, or a door that does not answer, keeps trying", %{dir: dir} do
+      port = start_hub(dir)
+      paired = pair!(port, dir, "air")
+      {:ok, _} = Authority.revoke(Path.join(dir, "link"), "air")
+
+      start_client(dir, paired, :air, door: %{host: "127.0.0.1", port: closed_port()})
+      start_client(dir, paired, :bee)
+
+      for tag <- [:air, :bee], _ <- 1..7, do: assert_receive({^tag, {:down, _}}, 5_000)
+      refute_received {:air, :removed}
+      refute_received {:bee, :removed}
+      assert %{phase: phase} = Client.status(:air)
+      assert phase in [:waiting, :connecting]
+    end
+
+    test "the door answers only the machine that holds the key, on a fresh challenge",
+         %{dir: dir} do
+      port = start_hub(dir, %{check_ms: 300})
+      air = pair!(port, dir, "air")
+      bee = pair!(port, dir, "bee")
+      from = {127, 0, 0, 1}
+      {:ok, air_der} = Authority.cert_bytes(air.tls.cert_pem)
+
+      proof = fn key, challenge ->
+        Authority.prove(key, Pairing.check_text(challenge, air_der))
+      end
+
+      {:ok, challenge} = Door.challenge(from)
+
+      assert {:ok, %{answer: "approved", signature: signature, hub_pem: hub_pem}} =
+               Door.check(from, challenge, air.tls.cert_pem, proof.(air.tls.key_pem, challenge))
+
+      {:ok, serial} = Authority.serial(air_der)
+      text = Pairing.answer_text(challenge, serial, "approved")
+      assert Authority.hub_signed?(air.tls.ca_pem, hub_pem, text, signature)
+
+      # Another machine's key over this machine's certificate.
+      assert {:error, :bad_request} =
+               Door.check(from, challenge, air.tls.cert_pem, proof.(bee.tls.key_pem, challenge))
+
+      # A proof of nothing, and a certificate that is not one.
+      assert {:error, :bad_request} = Door.check(from, challenge, air.tls.cert_pem, "x")
+
+      assert {:error, :bad_request} =
+               Door.check(from, challenge, "junk", proof.(air.tls.key_pem, challenge))
+
+      # The hub's own certificate, or its authority's, is not a machine's.
+      assert {:error, :bad_request} =
+               Door.check(from, challenge, hub_pem, proof.(air.tls.key_pem, challenge))
+
+      assert {:error, :bad_request} =
+               Door.check(from, challenge, air.tls.ca_pem, proof.(air.tls.key_pem, challenge))
+
+      # A challenge this door did not make, and one that ran out.
+      made_up = :crypto.strong_rand_bytes(56)
+
+      assert {:error, :bad_request} =
+               Door.check(from, made_up, air.tls.cert_pem, proof.(air.tls.key_pem, made_up))
+
+      Process.sleep(400)
+
+      assert {:error, :bad_request} =
+               Door.check(from, challenge, air.tls.cert_pem, proof.(air.tls.key_pem, challenge))
+
+      # Over HTTP: anything but an empty body or a whole answer is refused.
+      assert {:error, {:hub, _}} = post_check(port, %{challenge: "zz", cert: "x", proof: "y"})
+      assert {:error, {:hub, _}} = post_check(port, %{challenge: 1})
+    end
+
+    test "a removed the hub did not sign is not believed", %{dir: dir} do
+      port = start_hub(dir)
+      air = pair!(port, dir, "air")
+      bee = pair!(port, dir, "bee")
+      {:ok, air_der} = Authority.cert_bytes(air.tls.cert_pem)
+      {:ok, serial} = Authority.serial(air_der)
+      {:ok, seen} = Agent.start_link(fn -> nil end)
+
+      # The answer changed on the way, under the hub's own signature.
+      changed =
+        web(
+          {Wallboard.PairingTest.Middle,
+           port: port,
+           change: fn
+             "check", :answer, %{"answer" => _} = body -> %{body | "answer" => "removed"}
+             _, _, body -> body
+           end}
+        )
+
+      assert {:error, {:hub, _}} = Pairing.check(%{host: "127.0.0.1", port: changed}, air.tls)
+
+      # A whole answer signed by another machine of the same hub.
+      forged =
+        web(
+          {Wallboard.PairingTest.Middle,
+           port: port,
+           change: fn
+             "check", :answer, %{"challenge" => hex} = body ->
+               Agent.update(seen, fn _ -> Base.decode16!(hex, case: :mixed) end)
+               body
+
+             "check", :answer, %{"answer" => _} = body ->
+               challenge = Agent.get(seen, & &1)
+               text = Pairing.answer_text(challenge, serial, "removed")
+               signature = Authority.prove(bee.tls.key_pem, text)
+
+               %{
+                 body
+                 | "answer" => "removed",
+                   "signature" => Base.encode16(signature),
+                   "hub" => bee.tls.cert_pem
+               }
+
+             _, _, body ->
+               body
+           end}
+        )
+
+      assert {:error, {:hub, _}} = Pairing.check(%{host: "127.0.0.1", port: forged}, air.tls)
+      assert {:ok, :approved} = Pairing.check(%{host: "127.0.0.1", port: port}, air.tls)
+    end
+
+    test "a machine the hub still takes keeps trying, however often the door is asked",
+         %{dir: dir} do
+      port = start_hub(dir)
+      paired = pair!(port, dir, "air")
+      asked = fn -> :sys.get_state(Door).window.calls[{127, 0, 0, 1}] || 0 end
+      before = asked.()
+
+      # The link's port answers nothing, the board's does: every try
+      # fails, and every third the door says "approved".
+      start_client(dir, %{paired | port: closed_port()}, :air,
+        door: %{host: "127.0.0.1", port: port}
+      )
+
+      for _ <- 1..9, do: assert_receive({:air, {:down, _}}, 5_000)
+      wait_until(fn -> :sys.get_state(:air).asking == nil end)
+
+      # Two asks of two calls each, at the third and sixth tries.
+      assert asked.() - before >= 4
+      refute :removed in said(:air)
+      assert %{phase: phase} = Client.status(:air)
+      assert phase in [:waiting, :connecting]
+    end
+
+    test "a machine whose first ask found no door asks again, and learns it was removed",
+         %{dir: dir} do
+      paired = pair!(start_hub(dir), dir, "air")
+      board = closed_port()
+      {:ok, _} = Authority.revoke(Path.join(dir, "link"), "air")
+
+      start_client(dir, paired, :air, door: %{host: "127.0.0.1", port: board})
+
+      # Its first ask, at the third try, finds nothing at the board's port.
+      wait_until(fn ->
+        s = :sys.get_state(:air)
+        s.failed > 3 and s.asking == nil
+      end)
+
+      refute :removed in said(:air)
+
+      # The board comes back where the machine looks for it.
+      start_supervised!(
+        {Bandit, plug: WallboardWeb.Router, ip: :loopback, port: board, startup_log: false},
+        id: :board
+      )
+
+      assert_receive {:air, :removed}, 10_000
+    end
+
+    test "a list of machines that cannot be read is busy, never removed", %{dir: dir} do
+      port = start_hub(dir)
+      paired = pair!(port, dir, "air")
+      list = Path.join([dir, "link", "machines.json"])
+      good = File.read!(list)
+      File.write!(list, "half a file")
+      door = %{host: "127.0.0.1", port: port}
+
+      assert {:error, :busy} = Pairing.check(door, paired.tls)
+
+      File.write!(list, good)
+      assert {:ok, :approved} = Pairing.check(door, paired.tls)
+    end
+
+    test "a collector paired before the board's port was saved asks on the usual one",
+         %{dir: dir} do
+      port = start_hub(dir)
+      pair!(port, dir, "air")
+      folder = Path.join(dir, "air")
+      assert {:ok, %{door: %{host: "127.0.0.1", port: ^port}}} = Sender.paired(folder)
+
+      hub = folder |> Path.join("hub.json") |> File.read!() |> Jason.decode!()
+      File.write!(Path.join(folder, "hub.json"), Jason.encode!(Map.delete(hub, "port")))
+      assert {:ok, %{door: %{host: "127.0.0.1", port: 4747}}} = Sender.paired(folder)
+    end
+  end
+
+  # A port nothing listens on.
+  defp closed_port do
+    {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+    {:ok, port} = :inet.port(socket)
+    :gen_tcp.close(socket)
+    port
+  end
+
+  defp wait_until(check, tries \\ 200) do
+    cond do
+      check.() ->
+        :ok
+
+      tries == 0 ->
+        flunk("waited too long")
+
+      true ->
+        Process.sleep(25)
+        wait_until(check, tries - 1)
+    end
+  end
+
+  # Every message from a client that waits here now, in order.
+  defp said(tag) do
+    receive do
+      {^tag, what} -> [what | said(tag)]
+    after
+      0 -> []
+    end
+  end
+
+  defp post_check(port, body) do
+    {:ok, {{_, status, _}, _, text}} =
+      :httpc.request(
+        :post,
+        {~c"http://127.0.0.1:#{port}/pair/check", [], ~c"application/json", Jason.encode!(body)},
+        [timeout: 5_000],
+        body_format: :binary
+      )
+
+    if status == 200, do: {:ok, Jason.decode!(text)}, else: {:error, {:hub, status}}
+  end
+
   describe "the door" do
     setup %{dir: dir} do
       %{port: start_hub(dir)}
@@ -704,25 +972,28 @@ defmodule Wallboard.PairingTest do
                |> Enum.sort(:desc)
     end
 
-    test "a request whose machine stopped asking leaves the mailbox by itself", %{dir: dir} do
-      stop_supervised!(Door)
-
-      start_supervised!(
-        {Door, dir: Path.join(dir, "link"), link_port: Hub.port(), limits: %{gone_ms: 400}}
-      )
-
+    test "a request whose machine stopped asking leaves the mailbox by itself" do
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Mailbox.topic())
       {:ok, id} = open({10, 0, 0, 1}, "air")
       assert_receive {:mailbox, :changed}, 1_000
+      gone = Pairing.limits().gone_ms
+
+      # Time passes by moving the request's last ask back, not by
+      # sleeping, so a slow machine cannot run a request out early.
+      older = fn ms ->
+        :sys.replace_state(Door, fn s ->
+          update_in(s.requests[id], &%{&1 | asked: &1.asked - ms})
+        end)
+      end
 
       # While its machine asks, it stays. Someone else asking does not
       # keep it there.
-      Process.sleep(250)
+      older.(div(gone * 2, 3))
       assert {:ok, :waiting} = Door.status({10, 0, 0, 1}, id)
-      Process.sleep(250)
+      older.(div(gone * 2, 3))
       assert [%{id: ^id}] = Door.pending()
       assert {:ok, :waiting} = Door.status({10, 0, 0, 99}, id)
-      Process.sleep(250)
+      older.(div(gone * 2, 3))
       assert Door.pending() == []
       assert {:error, :gone} = Door.status({10, 0, 0, 1}, id)
       assert {:error, :gone} = Door.approve(id)

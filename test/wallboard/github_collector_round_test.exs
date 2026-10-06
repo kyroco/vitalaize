@@ -25,6 +25,8 @@ defmodule Wallboard.GitHubCollectorRoundTest do
         echo '{"jobs": [#{job.(11, 1)}, #{job.(12, 2)}]}' ;;
       *"/actions/runs/1/jobs"*)
         echo '{"jobs": [#{job.(12, 2)}]}' ;;
+      *"/pulls?"*)
+        echo '[]' ;;
       *"/actions/runs?"*)
         echo '{"total_count": 1, "workflow_runs": [{"id": 1, "run_attempt": 2, "status": "completed", "conclusion": "success", "head_branch": "feature", "created_at": "2026-09-30T16:59:00Z"}]}' ;;
       repos/acme/shop)

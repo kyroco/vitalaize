@@ -501,7 +501,10 @@ defmodule Wallboard.Archive.Transcript do
       source_mtime: ctx.mtime,
       captured_at: ctx.now,
       deleted_at: nil,
-      source: ctx[:source]
+      source: ctx[:source],
+      # Only this machine's folders can be read here; an upload's folder is
+      # on the machine that sent it.
+      repo: if(ctx[:source] in [nil, ""], do: Wallboard.GitRemote.github_repo(main.cwd))
     }
 
     {session, requests}

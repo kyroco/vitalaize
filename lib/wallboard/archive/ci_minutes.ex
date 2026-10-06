@@ -307,14 +307,16 @@ defmodule Wallboard.Archive.CiMinutes do
     end
   end
 
-  # Saved sessions matching `where`, as `link/2` takes them. Folders are
-  # read once each.
+  # Saved sessions matching `where`, as `link/2` takes them. A session saves
+  # its repository (as "owner/name"); one saved before that has it read from
+  # its folder, once per folder, which works for this machine's own.
   defp sessions(where, params) do
     rows =
       Store.query(
         """
         SELECT machine, session_id, coalesce(tool, 'claude') AS tool, entrypoint, git_branch,
-          json_extract(detail, '$.branches') AS branches, started_at, ended_at, cwd, source
+          json_extract(detail, '$.branches') AS branches, started_at, ended_at, cwd, source,
+          nullif(repo, '') AS repo
         FROM sessions WHERE #{where}
         """,
         params
@@ -322,7 +324,7 @@ defmodule Wallboard.Archive.CiMinutes do
 
     repos =
       rows
-      |> Enum.filter(&(&1.source in [nil, ""]))
+      |> Enum.filter(&(&1.repo == nil and &1.source in [nil, ""]))
       |> Enum.map(& &1.cwd)
       |> Enum.uniq()
       |> Map.new(&{&1, GitRemote.github_repo(&1)})
@@ -333,8 +335,7 @@ defmodule Wallboard.Archive.CiMinutes do
         session_id: row.session_id,
         tool: row.tool,
         nested: row.entrypoint in @nested,
-        # Only this machine's own sessions have their folder here.
-        repo: if(row.source in [nil, ""], do: repos[row.cwd]),
+        repo: row.repo || if(row.source in [nil, ""], do: repos[row.cwd]),
         spans:
           spans(%{
             git_branch: row.git_branch,

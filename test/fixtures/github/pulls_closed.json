@@ -1,0 +1,164 @@
+[
+  {
+    "number": 35,
+    "state": "closed",
+    "title": "Shop change 35",
+    "html_url": "https://github.com/acme/shop/pull/35",
+    "created_at": "2026-10-01T19:23:09Z",
+    "updated_at": "2026-10-01T19:25:41Z",
+    "closed_at": "2026-10-01T19:25:11Z",
+    "merged_at": "2026-10-01T19:25:11Z",
+    "user": {
+      "login": "dev-one"
+    },
+    "head": {
+      "ref": "dev/shop-0035-a-change",
+      "sha": "e28f0a53d0326c6b4c26af3bf5cf53403ef68459",
+      "repo": {
+        "full_name": "acme/shop"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
+    }
+  },
+  {
+    "number": 34,
+    "state": "closed",
+    "title": "Shop change 34",
+    "html_url": "https://github.com/acme/shop/pull/34",
+    "created_at": "2026-10-01T19:00:56Z",
+    "updated_at": "2026-10-01T19:05:15Z",
+    "closed_at": "2026-10-01T19:04:47Z",
+    "merged_at": "2026-10-01T19:04:47Z",
+    "user": {
+      "login": "dev-one"
+    },
+    "head": {
+      "ref": "dev/shop-0034-a-change",
+      "sha": "8f2cbc623661b6b489a7cc725f4c54b9e3cfbdf2",
+      "repo": {
+        "full_name": "acme/shop"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
+    }
+  },
+  {
+    "number": 33,
+    "state": "closed",
+    "title": "Shop change 33",
+    "html_url": "https://github.com/acme/shop/pull/33",
+    "created_at": "2026-10-01T18:53:43Z",
+    "updated_at": "2026-10-01T18:55:50Z",
+    "closed_at": "2026-10-01T18:55:24Z",
+    "merged_at": "2026-10-01T18:55:24Z",
+    "user": {
+      "login": "dev-one"
+    },
+    "head": {
+      "ref": "dev/shop-0033-a-change",
+      "sha": "baa4d36bedb52349461172713bc0631c5099458a",
+      "repo": {
+        "full_name": "acme/shop"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
+    }
+  },
+  {
+    "number": 32,
+    "state": "closed",
+    "title": "Shop change 32",
+    "html_url": "https://github.com/acme/shop/pull/32",
+    "created_at": "2026-10-01T18:07:20Z",
+    "updated_at": "2026-10-01T18:12:01Z",
+    "closed_at": "2026-10-01T18:11:07Z",
+    "merged_at": "2026-10-01T18:11:07Z",
+    "user": {
+      "login": "dev-one"
+    },
+    "head": {
+      "ref": "dev/shop-0032-a-change",
+      "sha": "92074fa02ded300eed03e190f1ba5993c00f7d26",
+      "repo": {
+        "full_name": "acme/shop"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
+    }
+  },
+  {
+    "number": 31,
+    "state": "closed",
+    "title": "Shop change 31",
+    "html_url": "https://github.com/acme/shop/pull/31",
+    "created_at": "2026-10-01T17:10:05Z",
+    "updated_at": "2026-10-01T17:13:14Z",
+    "closed_at": "2026-10-01T17:12:30Z",
+    "merged_at": "2026-10-01T17:12:30Z",
+    "user": {
+      "login": "dev-one"
+    },
+    "head": {
+      "ref": "dev/shop-0031-a-change",
+      "sha": "efc0ce15fe857faa4de132a40abbef23a15418b9",
+      "repo": {
+        "full_name": "acme/shop"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
+    }
+  },
+  {
+    "number": 30,
+    "state": "closed",
+    "title": "Shop change 30",
+    "html_url": "https://github.com/acme/shop/pull/30",
+    "created_at": "2026-10-01T16:49:24Z",
+    "updated_at": "2026-10-01T16:51:48Z",
+    "closed_at": "2026-10-01T16:51:09Z",
+    "merged_at": "2026-10-01T16:51:09Z",
+    "user": {
+      "login": "dev-one"
+    },
+    "head": {
+      "ref": "dev/shop-0030-a-change",
+      "sha": "08e93a9f33c2cb510d293b520486407443df9b40",
+      "repo": {
+        "full_name": "acme/shop"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "acme/shop",
+        "default_branch": "main"
+      }
+    }
+  }
+]
