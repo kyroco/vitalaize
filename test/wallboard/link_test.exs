@@ -479,14 +479,17 @@ defmodule Wallboard.LinkTest do
 
     test "a certificate replaced from outside the hub closes its open stream",
          %{dir: dir, link: link} do
-      port = start_hub(dir, limits: %{recheck_ms: 50})
+      # The hub looks at the list each time the collector sends something.
+      port = start_hub(dir, limits: %{recheck_ms: 0})
       {:ok, papa} = Authority.issue(link, "papa")
-      client = start_client(dir, port, papa, pace: %{keepalive_ms: 100})
+      client = start_client(dir, port, papa)
       assert_receive {:wallboard_link, {:resume, _}}, 5_000
 
       # What `mix wallboard.link.issue papa --replace` does, from another
-      # program: the hub's own process is told nothing.
+      # program: the hub's own process is told nothing. The collector's
+      # next message finds out.
       {:ok, _newer} = Authority.issue(link, "papa", replace: true)
+      :ok = Client.push(client, event(1))
 
       assert_receive {:wallboard_link, :removed}, 5_000
       wait_until(fn -> Hub.connected() == %{} end)
@@ -638,12 +641,13 @@ defmodule Wallboard.LinkTest do
       Phoenix.PubSub.subscribe(Wallboard.PubSub, "link")
       {:ok, papa} = Authority.issue(link, "papa")
 
-      # A slow pace, so the hub dies with events still on their way.
-      client = start_client(dir, port, papa, pace: %{per_tick: 2, tick_ms: 50})
+      # Ten go out at a time, and the next ten only when the test says (its
+      # timer is an hour), so the hub dies with events still on their way.
+      client = start_client(dir, port, papa, pace: %{per_tick: 10, tick_ms: 3_600_000})
       assert_receive {:wallboard_link, {:resume, %{}}}, 5_000
 
       :ok = Client.push(client, Enum.map(1..60, &event/1))
-      assert_receive {:wallboard_link, {:stored, seq}} when seq >= 10, 5_000
+      assert_receive {:wallboard_link, {:stored, 10}}, 5_000
 
       # Killed, not stopped: no goodbye, nothing flushed.
       assert Client.status(client).waiting > 0
@@ -663,7 +667,12 @@ defmodule Wallboard.LinkTest do
       # It returns by itself, and the hub says where it got to.
       assert_receive {:wallboard_link, {:resume, points}}, 10_000
       assert points == %{{"s1", "s1.jsonl"} => before * 100}
-      wait_until(fn -> Client.status(client).waiting == 0 end)
+
+      # The rest go ten at a time, each time the test says.
+      wait_until(fn ->
+        send(client, :pump)
+        Client.status(client).waiting == 0
+      end)
 
       # Every event is saved once, in order, none missing.
       assert Enum.map(saved("papa"), & &1.position) == Enum.map(1..80, &(&1 * 100))
