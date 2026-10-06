@@ -51,18 +51,8 @@ defmodule Wallboard.Archive.CiMinutes do
   Sessions save no commit, so the link is by branch and time.
 
   Attempts on the repository's default branch (and on `main` or `master`),
-  on another long-lived branch, scheduled runs, merge queue runs and runs
-  GitHub starts itself are never a session's: anyone's merge can cause
-  them. A branch is long-lived by the rule of
-  `Wallboard.Archive.PullRequests`: a pull request merged into it after
-  its own pull request merged (develop, which keeps taking features after
-  each release), or it took a merge and no pull request of its own has
-  merged or is open (one closed without merging does not count). A stacked
-  branch, merged into while its first pull request of its own is open, is
-  not. The board saves only closed pull requests and reads those of the
-  last `backfill_days` when it first starts, so develop whose last release
-  merged before then, with a release open now, looks stacked until that
-  release merges.
+  scheduled runs, merge queue runs and runs GitHub starts itself are never
+  a session's: anyone's merge can cause them.
   """
 
   alias Wallboard.{GitRemote, Settings, Store}
@@ -195,10 +185,8 @@ defmodule Wallboard.Archive.CiMinutes do
 
   @doc """
   The minutes of one pull request, in the same shape as `for_session/1`:
-  the runs GitHub tags with its number, push runs on its branch in its own
-  time (after the last other pull request on that branch closed, until it
-  closed) that GitHub tagged with no other, and its merge queue runs.
-  `repo` is "owner/name".
+  the runs GitHub tags with its number, push runs on its branch, and its
+  merge queue runs. `repo` is "owner/name".
   """
   def for_pr(repo, number) when is_binary(repo) and is_integer(number) do
     branches =
@@ -212,58 +200,15 @@ defmodule Wallboard.Archive.CiMinutes do
       |> Enum.map(& &1.branch)
       |> Enum.reject(&(&1 in ["main", "master", repo_facts(repo)[:default_branch]]))
 
-    # A later pull request can use the branch's name again: a run on it is
-    # this one's only in its time, and not when GitHub tagged another.
-    {on_branch, more} =
-      if branches == [] do
-        {"", []}
-      else
-        {since, until} = window(repo, number, branches)
-
-        {"""
-          OR (r.branch IN (#{marks(branches, 6)}) AND (r.pr IS NULL OR r.pr = ?2)
-           AND r.created_at > ?4 AND r.created_at <= ?5)
-         """, [since, until | branches]}
-      end
+    marks = Enum.map_join(Enum.with_index(branches, 4), ", ", fn {_, i} -> "?#{i}" end)
+    on_branch = if branches == [], do: "", else: " OR r.branch IN (#{marks})"
 
     "lower(r.repo) = lower(?1) AND (r.pr = ?2 OR r.branch LIKE ?3#{on_branch})"
-    |> attempts([repo, number, "gh-readonly-queue/%/pr-#{number}-%" | more])
+    |> attempts([repo, number, "gh-readonly-queue/%/pr-#{number}-%" | branches])
     |> total()
   end
 
   def for_pr(_repo, _number), do: total([])
-
-  # When a run on `branches`, a pull request's own, can be its own,
-  # `{since, until}`: after the last other pull request on those branches
-  # closed (before this one opened, when this one is saved), until this one
-  # closed. The board saves only closed pull requests, so an open one has
-  # no row and no end. A fork's pull request only shares the name.
-  @no_end 9_223_372_036_854_775_807
-
-  defp window(repo, number, branches) do
-    own =
-      Store.query(
-        """
-        SELECT created_at, coalesce(closed_at, merged_at) AS closed FROM gh_prs
-        WHERE lower(repo) = lower(?1) AND number = ?2
-        """,
-        [repo, number]
-      )
-      |> List.first(%{})
-
-    [%{since: since}] =
-      Store.query(
-        """
-        SELECT max(coalesce(closed_at, merged_at)) AS since FROM gh_prs
-        WHERE lower(repo) = lower(?1) AND number <> ?2 AND lower(head_repo) = lower(repo)
-          AND branch IN (#{marks(branches, 4)})
-          AND (?3 IS NULL OR coalesce(closed_at, merged_at) <= ?3)
-        """,
-        [repo, number, own[:created_at] | branches]
-      )
-
-    {since || 0, own[:closed] || @no_end}
-  end
 
   @doc """
   Rows for Trends, by the hour each attempt began, from `from` (Unix
@@ -312,9 +257,8 @@ defmodule Wallboard.Archive.CiMinutes do
   Pairs each attempt with the session that caused it, as `{attempt,
   session}`; attempts no session caused are left out. Pure, for the tests.
 
-  An attempt has `repo`, `branch`, `event`, `at`, `default` (its
-  repository's default branch, or nil) and, optionally, `long_lived` (true
-  when its branch is another long-lived one); a session has `machine`,
+  An attempt has `repo`, `branch`, `event`, `at` and `default` (its
+  repository's default branch, or nil); a session has `machine`,
   `session_id`, `repo` (nil when not known), `started_at`, `ended_at`,
   either `branch` (worked on for the whole session) or `spans` (each branch
   with when it was worked on, `%{branch, from, to}`), and, optionally,
@@ -338,7 +282,7 @@ defmodule Wallboard.Archive.CiMinutes do
 
   defp pushed?(a) do
     is_binary(a.branch) and is_integer(a.at) and a.event not in @not_pushed and
-      a.branch not in ["main", "master", a.default] and not Map.get(a, :long_lived, false) and
+      a.branch not in ["main", "master", a.default] and
       not String.starts_with?(a.branch, "gh-readonly-queue/")
   end
 
@@ -401,9 +345,7 @@ defmodule Wallboard.Archive.CiMinutes do
         params
       )
 
-    repos = rows |> Enum.map(& &1.repo) |> Enum.uniq()
-    facts = Map.new(repos, &{&1, repo_facts(&1)})
-    long_lived = Map.new(repos, &{&1, long_lived(&1)})
+    facts = rows |> Enum.map(& &1.repo) |> Enum.uniq() |> Map.new(&{&1, repo_facts(&1)})
 
     for row <- rows,
         at = if(row.attempt > 1, do: row.job_created || row.created_at, else: row.created_at),
@@ -422,7 +364,6 @@ defmodule Wallboard.Archive.CiMinutes do
         pr: row.pr,
         at: at,
         default: facts[row.repo][:default_branch],
-        long_lived: MapSet.member?(long_lived[row.repo], row.branch),
         failed: row.failed == 1,
         paid: if(public?, do: 0, else: hosted + grouped) + (row.larger || 0),
         free: if(public?, do: hosted, else: 0),
@@ -431,38 +372,6 @@ defmodule Wallboard.Archive.CiMinutes do
         avoided: if(public?, do: 0, else: own)
       }
     end
-  end
-
-  # The long-lived branches of `repo` besides its default one, by the rule
-  # in the moduledoc: a pull request merged into the branch, and either the
-  # branch's own pull request merged before the last merge into it, or none
-  # of its own has merged and none is open. One closed without merging
-  # does not count. The board saves only closed pull requests, so an open
-  # one is known from GitHub's tag on a run of the branch with a number the
-  # board has not saved closed (GitHub tags none from a fork). A fork's
-  # pull request only shares the branch's name, as in `PullRequests`; the
-  # board saves no head repository only for a deleted fork.
-  defp long_lived(repo) do
-    Store.query(
-      """
-      SELECT t.base AS branch FROM
-        (SELECT base, max(merged_at) AS last_in FROM gh_prs
-          WHERE lower(repo) = lower(?1) AND merged_at IS NOT NULL AND base IS NOT NULL
-          GROUP BY base) t
-        LEFT JOIN
-        (SELECT branch, max(merged_at) AS merged FROM gh_prs
-          WHERE lower(repo) = lower(?1) AND lower(head_repo) = lower(repo)
-            AND merged_at IS NOT NULL
-          GROUP BY branch) o ON o.branch = t.base
-      WHERE CASE WHEN o.merged IS NOT NULL THEN t.last_in > o.merged
-        ELSE NOT EXISTS
-          (SELECT 1 FROM gh_runs r
-            WHERE lower(r.repo) = lower(?1) AND r.branch = t.base AND r.pr IS NOT NULL
-              AND r.pr NOT IN (SELECT number FROM gh_prs WHERE lower(repo) = lower(?1))) END
-      """,
-      [repo]
-    )
-    |> MapSet.new(& &1.branch)
   end
 
   # Saved sessions matching `where`, as `link/2` takes them. A session saves

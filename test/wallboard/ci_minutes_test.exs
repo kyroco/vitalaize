@@ -391,61 +391,6 @@ defmodule Wallboard.CiMinutesTest do
       put_facts(@repo, %{private: true, default_branch: "main"})
       assert %{paid: 65, free: 0, unknown: 0} = CiMinutes.for_pr(@repo, 7)
     end
-
-    test "a long-lived branch's runs are no session's; a stacked branch's still are" do
-      # develop: a feature merged into it after its own release merged. A
-      # fork's branch of the same name merged later and changes nothing.
-      pr(1, "develop", "main", @t0 - 9000, @t0 - 8000)
-      pr(2, "feature-a", "develop", @t0 - 7000, @t0 - 6000)
-      pr(8, "develop", "main", @t0 - 5500, @t0 - 5000, head_repo: "someone/shop")
-      # staging: took a merge and has no pull request of its own open or
-      # merged; #6, closed without merging, does not count.
-      pr(3, "hotfix", "staging", @t0 - 7000, @t0 - 6000)
-      pr(6, "staging", "main", @t0 - 9500, nil, closed_at: @t0 - 9400)
-      run(8, branch: "staging", created_at: @t0 - 9450, pr: 6)
-      jobs(8, [job(8, 60, "ubuntu-latest")])
-      # stack-base: merged into before its own pull request merges. The
-      # board saves only closed pull requests, so its open one, #4, is
-      # known only from GitHub's tag on a run of its branch.
-      pr(5, "stack-top", "stack-base", @t0 - 7000, @t0 - 6000)
-      run(9, branch: "stack-base", created_at: @t0 - 8000, pr: 4)
-      jobs(9, [job(9, 60, "ubuntu-latest")])
-
-      for {branch, id} <- Enum.with_index(~w(develop staging stack-base), 1) do
-        run(id, branch: branch, created_at: @t0 + 600, event: "push")
-        jobs(id, [job(id, 60, "ubuntu-latest")])
-      end
-
-      assert %{runs: 0} = CiMinutes.for_session(session("d", "develop", @t0, @t0 + 3600))
-      assert %{runs: 0} = CiMinutes.for_session(session("s", "staging", @t0, @t0 + 3600))
-      assert %{runs: 1} = CiMinutes.for_session(session("b", "stack-base", @t0, @t0 + 3600))
-    end
-
-    test "a reused branch name: each pull request counts only its own runs there" do
-      pr(5, "fix", "main", @t0, @t0 + 1000)
-      # #9 is open, so the board has no row for it: its window starts when
-      # #5 closed all the same. A fork's #7 on a branch of the same name
-      # closed after #9's first push and sets nothing.
-      pr(7, "fix", "main", @t0 + 2000, @t0 + 4950, head_repo: "someone/shop")
-
-      run(1, pr: 5, branch: "fix", created_at: @t0 + 100)
-      run(2, branch: "fix", event: "push", created_at: @t0 + 200)
-      run(3, pr: 9, branch: "fix", created_at: @t0 + 5100)
-      # Pushed after #5 closed, before #9 opened: #9's first push.
-      run(4, branch: "fix", event: "push", created_at: @t0 + 4900)
-      # GitHub tagged this push with #5.
-      run(5, pr: 5, branch: "fix", event: "push", created_at: @t0 + 300)
-      for id <- 1..5, do: jobs(id, [job(id, 60 * id, "ubuntu-latest")])
-
-      assert %{paid: 8, runs: 3} = CiMinutes.for_pr(@repo, 5)
-      assert %{paid: 7, runs: 2} = CiMinutes.for_pr(@repo, 9)
-
-      # Once #9 closes and is saved, #5 still starts at the beginning: only
-      # a pull request that closed before it opened sets its start.
-      pr(9, "fix", "main", @t0 + 5000, @t0 + 6000)
-      assert %{paid: 8, runs: 3} = CiMinutes.for_pr(@repo, 5)
-      assert %{paid: 7, runs: 2} = CiMinutes.for_pr(@repo, 9)
-    end
   end
 
   # ---------------------------------------------------------------------------
@@ -497,22 +442,6 @@ defmodule Wallboard.CiMinutesTest do
       runner_name: opts[:runner],
       runner_group_name: opts[:group]
     }
-  end
-
-  defp pr(number, branch, base, created_at, merged_at, opts \\ []) do
-    :ok =
-      Store.put_prs([
-        %{
-          repo: @repo,
-          number: number,
-          branch: branch,
-          base: base,
-          head_repo: opts[:head_repo] || @repo,
-          created_at: created_at,
-          closed_at: opts[:closed_at] || merged_at,
-          merged_at: merged_at
-        }
-      ])
   end
 
   defp conclusion(2), do: "failure"
