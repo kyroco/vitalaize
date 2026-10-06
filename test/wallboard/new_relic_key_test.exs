@@ -486,6 +486,62 @@ defmodule Wallboard.NewRelicKeyTest do
     end
   end
 
+  describe "the key prompt in a real terminal" do
+    # `script` gives the prompt a terminal of its own, as a person's would
+    # be, and records what that terminal shows. The key is typed once the
+    # prompt is up, as a person would type it.
+    test "leaves the key off the screen, and reads it whole" do
+      ebin = Application.app_dir(:wallboard, "ebin")
+      elixir = System.find_executable("elixir")
+      code = ~s[IO.inspect(Wallboard.Setup.gets_hidden(:stdio, "key: "), label: "read")]
+      command = [elixir, "-pa", ebin, "-e", code]
+
+      args =
+        case :os.type() do
+          {:unix, :darwin} -> ["-q", "/dev/null" | command]
+          _ -> ["-qec", Enum.map_join(command, " ", &shell_word/1), "/dev/null"]
+        end
+
+      port =
+        Port.open({:spawn_executable, System.find_executable("script")}, [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: args
+        ])
+
+      shown = until_screen(port, "key: ", "")
+      Port.command(port, @key <> "\r")
+      shown = until_exit(port, shown)
+
+      assert shown =~ ~s(read: "#{@key}")
+      # The only place the key is on the screen is the line the test
+      # program printed itself.
+      assert shown |> String.split(@key) |> length() == 2
+    end
+  end
+
+  defp shell_word(word), do: "'" <> String.replace(word, "'", ~S('\'')) <> "'"
+
+  defp until_screen(port, text, acc) do
+    receive do
+      {^port, {:data, data}} ->
+        acc = acc <> data
+        if acc =~ text, do: acc, else: until_screen(port, text, acc)
+    after
+      30_000 -> flunk("the prompt never showed: #{inspect(acc)}")
+    end
+  end
+
+  defp until_exit(port, acc) do
+    receive do
+      {^port, {:data, data}} -> until_exit(port, acc <> data)
+      {^port, {:exit_status, _}} -> acc
+    after
+      30_000 -> flunk("the prompt never ended: #{inspect(acc)}")
+    end
+  end
+
   describe "removing VitalAIze" do
     test "keeps the key, unless the settings are deleted too", c do
       settings_file(c.dir)

@@ -731,7 +731,9 @@ defmodule Wallboard.Setup do
   # screen only when it reads the terminal itself, in its raw mode; asking
   # for no echo without that is answered :ok and changes nothing. Input
   # from a pipe or a file has nothing to hide, and is read as it is.
-  defp gets_hidden(:stdio = io, prompt) do
+  # Public only for its test, which types into a real terminal.
+  @doc false
+  def gets_hidden(:stdio = io, prompt) do
     raw? = :shell.start_interactive({:noshell, :raw}) in [:ok, {:error, :already_started}]
     hidden? = raw? and :io.setopts(io, echo: false) == :ok
 
@@ -745,7 +747,7 @@ defmodule Wallboard.Setup do
     end
   end
 
-  defp gets_hidden(io, prompt), do: gets(io, prompt)
+  def gets_hidden(io, prompt), do: gets(io, prompt)
 
   # ---------------------------------------------------------------------------
   # For the VitalAIze app

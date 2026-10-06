@@ -13,8 +13,8 @@ defmodule Wallboard.Secrets do
   It is read when the board starts, and again when either setting changes
   under a running board (`Wallboard.Settings.Watch`). The key is kept
   inside a function, so even if something prints the stored value it shows
-  `#Function<...>`, never the key. It is never written to a file, a log or
-  the settings.
+  `#Function<...>`, never the key. This module never writes it anywhere: not
+  to a log, a page or the settings. Only the key store keeps it.
   """
 
   require Logger

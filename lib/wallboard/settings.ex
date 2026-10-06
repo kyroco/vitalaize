@@ -818,7 +818,7 @@ defmodule Wallboard.Settings do
          {[:new_relic, :api_key], "New Relic API key", :key, false,
           "Paste the User key (it starts with NRAK-). Kept in your keychain on a Mac, in a " <>
             "file only you can read on Linux. Type a new one to replace it; empty the field " <>
-            "to remove it"},
+            "(- in vitalaize setup) to remove it"},
          {[:new_relic, :api_key_ref], "Or where it is in 1Password", :string, false,
           "An op:// address, read with 1Password's op command. Used when no key is typed above"},
          {[:new_relic, :region], "Region", {:choice, ["us", "eu"]}, false, nil}
