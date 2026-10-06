@@ -130,7 +130,7 @@ defmodule Wallboard.StreamTest do
     )
   end
 
-  # `sender` adds to the sender's options. Its process list is the test's,
+  # `sender` adds to or replaces the sender's options. Its process list is the test's,
   # empty unless the test sets one (see `processes/2`), never this
   # machine's.
   defp start_collector(c, sender \\ []) do
@@ -174,7 +174,8 @@ defmodule Wallboard.StreamTest do
              end
            end,
            client: [name: :"stream-client-#{System.unique_integer([:positive])}", backoff: @fast]
-         ] ++ sender},
+         ]
+         |> Keyword.merge(sender)},
         id: :sender
       )
 
@@ -1089,6 +1090,35 @@ defmodule Wallboard.StreamTest do
     w = start_collector(c)
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
     assert stopped?(w)
+  end
+
+  test "a running collector asks the door on the board's port it learned", c do
+    once({Wallboard.Pairing.Door, dir: c.link, link_port: c.port})
+
+    web =
+      once({Bandit, plug: WallboardWeb.Router, ip: :loopback, port: 0, startup_log: false},
+        id: :web
+      )
+
+    {:ok, {_, board}} = ThousandIsland.listener_info(web)
+    start_hub(c, board_port: board)
+    pair(c, "papa", %{port: free_port()})
+    w = start_collector(c)
+    dir = c.collector.collector.dir
+
+    port = fn ->
+      dir |> Path.join("hub.json") |> File.read!() |> Jason.decode!() |> Map.get("port")
+    end
+
+    wait_until(fn -> port.() == board end)
+    client = :sys.get_state(w.sender).client
+
+    # The hub goes away and the machine is removed meanwhile. The same
+    # client, never restarted, is told so by the door on the board's port.
+    kill_hub()
+    {:ok, [_]} = Authority.revoke(c.link, "papa")
+    wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
+    assert :sys.get_state(w.sender).client == client
   end
 
   test "a collector that is not paired sends nothing, and starts once it is", c do
