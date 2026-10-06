@@ -295,37 +295,59 @@ defmodule Wallboard.Archive.GitHubCollector do
   @doc "A run's jobs from a REST reply, as rows for the database."
   def parse_jobs(text, repo, run_id) do
     case Jason.decode(text) do
-      {:ok, %{"jobs" => jobs}} when is_list(jobs) ->
-        Enum.map(jobs, fn j ->
-          created = unix(j["created_at"])
-          started = unix(j["started_at"])
-          completed = unix(j["completed_at"])
-
-          %{
-            repo: repo,
-            job_id: j["id"],
-            run_id: j["run_id"] || run_id,
-            attempt: j["run_attempt"],
-            name: j["name"],
-            status: j["status"],
-            conclusion: j["conclusion"],
-            created_at: created,
-            started_at: started,
-            completed_at: completed,
-            queue_s: created && started && max(started - created, 0),
-            duration_s: started && completed && max(completed - started, 0),
-            runner_name: j["runner_name"],
-            labels: j["labels"] && Enum.join(j["labels"], ","),
-            failed_step:
-              (j["steps"] || [])
-              |> Enum.find(&(&1["conclusion"] == "failure"))
-              |> then(&(&1 && &1["name"]))
-          }
-        end)
-
-      _ ->
-        []
+      {:ok, %{"jobs" => jobs}} when is_list(jobs) -> job_rows(jobs, repo, run_id)
+      _ -> []
     end
+  end
+
+  @doc """
+  Whether job rows are a finished run's final jobs for `attempt`: every job
+  done and none from a later attempt. Right after a rerun starts, GitHub
+  already answers with the new attempt's jobs, still waiting.
+  """
+  def final_jobs?(rows, attempt) do
+    Enum.all?(rows, fn j ->
+      j.status == "completed" and (is_nil(attempt) or is_nil(j.attempt) or j.attempt <= attempt)
+    end)
+  end
+
+  @doc """
+  Rows for jobs already decoded from a REST reply. The board's own check
+  reads running runs' jobs with this too, so a run's panel shows the same
+  job whether it came from that check or from the database.
+  """
+  def job_rows(jobs, repo, run_id) do
+    Enum.map(jobs, fn j ->
+      created = unix(j["created_at"])
+      started = unix(j["started_at"])
+      completed = unix(j["completed_at"])
+
+      %{
+        repo: repo,
+        job_id: j["id"],
+        run_id: j["run_id"] || run_id,
+        attempt: j["run_attempt"],
+        name: j["name"],
+        status: j["status"],
+        conclusion: j["conclusion"],
+        created_at: created,
+        started_at: started,
+        completed_at: completed,
+        queue_s: created && started && max(started - created, 0),
+        duration_s: started && completed && max(completed - started, 0),
+        runner_name: j["runner_name"],
+        labels: j["labels"] && Enum.join(j["labels"], ","),
+        failed_step:
+          (j["steps"] || [])
+          |> Enum.find(&(&1["conclusion"] == "failure"))
+          |> then(&(&1 && &1["name"])),
+        # Not saved: the step a running job is on, for the run's panel.
+        current_step:
+          (j["steps"] || [])
+          |> Enum.find(&(&1["status"] == "in_progress"))
+          |> then(&(&1 && &1["name"]))
+      }
+    end)
   end
 
   defp unix(s) when is_binary(s) do
