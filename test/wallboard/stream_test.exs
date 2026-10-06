@@ -1103,7 +1103,12 @@ defmodule Wallboard.StreamTest do
     {:ok, {_, board}} = ThousandIsland.listener_info(web)
     start_hub(c, board_port: board)
     pair(c, "papa", %{port: free_port()})
-    w = start_collector(c)
+
+    # The sender looks at its files, and the client tries the hub again,
+    # only when the test says.
+    never = [base_ms: 3_600_000, cap_ms: 3_600_000, back_soon_ms: 3_600_000]
+    name = :"stream-client-#{System.unique_integer([:positive])}"
+    w = start_collector(c, tick_ms: 3_600_000, client: [name: name, backoff: never])
     dir = c.collector.collector.dir
 
     port = fn ->
@@ -1111,12 +1116,23 @@ defmodule Wallboard.StreamTest do
     end
 
     wait_until(fn -> port.() == board end)
-    client = :sys.get_state(w.sender).client
 
-    # The hub goes away and the machine is removed meanwhile. The same
-    # client, never restarted, is told so by the door on the board's port.
+    # Its own write is not taken for a pairing again: the client stays.
+    client = :sys.get_state(w.sender).client
+    tick(w)
+    assert :sys.get_state(w.sender).client == client
+
+    # The hub goes away and the machine is removed meanwhile. Three tries
+    # that fail before the hub says a word, and the same client, never
+    # restarted, asks the door on the board's port and is told so.
     kill_hub()
     {:ok, [_]} = Authority.revoke(c.link, "papa")
+
+    for _ <- 1..3 do
+      wait_until(fn -> Wallboard.Link.Client.status(client).phase == :waiting end)
+      send(client, :connect)
+    end
+
     wait_until(fn -> match?({:ok, %{state: "removed"}}, Sender.link_state(dir)) end)
     assert :sys.get_state(w.sender).client == client
   end

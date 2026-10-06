@@ -58,7 +58,7 @@ defmodule Wallboard.Link do
   loses nothing: what was not confirmed is sent again. The exception is
   an event the collector's filter could not have built, which the hub
   will not keep (`Wallboard.Link.Server`): for example a number out of
-  range, or a time more than a day past the hub's clock. It is confirmed
+  range, or a time dated more than a day ahead of the hub's clock. It is confirmed
   without being saved, so the collector does not send it for ever.
 
   On every connect the hub first sends `Resume`: the last position it has
