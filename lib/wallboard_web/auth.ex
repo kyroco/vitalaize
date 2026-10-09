@@ -1,8 +1,13 @@
 defmodule WallboardWeb.Auth do
   @moduledoc """
-  The token is optional. With no token in settings, anyone on the network
-  can open the board. With one, the first visit needs ?token=<token> in the
-  address; after that the browser's cookie is enough.
+  Who may open the board, and who may decide things on it.
+
+  With `approve_devices` off (the default), anyone on the network can look
+  at the board. With it on, a browser on another device first shows a code
+  and waits until the owner approves it in the mailbox (see
+  `Wallboard.Devices`); its session cookie keeps it approved from then on.
+  The board's own machine never waits: a request from this machine, asked
+  by one of its own names, is always let in.
 
   Looking at the board and deciding things on it are two different rights.
   Changing settings, or acting on a mailbox item, is for the owner: see
@@ -11,53 +16,61 @@ defmodule WallboardWeb.Auth do
 
   import Plug.Conn
 
+  alias Wallboard.Devices
+
   def init(opts), do: opts
 
   def call(conn, _opts) do
-    case Wallboard.Settings.get().token do
-      nil ->
-        conn
-
-      token ->
-        given = conn.params["token"]
-
-        cond do
-          is_binary(given) and Plug.Crypto.secure_compare(given, token) ->
-            put_session(conn, :token_hash, hash(token))
-
-          get_session(conn, :token_hash) == hash(token) ->
-            conn
-
-          true ->
-            deny(
-              conn,
-              401,
-              "Add ?token= and the token from settings.exs to the end of the address."
-            )
-        end
+    cond do
+      not Wallboard.Settings.get().approve_devices -> conn
+      local_conn?(conn) -> conn
+      Devices.approved?(get_session(conn, :device)) -> conn
+      true -> WallboardWeb.DevicePage.ask(conn)
     end
   end
 
-  # The live connection needs the same proof as the page.
+  # The live connection needs the same proof as the page, and loses it the
+  # moment its device is removed.
   def on_mount(:default, _params, session, socket) do
-    case Wallboard.Settings.get().token do
-      nil ->
-        {:cont, socket}
+    if Phoenix.LiveView.connected?(socket) do
+      # Where the connection comes from is only known while it mounts.
+      local? = who(socket, session).local?
+      Phoenix.PubSub.subscribe(Wallboard.PubSub, Devices.topic())
 
-      token ->
-        if session["token_hash"] == hash(token),
-          do: {:cont, socket},
-          else: {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+      socket =
+        Phoenix.LiveView.attach_hook(socket, :devices, :handle_info, fn
+          {:devices, :changed}, socket ->
+            if may_open?(local?, session),
+              do: {:cont, socket},
+              else: {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+
+          _, socket ->
+            {:cont, socket}
+        end)
+
+      if may_open?(local?, session),
+        do: {:cont, socket},
+        else: {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+    else
+      # A page drawn before the live connection came through `call/2`.
+      {:cont, socket}
     end
   end
 
-  def hash(token), do: :crypto.hash(:sha256, "wallboard-token:" <> token) |> Base.encode16()
+  defp may_open?(local?, session) do
+    local? or not Wallboard.Settings.get().approve_devices or
+      Devices.approved?(session["device"])
+  end
+
+  # A plain request from this machine, by one of its own names (see `who/2`
+  # for why the name matters).
+  defp local_conn?(conn), do: this_machine?(conn.remote_ip) and own_host?(conn.host)
 
   @doc """
   Who a live connection is, for `may_decide?/1`: whether it comes from this
-  machine itself, and the proof of the board password its browser holds.
-  Only a connected socket knows where it comes from, so call this in
-  `mount` once `connected?/1` is true.
+  machine itself, and the device key its browser holds, if any. Only a
+  connected socket knows where it comes from, so call this in `mount` once
+  `connected?/1` is true.
   """
   def who(socket, session) do
     from_here? =
@@ -77,27 +90,21 @@ defmodule WallboardWeb.Auth do
 
     local? = from_here? and asked_by_own_name?
 
-    %{local?: local?, token_hash: session["token_hash"]}
+    %{local?: local?, device: session["device"]}
   end
 
   @doc """
-  True when this connection may change settings or act on a mailbox item.
-
-  With a board password set, that is anyone whose browser has given it,
-  and nobody else, checked against the password as it is now. With none,
-  only someone at the hub's own machine, who opened the board by one of
-  that machine's own names: everyone else on the network can look, and
-  could otherwise approve a machine of their own.
+  True when this connection may change settings or act on a mailbox item:
+  someone at the hub's own machine, who opened the board by one of that
+  machine's own names, and, when the board asks for approval, any device
+  that was approved and has not been removed since. With approval off,
+  everyone else on the network can look, and could otherwise approve a
+  machine of their own.
   """
-  def may_decide?(%{local?: local?} = who) do
-    case Wallboard.Settings.get().token do
-      nil ->
-        local? == true
+  def may_decide?(%{local?: true}), do: true
 
-      token ->
-        is_binary(who[:token_hash]) and Plug.Crypto.secure_compare(who.token_hash, hash(token))
-    end
-  end
+  def may_decide?(%{device: device}) when is_binary(device),
+    do: Wallboard.Settings.get().approve_devices and Devices.approved?(device)
 
   def may_decide?(_), do: false
 
@@ -142,12 +149,5 @@ defmodule WallboardWeb.Auth do
       {:ok, ifs} -> for {_name, opts} <- ifs, {:addr, a} <- opts, do: a
       _ -> []
     end
-  end
-
-  defp deny(conn, status, message) do
-    conn
-    |> put_resp_content_type("text/plain")
-    |> send_resp(status, message)
-    |> halt()
   end
 end

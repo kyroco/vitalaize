@@ -131,7 +131,7 @@ defmodule WallboardWeb.BoardLive do
         who:
           if(connected?(socket),
             do: WallboardWeb.Auth.who(socket, session),
-            else: %{local?: false, token_hash: nil}
+            else: %{local?: false, device: nil}
           ),
         mailbox: Mailbox.items(),
         mailbox_open?: false,
@@ -214,6 +214,10 @@ defmodule WallboardWeb.BoardLive do
   # Something in the mailbox came or went.
   def handle_info({:mailbox, :changed}, socket),
     do: {:noreply, assign(socket, mailbox: Mailbox.items())}
+
+  # A device was approved or removed. One that may no longer look was
+  # already sent away (see WallboardWeb.Auth.on_mount/4).
+  def handle_info({:devices, :changed}, socket), do: {:noreply, socket}
 
   # Nobody touched the Archive tab for a while: back to the live sessions,
   # so a wall screen never hides a session that needs you. An open mailbox
@@ -373,9 +377,9 @@ defmodule WallboardWeb.BoardLive do
   end
 
   defp cannot_decide do
-    if Settings.get().token,
-      do: "Open the board with its password to decide.",
-      else: "Decide on the hub's own machine, or give the board a password in Settings first."
+    if Settings.get().approve_devices,
+      do: "This device is no longer approved. Open the board again to ask.",
+      else: "Decide on the hub's own machine, or turn on Other devices need approval there first."
   end
 
   # Sessions still being saved show as loading under Claude and Codex, so a

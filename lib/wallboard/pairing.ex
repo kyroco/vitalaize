@@ -94,8 +94,8 @@ defmodule Wallboard.Pairing do
   itself and receive what the collector then sends. The owner's check is
   the mailbox: a code on the collector that never shows up there means the
   collector is talking to something else. It also does not defend against
-  someone with admin access to the hub's own machine, or someone who holds
-  the board password.
+  someone with admin access to the hub's own machine, or someone using a
+  device the owner approved (see `Wallboard.Devices`).
   """
 
   alias Wallboard.Link.Authority

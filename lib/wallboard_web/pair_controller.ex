@@ -1,8 +1,8 @@
 defmodule WallboardWeb.PairController do
   @moduledoc """
   The pairing door: the three calls a machine without a certificate makes
-  to ask for one (see `Wallboard.Pairing`). They need no password and no
-  key, since the machine has neither yet; what they may do is limited by
+  to ask for one (see `Wallboard.Pairing`). They need no approved browser
+  and no key, since the machine has neither yet; what they may do is limited by
   `Wallboard.Pairing.Door`, and nothing they send is trusted until the
   owner approves a matching code in the mailbox.
 

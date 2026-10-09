@@ -358,13 +358,16 @@ defmodule Wallboard.SetupTest do
     test "values an older settings page saved in the database still load", %{dir: dir} do
       settings_file(dir)
       start_supervised!({Store, path: Path.join(dir, "wallboard.db")})
+      # An old board password there asks for approval, as one in
+      # settings.json does.
       Store.put_meta("settings_overrides", Jason.encode!(%{rotate_seconds: 12, token: "old"}))
 
-      assert %{rotate_seconds: 12, token: "old"} = Settings.load!()
+      assert %{rotate_seconds: 12, approve_devices: true} = settings = Settings.load!()
+      refute Map.has_key?(settings, :token)
 
       # A value saved now wins over it, and the rest of it stays.
       assert {:ok, _} = Setup.save(%{"rotate_seconds" => "45"}, mac())
-      assert %{rotate_seconds: 45, token: "old"} = Settings.load!()
+      assert %{rotate_seconds: 45, approve_devices: true} = Settings.load!()
     end
 
     test "a save that changes the role is held against the older page's values that role reads",
@@ -469,22 +472,44 @@ defmodule Wallboard.SetupTest do
 
     test "a secret comes back as dots and is kept when the dots are saved", %{dir: dir} do
       settings_file(dir)
-      assert {:ok, _} = Setup.save(%{"token" => "hunter2"}, mac())
+      assert {:ok, _} = Setup.save(%{"alerts.pushover_token" => "hunter2"}, mac())
 
       out = io([])
       assert :ok = Setup.json(["show"], mac() ++ [out: out])
       refute output(out) =~ "hunter2"
 
       assert {:ok, result} =
-               Setup.save(%{"token" => Settings.kept(), "brand.name" => "Studio"}, mac())
+               Setup.save(
+                 %{"alerts.pushover_token" => Settings.kept(), "brand.name" => "Studio"},
+                 mac()
+               )
 
-      assert Settings.get().token == "hunter2"
+      assert Settings.get().alerts.pushover_token == "hunter2"
       assert [%{path: [:brand, :name]}] = result.changed
+    end
+
+    test "a board password saved before 0.4.2 asks for approval, until approval is turned off",
+         %{dir: dir, saved: saved} do
+      settings_file(dir)
+      File.write!(saved, Jason.encode!(%{token: "hunter2", rotate_seconds: 9}))
+      assert %{approve_devices: true} = settings = Settings.load!()
+      refute Map.has_key?(settings, :token)
+
+      # Saving something else keeps it on, and the password itself is not
+      # written back.
+      assert {:ok, _} = Setup.save(%{"brand.name" => "Studio"}, mac())
+      assert %{approve_devices: true} = Settings.load!()
+      refute File.read!(saved) =~ "hunter2"
+
+      # Turned off, it stays off.
+      assert {:ok, _} = Setup.save(%{"approve_devices" => "false"}, mac())
+      assert %{approve_devices: false} = Settings.load!()
+      refute Map.has_key?(Jason.decode!(File.read!(saved)), "token")
     end
 
     test "the saved file can only be read by its owner", %{dir: dir, saved: saved} do
       settings_file(dir)
-      assert {:ok, _} = Setup.save(%{"token" => "hunter2"}, mac())
+      assert {:ok, _} = Setup.save(%{"alerts.pushover_token" => "hunter2"}, mac())
       assert Bitwise.band(File.stat!(saved).mode, 0o777) == 0o600
     end
   end
@@ -933,7 +958,7 @@ defmodule Wallboard.SetupTest do
       assert Settings.get().rotate_seconds == 7
     end
 
-    test "keeps its settings, the board password too, when the folder it was started in is removed",
+    test "keeps its settings, approval too, when the folder it was started in is removed",
          %{dir: dir} do
       # A release run by hand: nothing names the settings file and the
       # release's own folder has none, so it is the one in the folder the
@@ -947,14 +972,14 @@ defmodule Wallboard.SetupTest do
 
       File.write!(Path.join(started_in, "settings.exs"), """
       %{
-        token: "hunter2",
+        approve_devices: true,
         rotate_seconds: 11,
         archive: %{path: #{inspect(Path.join(dir, "wallboard.db"))}, advertise: false}
       }
       """)
 
       File.cd!(started_in, fn ->
-        assert %{token: "hunter2", rotate_seconds: 11} = Settings.load!()
+        assert %{approve_devices: true, rotate_seconds: 11} = Settings.load!()
         # Its looks are made here, by hand, rather than on its timer.
         watch =
           start_supervised!({Watch, name: :watch_moved, every_ms: 3_600_000, listener: self()})
@@ -973,29 +998,29 @@ defmodule Wallboard.SetupTest do
 
         refute_received {:settings, :reloaded}
         assert_received {:settings, :moved}
-        assert %{token: "hunter2", rotate_seconds: 11} = Settings.get()
+        assert %{approve_devices: true, rotate_seconds: 11} = Settings.get()
         assert Process.alive?(watch)
       end)
     end
 
-    test "keeps its password when the saved settings that hold it are removed", %{
+    test "keeps approval on when the saved settings that turned it on are removed", %{
       dir: dir,
       saved: saved
     } do
-      # A password set in the app or with `vitalaize setup` is in
+      # Approval turned on in the app or with `vitalaize setup` is in
       # settings.json, not in the settings file.
       settings_file(dir)
-      File.write!(saved, Jason.encode!(%{token: "hunter2", rotate_seconds: 9}))
-      assert %{token: "hunter2", rotate_seconds: 9} = Settings.load!()
+      File.write!(saved, Jason.encode!(%{approve_devices: true, rotate_seconds: 9}))
+      assert %{approve_devices: true, rotate_seconds: 9} = Settings.load!()
       start_supervised!({Watch, name: :watch_removed, every_ms: 20, listener: self()})
 
       # The saved settings go away under the running board.
       File.rm!(saved)
       assert_receive {:settings, :reloaded}, 2_000
 
-      # What is read as it goes follows the files. The password is only
-      # read at the start, so the running board keeps the one it has.
-      assert %{token: "hunter2", rotate_seconds: 30} = Settings.get()
+      # What is read as it goes follows the files. Approval is only read
+      # at the start, so the running board stays closed to new devices.
+      assert %{approve_devices: true, rotate_seconds: 30} = Settings.get()
     end
 
     test "a setting that is only read at the start waits for the next start", %{
@@ -1003,22 +1028,25 @@ defmodule Wallboard.SetupTest do
       saved: saved
     } do
       settings_file(dir)
-      assert %{token: nil, port: 4747, role: :both} = Settings.load!()
+      assert %{approve_devices: false, port: 4747, role: :both} = Settings.load!()
       start_supervised!({Watch, name: :watch_start_only, every_ms: 20, listener: self()})
 
       # Saved from another program, on a machine with no service to restart.
-      values = %{token: "hunter2", port: 4999, role: "hub", rotate_seconds: 7}
+      values = %{approve_devices: true, port: 4999, role: "hub", rotate_seconds: 7}
       File.write!(saved, Jason.encode!(values))
       assert_receive {:settings, :reloaded}, 2_000
-      assert %{token: nil, port: 4747, role: :both, rotate_seconds: 7} = Settings.get()
+
+      assert %{approve_devices: false, port: 4747, role: :both, rotate_seconds: 7} =
+               Settings.get()
 
       # The next start takes them up.
-      assert %{token: "hunter2", port: 4999, role: :hub, rotate_seconds: 7} = Settings.load!()
+      assert %{approve_devices: true, port: 4999, role: :hub, rotate_seconds: 7} =
+               Settings.load!()
     end
 
     test "keeps its settings while the settings file is gone, and takes up a save once it is back",
          %{dir: dir, saved: saved} do
-      settings_file(dir, ~s(token: "hunter2"))
+      settings_file(dir, ~s(approve_devices: true))
       Settings.load!()
       start_supervised!({Watch, name: :watch_gone_file, every_ms: 20, listener: self()})
 
@@ -1027,11 +1055,11 @@ defmodule Wallboard.SetupTest do
       File.write!(saved, Jason.encode!(%{rotate_seconds: 8}))
       assert_receive {:settings, :moved}, 2_000
       refute_received {:settings, :reloaded}
-      assert %{token: "hunter2", rotate_seconds: 30} = Settings.get()
+      assert %{approve_devices: true, rotate_seconds: 30} = Settings.get()
 
       File.rename!(file <> ".away", file)
       assert_receive {:settings, :reloaded}, 2_000
-      assert %{token: "hunter2", rotate_seconds: 8} = Settings.get()
+      assert %{approve_devices: true, rotate_seconds: 8} = Settings.get()
     end
   end
 
@@ -1048,6 +1076,7 @@ defmodule Wallboard.SetupTest do
         settings: settings,
         values: Settings.shown(settings),
         machines: [],
+        devices: [],
         ignored_repos: []
       }
 
@@ -1055,7 +1084,7 @@ defmodule Wallboard.SetupTest do
     end
 
     test "shows the settings, has nothing to change them with, and says where to", %{dir: dir} do
-      settings_file(dir, ~s(token: "hunter2"))
+      settings_file(dir, ~s(alerts: %{pushover_token: "hunter2"}))
       html = page(Settings.load!())
 
       assert html =~ "acme/api"

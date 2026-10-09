@@ -1,8 +1,9 @@
 defmodule WallboardWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :wallboard
 
-  # The cookie only remembers that this browser once came with the right
-  # token, so the iPad keeps working after Safari drops the ?token= part.
+  # The cookie keeps an approved device's key (see Wallboard.Devices), so
+  # the iPad stays approved from one visit to the next. Signed with a key
+  # made at random for this board (see Wallboard.Settings.secret_key_base/1).
   @session_options [
     store: :cookie,
     key: "_wallboard",

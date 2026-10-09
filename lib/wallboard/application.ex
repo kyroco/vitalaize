@@ -151,6 +151,8 @@ defmodule Wallboard.Application do
       {Task.Supervisor, name: Wallboard.TaskSupervisor},
       # Takes up what the VitalAIze app or `vitalaize setup` saves.
       Wallboard.Settings.Watch,
+      # Browsers on other devices that may open the board, and those asking.
+      {Wallboard.Devices, dir: Wallboard.Devices.dir(settings)},
       # Reads finished runs' jobs for the Git tab, once for every screen.
       Wallboard.RunJobs
     ] ++
@@ -194,14 +196,14 @@ defmodule Wallboard.Application do
   end
 
   defp announce(settings) do
-    query = if settings.token, do: "/?token=#{settings.token}", else: "/"
-
     for ip <- Wallboard.Network.lan_addresses() do
-      Logger.info("Board is up: http://#{ip}:#{settings.port}#{query}")
+      Logger.info("Board is up: http://#{ip}:#{settings.port}/")
     end
 
-    if settings.token == nil,
-      do: Logger.info("No token set, so anyone on this network can open the board.")
+    if settings.approve_devices,
+      do:
+        Logger.info("Other devices need approval: each shows a code to approve in the mailbox."),
+      else: Logger.info("Anyone on this network can open the board.")
 
     case Wallboard.Alerts.channels(settings) do
       [] ->

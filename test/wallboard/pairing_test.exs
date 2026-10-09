@@ -179,6 +179,14 @@ defmodule Wallboard.PairingTest do
     })
   end
 
+  # A browser asks, the owner approves, and the browser collects its key.
+  defp approved_device! do
+    {:ok, id, _code} = Wallboard.Devices.ask("192.0.2.7", "iPad")
+    :ok = Wallboard.Devices.approve(id)
+    {:approved, key} = Wallboard.Devices.status(id, "192.0.2.7")
+    key
+  end
+
   defp html(rendered), do: rendered |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
 
   defp panel(may_decide? \\ true) do
@@ -1142,28 +1150,18 @@ defmodule Wallboard.PairingTest do
       assert {:error, :refused} = Task.await(task, 5_000)
     end
 
-    test "with a board password set, approving from a device that has not entered it is refused",
+    test "with approval on, approving from a device that was not approved is refused",
          %{dir: dir} do
       port = start_hub(dir)
-      Settings.put(%{token: "open sesame"})
+      start_supervised!({Wallboard.Devices, dir: Path.join(dir, "browsers")})
+      Settings.put(%{approve_devices: true})
       task = ask(port, dir, "air")
       assert_receive {:code, "air", _}, 5_000
       assert [%{id: id}] = Mailbox.items()
 
-      # The page itself is closed to a device without the password...
-      conn = Plug.Test.conn(:get, "/") |> Plug.Test.init_test_session(%{})
-      conn = %{conn | params: %{}}
-      assert %{status: 401, halted: true} = Auth.call(conn, [])
-      assert {:halt, _} = Auth.on_mount(:default, %{}, %{}, socket(%{}))
-
-      # ...and so is the button, for a connection that got in some other
-      # way: one with no proof, one with an older password's proof, and one
-      # that is merely on the hub's own machine.
-      for who <- [
-            %{local?: false, token_hash: nil},
-            %{local?: false, token_hash: Auth.hash("an older password")},
-            %{local?: true, token_hash: nil}
-          ] do
+      # A connection that got in some other way cannot press the button:
+      # one with no device key, and one with a key nobody approved.
+      for who <- [%{local?: false, device: nil}, %{local?: false, device: "made up"}] do
         refute Auth.may_decide?(who)
 
         assert {:noreply, after_tap} =
@@ -1173,13 +1171,14 @@ defmodule Wallboard.PairingTest do
                    board_socket(who)
                  )
 
-        assert after_tap.assigns.mailbox_note == "Open the board with its password to decide."
+        assert after_tap.assigns.mailbox_note =~ "no longer approved"
         assert [%{id: ^id}] = Mailbox.items()
         assert Authority.machines(Path.join(dir, "link")) == []
       end
 
-      # The device that entered it approves.
-      who = %{local?: false, token_hash: Auth.hash("open sesame")}
+      # An approved device approves.
+      key = approved_device!()
+      who = %{local?: false, device: key}
       assert Auth.may_decide?(who)
 
       assert {:noreply, after_tap} =
@@ -1211,20 +1210,20 @@ defmodule Wallboard.PairingTest do
       end
     end
 
-    test "with no board password, only the hub's own machine may decide", %{dir: dir} do
+    test "with approval off, only the hub's own machine may decide", %{dir: dir} do
       port = start_hub(dir)
       task = ask(port, dir, "air")
       assert_receive {:code, "air", _}, 5_000
       assert [%{id: id}] = Mailbox.items()
 
-      refute Auth.may_decide?(%{local?: false, token_hash: nil})
+      refute Auth.may_decide?(%{local?: false, device: nil})
       refute Auth.may_decide?(%{})
 
       assert {:noreply, after_tap} =
                BoardLive.handle_event(
                  "mailbox_act",
                  %{"id" => id, "action" => "approve"},
-                 board_socket(%{local?: false, token_hash: nil})
+                 board_socket(%{local?: false, device: nil})
                )
 
       assert after_tap.assigns.mailbox_note =~ "hub's own machine"
@@ -1234,7 +1233,7 @@ defmodule Wallboard.PairingTest do
                BoardLive.handle_event(
                  "mailbox_act",
                  %{"id" => id, "action" => "approve"},
-                 board_socket(%{local?: true, token_hash: nil})
+                 board_socket(%{local?: true, device: nil})
                )
 
       assert {:ok, _} = Task.await(task, 5_000)
@@ -1334,16 +1333,20 @@ defmodule Wallboard.PairingTest do
       assert Authority.working?(Path.join(dir, "link"), "air")
     end
 
-    test "Disconnect is refused once the board password no longer matches", %{dir: dir} do
+    test "Disconnect is refused once the device that opened the page is removed", %{dir: dir} do
       port = start_hub(dir)
+      start_supervised!({Wallboard.Devices, dir: Path.join(dir, "browsers")})
+      Settings.put(%{approve_devices: true})
       pair!(port, dir, "air")
-      Settings.put(%{token: "new password"})
+      key = approved_device!()
+      [%{id: device}] = Wallboard.Devices.list()
+      assert :ok = Wallboard.Devices.remove(device)
 
       page =
         socket(%{
           allowed?: true,
-          who: %{local?: true, token_hash: Auth.hash("old password")},
-          settings: Settings.defaults(),
+          who: %{local?: false, device: key},
+          settings: Settings.get(),
           notice: nil,
           confirm_disconnect: "air"
         })
@@ -1355,10 +1358,8 @@ defmodule Wallboard.PairingTest do
       assert Authority.working?(Path.join(dir, "link"), "air")
 
       # The same goes for everything else the page can do.
-      assert {:noreply, page} = SettingsLive.handle_event("new_key", %{}, page)
+      assert {:noreply, page} = SettingsLive.handle_event("refresh_archive", %{}, page)
       assert page.assigns.notice =~ "Open this page again"
-      assert {:noreply, _} = SettingsLive.handle_event("save", %{"s" => %{}}, page)
-      assert Settings.get().token == "new password"
     end
   end
 
