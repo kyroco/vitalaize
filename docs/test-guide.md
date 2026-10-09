@@ -112,7 +112,8 @@ and approve this code." and "Waiting for the hub to approve...". Go to step 4.
 
 ## 4. Approve the code in the mailbox
 
-On the hub Mac itself (not on the iPad, unless the board has a password):
+On the hub Mac itself (or on an approved device, when other devices need
+approval):
 
 1. Open the board. The envelope by the clock now shows a 1. Tap it.
 2. The mailbox holds "A new machine wants to connect", with the second
@@ -147,7 +148,7 @@ Collector: sending to the hub at "<address>", port 4748.
 
 | What you see | What it means |
 | -- | -- |
-| The Approve button is greyed out | You are not on the hub's own machine, and the board has no password. Open `http://localhost:4747/` on the hub Mac. |
+| The Approve button is greyed out | You are not on the hub's own machine, and other devices do not need approval. Open `http://localhost:4747/` on the hub Mac. |
 | No item in the mailbox, but the machine shows a code | The machine is talking to something that is not this hub. Stop, and give it this hub's address. |
 | "Nobody approved the code in time." | The code ran out after 10 minutes. Pair again for a new one. |
 | The hub's log has "was approved" but never "connected" | The stream cannot reach port 4748 on the hub. Check the hub's firewall. The collector's log says "Link: no connection to the hub (…). Trying again in … ms." |

@@ -241,7 +241,7 @@ Pictures: [top](mac-app-checks/pictures/fresh-hub/10-settings.jpg),
 | Board name, Seconds between pages | Typed, saved | "Saved in …"; in use with no restart |
 | Board port | Typed "abc", saved; then a free port, saved | "abc": "Nothing was saved", and the setting is named. A port: the board restarts and "The board is answering at http://localhost:PORT." The old port no longer answers |
 | Time zone | Typed, saved | In use |
-| Board password | Typed, saved | The board restarts. It then answers "add ?token=" without the password and opens with it. The first screen still says it is running, and says the address needs the password once ([picture](mac-app-checks/pictures/fresh-hub/16-status-password.jpg)) |
+| Other devices need approval | Turned on, saved | The board restarts. This Mac opens it with no code; another device is shown a code to approve. The first screen still says it is running, and says other devices need approval (picture to be taken on the next run, `16-status-approval`) |
 | Tell me when a new version is out, Korium numbers, Codex sessions, Take collectors | Turned on or off, saved | In use; Take collectors restarts the board |
 | New Relic page; Save this Mac's Claude sessions | Turned on and off again, not saved | The switch changes; see the last section |
 | Phone number (Messages) | Typed and emptied, not saved | See the last section |
@@ -316,7 +316,7 @@ Each says what went wrong and what to do, and whether the board is running.
 | The folder cannot be written to during Reconfigure | "Could not write … The file that was there is unchanged." | "The board that was set up before is still running at http://localhost:N." | `over-renamed` |
 | The folder cannot be written to during Save | "Could not write to file … Check that the folder can be written to. Nothing was saved." | Still running | `over-renamed` |
 | Remove cannot keep its copies | "Could not keep a copy of … Nothing was removed. Check that … can be written to and use Remove again, or turn on deleting the database and settings too." ([picture](mac-app-checks/pictures/over-renamed/a05-remove-failed.jpg)) | "The board that was set up before is still running at http://localhost:N." | `over-renamed` |
-| The board has a password | The first screen: "This board has a password. The first time a browser opens it, add ?token= and the password to the end of the address." | Running | `fresh-hub` |
+| Other devices need approval | The first screen: "Other devices need approval. A new one shows a code; approve it in the mailbox on the board. This Mac never needs one." | Running | `fresh-hub` |
 | The login item starts an app that is gone | The app mends it when opened and lists what it did | Running again | `over-renamed` |
 | The carried-over settings file is gone, and so is its copy | Names the file; "Settings beyond the ones this setup asks about were not carried over." | Running again | `over-renamed` |
 | The carried-over settings file is gone, its copy is there | The copy is used; nothing is lost | Running again | `over-renamed` |
@@ -378,6 +378,6 @@ can do. Do these on a Mac where VitalAIze is set up, in this order.
    a phone number (a text is sent when a session needs you), the New Relic page
    with a real key typed in Settings (it should be in Keychain Access under
    VitalAIze, the page should fill within a minute with no restart, and it
-   should still fill after a restart), the board password
-   from another device (it should ask for `?token=` once), and a board started
+   should still fill after a restart), approval from another device (it should
+   show a code, and open once the code is approved in the mailbox), and a board started
    by hand that is really running when "Stop that board" is on.
