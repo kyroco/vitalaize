@@ -27,10 +27,12 @@ defmodule WallboardWeb.DevicePage do
         else: conn
 
     cond do
-      # From this machine, by a name that is not its own, and through no
-      # proxy: a page some site led this machine's own browser to. The
-      # person at this machine opens the board by its own name instead.
-      WallboardWeb.Auth.this_machine?(conn.remote_ip) and not WallboardWeb.Auth.forwarded?(conn) ->
+      # From one of this machine's network addresses, by a name that is not
+      # its own, and through no proxy: a page some site led this machine's
+      # own browser to. The person at this machine opens the board by its
+      # own name instead. From loopback it may be a tunnel's visitor, who
+      # asks for a code like any device.
+      own_network_address?(conn.remote_ip) and not WallboardWeb.Auth.forwarded?(conn) ->
         page(conn, 403, :this_machine, port: conn.port)
 
       get_session(conn, :device_refused) ->
@@ -60,6 +62,14 @@ defmodule WallboardWeb.DevicePage do
         end
     end
   end
+
+  defp own_network_address?(addr),
+    do: WallboardWeb.Auth.this_machine?(addr) and not loopback?(addr)
+
+  defp loopback?({127, _, _, _}), do: true
+  defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback?({0, 0, 0, 0, 0, 65535, a, _}), do: div(a, 256) == 127
+  defp loopback?(_), do: false
 
   defp new_ask(conn, address) do
     agent = conn |> get_req_header("user-agent") |> List.first()

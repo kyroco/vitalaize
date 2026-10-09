@@ -47,6 +47,15 @@ defmodule Wallboard.DevicesTest do
 
   defp session(conn), do: Plug.Conn.get_session(conn)
 
+  # One of this Mac's own network addresses, not loopback.
+  defp lan_address do
+    {:ok, ifs} = :inet.getifaddrs()
+
+    Enum.find_value(ifs, fn {_, opts} ->
+      Enum.find(Keyword.get_values(opts, :addr), &match?({a, _, _, _} when a != 127, &1))
+    end) || flunk("this machine has no network address to test with")
+  end
+
   # A device asks, the owner approves, and it collects its key.
   defp approved_key do
     ip = "192.0.2.#{System.unique_integer([:positive]) |> rem(250)}"
@@ -250,15 +259,36 @@ defmodule Wallboard.DevicesTest do
         refute visit(%{}, ip: {127, 0, 0, 1}, host: host).halted, host
       end
 
+      # Called by its 192.168 address, it connects from that address.
+      lan = lan_address()
+      refute visit(%{}, ip: lan, host: lan |> :inet.ntoa() |> to_string()).halted
+
       assert Mailbox.items() == []
       assert Auth.may_decide?(%{local?: true, device: nil})
     end
 
-    test "asked by somebody else's name is sent to its own name, and asks nothing",
+    test "a forward into it is another device, by the name its visitor used", %{dir: dir} do
+      # ssh -R, socat or a Tailscale TCP forward: from loopback, no proxy
+      # header, and the visitor's own name for this Mac.
+      start(dir, max_per_address: 5)
+      lan = lan_address() |> :inet.ntoa() |> to_string()
+
+      for host <- [lan, "100.64.0.1", "papa.tail1234.ts.net"] do
+        conn = visit(%{}, ip: {127, 0, 0, 1}, host: host)
+        assert conn.status == 401, host
+        assert conn.resp_body =~ "Approve this device"
+      end
+
+      refute Auth.here?({127, 0, 0, 1}, lan)
+      assert Auth.here?({127, 0, 0, 1}, "localhost")
+      assert Auth.here?({127, 0, 0, 1}, "[::1]")
+    end
+
+    test "asked by somebody else's name from its network address is sent to its own name",
          %{dir: dir} do
       # A page some site led this Mac's own browser to.
       start(dir)
-      conn = visit(%{}, ip: {127, 0, 0, 1}, host: "evil.example")
+      conn = visit(%{}, ip: lan_address(), host: "evil.example")
       assert conn.status == 403
       assert conn.resp_body =~ "own name"
       assert Mailbox.items() == []

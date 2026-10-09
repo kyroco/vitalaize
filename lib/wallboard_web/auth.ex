@@ -73,8 +73,36 @@ defmodule WallboardWeb.Auth do
 
   # A plain request from this machine, by one of its own names (see `who/2`
   # for why the name matters), that no proxy passed on.
-  defp local_conn?(conn),
-    do: this_machine?(conn.remote_ip) and own_host?(conn.host) and not forwarded?(conn)
+  defp local_conn?(conn), do: here?(conn.remote_ip, conn.host) and not forwarded?(conn)
+
+  @doc """
+  True when a connection from `addr`, asking for `host`, is someone at this
+  machine. From one of its network addresses (http://192.168.1.20:4747
+  connects from 192.168.1.20), any of its own names will do. From its
+  loopback address, only `localhost`, a loopback address or its host name:
+  a tunnel or forward into this machine (ssh -R, a Tailscale TCP forward)
+  also connects from loopback, carrying the name its visitor used.
+  """
+  def here?(addr, host) do
+    addr = unmap(addr)
+
+    cond do
+      loopback?(addr) -> loopback_host?(host)
+      addr in own_addresses() -> own_host?(host)
+      true -> false
+    end
+  end
+
+  defp loopback_host?(host) when is_binary(host) do
+    bare = host |> String.downcase() |> String.trim_leading("[") |> String.trim_trailing("]")
+
+    case :inet.parse_strict_address(String.to_charlist(bare)) do
+      {:ok, ip} -> loopback?(unmap(ip))
+      _ -> own_host?(host)
+    end
+  end
+
+  defp loopback_host?(_), do: false
 
   @proxy_headers ~w(forwarded x-forwarded-for x-forwarded-host x-real-ip)
 
@@ -100,18 +128,14 @@ defmodule WallboardWeb.Auth do
   `connected?/1` is true.
   """
   def who(socket, session) do
-    from_here? =
-      case Phoenix.LiveView.get_connect_info(socket, :peer_data) do
-        %{address: addr} -> this_machine?(addr)
-        _ -> false
-      end
-
     # A browser on this machine can be led to a page on someone else's
     # name that then points that name at this machine. That page connects
-    # from here too. What gives it away is the name it asked for.
-    asked_by_own_name? =
-      case Phoenix.LiveView.get_connect_info(socket, :uri) do
-        %URI{host: host} -> own_host?(host)
+    # from here too. What gives it away is the name it asked for (see
+    # `here?/2`).
+    here? =
+      case {Phoenix.LiveView.get_connect_info(socket, :peer_data),
+            Phoenix.LiveView.get_connect_info(socket, :uri)} do
+        {%{address: addr}, %URI{host: host}} -> here?(addr, host)
         _ -> false
       end
 
@@ -120,7 +144,7 @@ defmodule WallboardWeb.Auth do
       session["proxied"] == true or
         socket |> Phoenix.LiveView.get_connect_info(:x_headers) |> forwarded?()
 
-    local? = from_here? and asked_by_own_name? and not proxied?
+    local? = here? and not proxied?
 
     %{local?: local?, device: session["device"]}
   end
