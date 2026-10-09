@@ -7,7 +7,9 @@ defmodule WallboardWeb.Auth do
   and waits until the owner approves it in the mailbox (see
   `Wallboard.Devices`); its session cookie keeps it approved from then on.
   The board's own machine never waits: a request from this machine, asked
-  by one of its own names, is always let in.
+  by one of its own names, is let in, unless a proxy on this machine says it
+  passed it on (`forwarded?/1`). A proxy that says nothing cannot be told
+  from the person at this machine.
 
   Looking at the board and deciding things on it are two different rights.
   Changing settings, or acting on a mailbox item, is for the owner: see
@@ -21,6 +23,13 @@ defmodule WallboardWeb.Auth do
   def init(opts), do: opts
 
   def call(conn, _opts) do
+    # The live connection sees only a proxy's X- headers, so the page tells
+    # it what it saw, `Forwarded` too (see `who/2`).
+    conn =
+      if forwarded?(conn),
+        do: put_session(conn, :proxied, true),
+        else: delete_session(conn, :proxied)
+
     cond do
       not Wallboard.Settings.get().approve_devices -> conn
       local_conn?(conn) -> conn
@@ -107,7 +116,9 @@ defmodule WallboardWeb.Auth do
       end
 
     # Through a proxy on this machine, everyone connects from here.
-    proxied? = socket |> Phoenix.LiveView.get_connect_info(:x_headers) |> forwarded?()
+    proxied? =
+      session["proxied"] == true or
+        socket |> Phoenix.LiveView.get_connect_info(:x_headers) |> forwarded?()
 
     local? = from_here? and asked_by_own_name? and not proxied?
 

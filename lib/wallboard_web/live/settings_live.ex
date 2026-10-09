@@ -271,9 +271,14 @@ defmodule WallboardWeb.SettingsLive do
           </div>
         </div>
         <p :if={@devices == []} class="detail-note">No device is approved yet.</p>
-        <p class="stat-note">
+        <p :if={@settings.approve_devices} class="stat-note">
           A new device shows a code; approve it in the mailbox on the board. An approved device
           can also change what this page changes and approve others. Remove signs it out at once.
+        </p>
+        <p :if={!@settings.approve_devices} class="stat-note">
+          Other devices need approval is off, so any device on the network can open the board
+          and none of these can change anything. Remove takes a device off this list, so it has
+          to be approved again once approval is back on.
         </p>
       </section>
 

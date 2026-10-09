@@ -507,6 +507,19 @@ defmodule Wallboard.SetupTest do
       refute Map.has_key?(Jason.decode!(File.read!(saved)), "token")
     end
 
+    test "with no old password, approval saved like the file follows the file again",
+         %{dir: dir} do
+      settings_file(dir)
+      assert {:ok, _} = Setup.save(%{"approve_devices" => "true"}, mac())
+      assert {:ok, _} = Setup.save(%{"approve_devices" => "false"}, mac())
+      assert %{approve_devices: false} = Settings.load!()
+
+      # Off is what the file says, so nothing is kept for it, and turning
+      # it on in the file by hand works.
+      settings_file(dir, ~s(approve_devices: true))
+      assert %{approve_devices: true} = Settings.load!()
+    end
+
     test "the saved file can only be read by its owner", %{dir: dir, saved: saved} do
       settings_file(dir)
       assert {:ok, _} = Setup.save(%{"alerts.pushover_token" => "hunter2"}, mac())

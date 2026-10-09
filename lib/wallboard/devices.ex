@@ -66,8 +66,9 @@ defmodule Wallboard.Devices do
 
   @doc """
   Where the request `id` stands, asked by the browser that made it:
-  `{:pending, code}`; `{:approved, key}` once, after which the request is
-  gone and the key is the device's; `:refused`; or `:gone`.
+  `{:pending, code}`; `{:approved, key}`, the device's key, the same on
+  every look until the request runs out (so two tabs asking at once both
+  get it); `:refused`; or `:gone`.
   """
   def status(id, address), do: call({:status, id, address}, :gone)
 
@@ -287,6 +288,18 @@ defmodule Wallboard.Devices do
             {:reply, error, s}
         end
     end
+  end
+
+  # A crash report shows the state: never a device's key in it.
+  @impl true
+  def format_status(status) do
+    Map.update(status, :state, nil, fn
+      %{requests: requests} = s ->
+        %{s | requests: Map.new(requests, fn {id, r} -> {id, Map.delete(r, :key)} end)}
+
+      other ->
+        other
+    end)
   end
 
   @impl true

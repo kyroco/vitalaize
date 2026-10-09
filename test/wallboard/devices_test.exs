@@ -307,6 +307,46 @@ defmodule Wallboard.DevicesTest do
       })
     end
 
+    test "through a proxy on this Mac is never this Mac, even with approval off", %{dir: dir} do
+      start(dir)
+
+      Settings.put(%{
+        approve_devices: false,
+        archive: %{enabled: false},
+        new_relic: %{enabled: false}
+      })
+
+      here = %{build_conn() | remote_ip: {127, 0, 0, 1}, host: "localhost"}
+
+      # The person at this Mac.
+      {:ok, _, html} = live(here, "/settings")
+      assert html =~ "Settings are shown here"
+
+      # Visitors through a proxy, by either header a proxy may add.
+      for {name, value} <- [{"x-forwarded-for", "100.64.0.9"}, {"forwarded", "for=100.64.0.9"}] do
+        {:ok, _, html} = here |> Plug.Conn.put_req_header(name, value) |> live("/settings")
+        assert html =~ "Open this page on the machine that runs the board", name
+      end
+    end
+
+    test "while approval is off, lists approved devices and says they change nothing",
+         %{dir: dir} do
+      start(dir)
+      approved_key()
+
+      Settings.put(%{
+        approve_devices: false,
+        archive: %{enabled: false},
+        new_relic: %{enabled: false}
+      })
+
+      here = %{build_conn() | remote_ip: {127, 0, 0, 1}, host: "localhost"}
+      {:ok, _, html} = live(here, "/settings")
+      assert html =~ "Approved devices"
+      assert html =~ "none of these can change anything"
+      refute html =~ "Remove signs it out at once"
+    end
+
     test "drawn before approval was turned on cannot connect live after", %{dir: dir} do
       # The page came through while the board was open to all; then the
       # board restarted asking for approval, and the page reconnects.
