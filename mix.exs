@@ -37,7 +37,7 @@ defmodule Wallboard.MixProject do
       {:exqlite, "~> 0.41.0"},
       # The messages a collector and the hub send each other (see
       # Wallboard.Collector.Filter).
-      {:protobuf, "~> 0.17.0"},
+      {:protobuf, "~> 0.17.1"},
       # The stream those messages travel on (see Wallboard.Link): the hub's
       # side and the collector's side.
       {:grpc_server, "~> 1.0"},
