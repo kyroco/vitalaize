@@ -78,7 +78,10 @@ defmodule Wallboard.Settings do
       poll_seconds: 2
     },
     port: 4747,
-    token: nil,
+    # true: a browser on another device shows a code and waits until it is
+    # approved in the board's mailbox (see Wallboard.Devices). nil means not
+    # set, which is off, unless the settings still hold an old board password.
+    approve_devices: nil,
     rotate_seconds: 30,
     timezone: "America/New_York",
     brand: %{
@@ -360,10 +363,10 @@ defmodule Wallboard.Settings do
   @doc """
   Loads the settings again under a board or collector that is running,
   for `Wallboard.Settings.Watch`. Every setting that is only read at the
-  start (`editable/0` marks those: the role, the ports, the board
-  password and the rest) keeps the value in use. Those change when
+  start (`editable/0` marks those: the role, the ports, whether devices
+  need approval and the rest) keeps the value in use. Those change when
   VitalAIze starts, never under it, so a settings file that goes missing
-  cannot take the password off a board that is still running.
+  cannot open a board that is still running to every device.
 
   Returns `{in_use, read, now}`: the settings before, the ones just read,
   and the ones in use from here on.
@@ -569,10 +572,21 @@ defmodule Wallboard.Settings do
       end
     end)
     |> case do
-      {saved, errors} when errors == %{} -> {:ok, saved}
+      {saved, errors} when errors == %{} -> {:ok, settle_approval(saved, values)}
       {_, errors} -> {:error, errors}
     end
   end
+
+  # An old board password saved here turns approval on (see
+  # `approve_devices/1`). A save that says whether devices need approval
+  # takes its place, so the save is kept as said even when it matches the
+  # file, or the password would turn approval back on.
+  defp settle_approval(%{token: _} = saved, %{"approve_devices" => raw}) do
+    {:ok, on} = parse(:boolean, raw, [:approve_devices])
+    saved |> Map.delete(:token) |> Map.put(:approve_devices, on)
+  end
+
+  defp settle_approval(saved, _values), do: saved
 
   # What is under the saved settings, with the saved list of repositories
   # laid over it: the first repository there is the one the gate and deploy
@@ -643,7 +657,7 @@ defmodule Wallboard.Settings do
 
   @doc """
   Writes the saved settings (what `change/2` returned) and reloads. Only this user can read the file: it may
-  hold the board password and alert keys. A key typed in goes to the key
+  hold alert keys. A key typed in goes to the key
   store first (`keep_keys/1`); raises when it cannot be kept, with nothing
   written.
   """
@@ -802,8 +816,8 @@ defmodule Wallboard.Settings do
          {[:rotate_seconds], "Seconds between pages", :integer, false,
           "0 stops the pages turning"},
          {[:timezone], "Time zone", :string, false, "Like America/New_York"},
-         {[:token], "Board password", :secret, true,
-          "Optional. With one, other devices need ?token= once"},
+         {[:approve_devices], "Other devices need approval", :boolean, true,
+          "A new device shows a code; approve it in the mailbox on the board"},
          {[:updates, :check], "Tell me when a new version is out", :boolean, false,
           "Checks GitHub once a day"}
        ]},
@@ -1251,7 +1265,9 @@ defmodule Wallboard.Settings do
   # new atoms.
   @doc false
   def atomize(map) do
-    for {_, fs} <- editable(), {path, _, _, _, _} <- fs, reduce: legacy_repo(map) do
+    for {_, fs} <- editable(),
+        {path, _, _, _, _} <- fs,
+        reduce: Map.merge(legacy_repo(map), legacy_password(map)) do
       acc ->
         keys = Enum.map(path, &Atom.to_string/1)
 
@@ -1288,6 +1304,15 @@ defmodule Wallboard.Settings do
   end
 
   defp legacy_repo(_), do: %{}
+
+  # Before 0.4.2 the app saved a board password here. Only that there was
+  # one is read, so the board asks for approval instead (see
+  # `approve_devices/1`); a saved `approve_devices` wins over it.
+  defp legacy_password(%{"token" => token}) when is_binary(token) do
+    if String.trim(token) != "", do: %{token: "set"}, else: %{}
+  end
+
+  defp legacy_password(_), do: %{}
 
   @doc """
   Lays the settings page's saved values over the file's. The page saves
@@ -1573,7 +1598,7 @@ defmodule Wallboard.Settings do
         fn key, acc -> Map.update(acc, key, nil, &blank_to_nil/1) end
       )
     end)
-    |> update_in([:token], &blank_to_nil/1)
+    |> approve_devices()
     # Only a note that a key is kept counts; a settings file never holds
     # the key itself.
     |> update_in([:new_relic, :api_key], fn
@@ -1641,12 +1666,24 @@ defmodule Wallboard.Settings do
 
   defp blank_to_nil(value), do: value
 
-  @doc """
-  The key that signs the browser session cookie. Derived from the token so it
-  stays the same across restarts without being another thing to configure.
-  """
-  def secret_key_base(settings) do
-    seed = settings.token || "wallboard-without-a-token"
-    :crypto.hash(:sha512, "wallboard:" <> seed) |> Base.encode64()
+  # Before 0.4.2 a board could have a password (`token`). A board that had
+  # one asks for approval instead, until approval is turned off by hand;
+  # the password itself is no longer used anywhere.
+  defp approve_devices(settings) do
+    old_password? = blank_to_nil(settings[:token]) != nil
+
+    settings
+    |> Map.delete(:token)
+    |> Map.update(:approve_devices, old_password?, fn
+      nil -> old_password?
+      on -> on == true
+    end)
   end
+
+  @doc """
+  The key that signs the browser session cookie: made at random once and
+  kept beside the approved devices (see `Wallboard.Devices.cookie_key!/1`).
+  """
+  def secret_key_base(settings),
+    do: settings |> Wallboard.Devices.dir() |> Wallboard.Devices.cookie_key!()
 end

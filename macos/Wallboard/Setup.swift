@@ -1101,8 +1101,8 @@ enum Setup {
     /// at ::1 first, where another program could be the one to answer.
     static func boardRunning(port: Int) -> Bool {
         let r = Shell.run("/usr/bin/curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", "http://127.0.0.1:\(port)/"], timeout: 5)
-        // A board with a password answers 401 until the password is given:
-        // it is running all the same.
+        // This Mac always gets in. Should a board ever answer 401 here (an
+        // older one with a password), it is running all the same.
         return r.output == "200" || r.output == "401"
     }
 

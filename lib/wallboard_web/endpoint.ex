@@ -1,8 +1,9 @@
 defmodule WallboardWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :wallboard
 
-  # The cookie only remembers that this browser once came with the right
-  # token, so the iPad keeps working after Safari drops the ?token= part.
+  # The cookie keeps an approved device's key (see Wallboard.Devices), so
+  # the iPad stays approved from one visit to the next. Signed with a key
+  # made at random for this board (see Wallboard.Settings.secret_key_base/1).
   @session_options [
     store: :cookie,
     key: "_wallboard",
@@ -12,7 +13,8 @@ defmodule WallboardWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, :uri, session: @session_options]],
+    # :x_headers shows a proxy's X-Forwarded-For (see WallboardWeb.Auth.who/2).
+    websocket: [connect_info: [:peer_data, :uri, :x_headers, session: @session_options]],
     longpoll: false
 
   # Files asked for without a ?v= fingerprint are checked with the server on

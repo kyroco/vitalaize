@@ -441,16 +441,16 @@ defmodule Wallboard.RepoPromptsTest do
 
     test "takes up nothing that waits for a restart", c do
       start_hub(c)
-      assert Settings.get().token == nil
+      assert Settings.get().approve_devices == false
 
-      # A board password saved from another program, with no restart yet.
-      File.write!(saved(c), Jason.encode!(%{token: "hunter2"}))
+      # Approval turned on from another program, with no restart yet.
+      File.write!(saved(c), Jason.encode!(%{approve_devices: true}))
       assert :ok = Settings.track_repo("acme/billing-api")
 
       assert Settings.repo_names(Settings.get()) == ["acme/shop", "acme/billing-api"]
-      assert Settings.get().token == nil
+      assert Settings.get().approve_devices == false
       # Both are in the file for the next start.
-      assert %{"token" => "hunter2", "github" => %{"repos" => [_, _]}} = saved_json(c)
+      assert %{"approve_devices" => true, "github" => %{"repos" => [_, _]}} = saved_json(c)
     end
 
     test "a repo added in settings by hand drops its item, and open boards hear of it", c do
@@ -617,6 +617,7 @@ defmodule Wallboard.RepoPromptsTest do
             values: SettingsLive.values(settings),
             errors: %{},
             machines: [],
+            devices: [],
             ignored_repos: RepoPrompts.ignored()
           })
         )

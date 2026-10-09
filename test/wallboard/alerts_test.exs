@@ -238,12 +238,12 @@ defmodule Wallboard.AlertsTest do
     end
 
     test "dots from a page drawn before the secret was cleared elsewhere follow the newest value" do
-      shown = Settings.merge(Settings.defaults(), %{token: "hunter2"})
+      shown = Settings.merge(Settings.defaults(), %{alerts: %{pushover_token: "hunter2"}})
       values = WallboardWeb.SettingsLive.values(shown)
-      assert values["token"] == "••••••••"
+      assert values["alerts.pushover_token"] == "••••••••"
 
       back = WallboardWeb.SettingsLive.unmask(values, shown, Settings.defaults())
-      assert back["token"] == ""
+      assert back["alerts.pushover_token"] == ""
     end
 
     test "refuses an ntfy server with a query or a fragment" do

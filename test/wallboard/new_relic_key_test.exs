@@ -243,6 +243,7 @@ defmodule Wallboard.NewRelicKeyTest do
           settings: Settings.get(),
           values: Settings.shown(Settings.get()),
           machines: [],
+          devices: [],
           ignored_repos: []
         }
         |> SettingsLive.render()

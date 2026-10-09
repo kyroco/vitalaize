@@ -8,10 +8,11 @@ defmodule Wallboard.Settings.Watch do
   seconds and, when it has changed, loads the settings again. Everything
   that reads its settings as it goes then uses the new ones, with no
   restart. The few settings that are only read at the start (the ports,
-  the role, the board password) wait for the restart that whoever saved
-  them asks for (see `Wallboard.Setup`): loading again keeps them as they
-  are in use (`Wallboard.Settings.reload!/0`). So whatever happens to the
-  files, a board that is running keeps its password until it stops.
+  the role, whether other devices need approval) wait for the restart that
+  whoever saved them asks for (see `Wallboard.Setup`): loading again keeps
+  them as they are in use (`Wallboard.Settings.reload!/0`). So whatever
+  happens to the files, a board that is running keeps asking other devices
+  for approval until it stops.
 
   A file that cannot be read changes nothing: the settings in use stay.
 

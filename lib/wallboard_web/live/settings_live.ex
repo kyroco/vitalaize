@@ -1,19 +1,20 @@
 defmodule WallboardWeb.SettingsLive do
   @moduledoc """
   The settings page, at /settings: what the board is set to, the
-  machines that stream to this hub (and a button to disconnect one), and
-  the sessions saved from each machine.
+  devices approved to open it (and a button to remove one), the machines
+  that stream to this hub (and a button to disconnect one), and the
+  sessions saved from each machine.
 
   It shows settings and cannot change them. What it can still do changes
-  no setting: disconnect a machine, and let the mailbox ask again about a
-  repository that was ignored there. Settings are changed on the machine
-  itself, in the
-  VitalAIze app or with `vitalaize setup` (see `Wallboard.Setup`), which
-  save them and restart only what a change needs.
+  no setting: remove a device, disconnect a machine, and let the mailbox
+  ask again about a repository that was ignored there. Settings are
+  changed on the machine itself, in the VitalAIze app or with `vitalaize
+  setup` (see `Wallboard.Setup`), which save them and restart only what a
+  change needs.
 
-  Who may open it: anyone on this Mac itself, or, when the board has a
-  password, anyone who gave it (the router already checked). Without a
-  password, other devices on the network are turned away, since the page
+  Who may open it: anyone on this Mac itself, or, when other devices need
+  approval, an approved device (see `WallboardWeb.Auth.may_decide?/1`).
+  Otherwise other devices on the network are turned away, since the page
   holds the phone number and the AWS profiles.
   """
 
@@ -60,6 +61,7 @@ defmodule WallboardWeb.SettingsLive do
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       ignored_repos: Wallboard.RepoPrompts.ignored(),
+      devices: Wallboard.Devices.list(),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
   end
@@ -110,6 +112,10 @@ defmodule WallboardWeb.SettingsLive do
   def handle_info({:link, :hello, _machine, _info}, socket), do: {:noreply, relist(socket)}
   def handle_info({:mailbox, :changed}, socket), do: {:noreply, socket |> reread() |> relist()}
 
+  # A device was approved or removed, here or on another screen.
+  def handle_info({:devices, :changed}, %{assigns: %{allowed?: true}} = socket),
+    do: {:noreply, assign(socket, devices: Wallboard.Devices.list())}
+
   # Only the latest question's own timer ends it.
   def handle_info({:forget_disconnect, ref}, socket) do
     if socket.assigns[:confirm_ref] == ref,
@@ -140,7 +146,7 @@ defmodule WallboardWeb.SettingsLive do
   defp reread(socket), do: socket
 
   # Every change on this page is the owner's to make, and that is asked
-  # again each time: the board password may have changed since the page
+  # again each time: this device may have been removed since the page
   # opened.
   @impl true
   def handle_event(event, params, socket) do
@@ -179,6 +185,19 @@ defmodule WallboardWeb.SettingsLive do
     end
   end
 
+  # Signs a device out at once; it has to be approved again to come back.
+  # One tap: nothing is lost that a new approval does not give back.
+  defp event("remove_device", %{"id" => id}, socket) do
+    notice =
+      case Wallboard.Devices.remove(id) do
+        :ok -> "The device is removed. To open the board again, it has to be approved again."
+        {:error, :gone} -> "That device was already removed."
+        _ -> "That did not work just now. Try again in a moment."
+      end
+
+    {:noreply, assign(socket, devices: Wallboard.Devices.list(), notice: notice)}
+  end
+
   # Undoes an Ignore from the mailbox: work in that repo asks again.
   defp event("ask_again", %{"repo" => repo}, socket) do
     notice =
@@ -212,7 +231,7 @@ defmodule WallboardWeb.SettingsLive do
       <h1 class="settings-title">Settings</h1>
       <p class="detail-note">
         Open this page on the machine that runs the board. To see it from another device,
-        first give the board a password on that machine.
+        first turn on Other devices need approval on that machine, then approve this device.
       </p>
       <a class="link-button" href="/">Back to the board</a>
     </div>
@@ -233,6 +252,35 @@ defmodule WallboardWeb.SettingsLive do
         <code>vitalaize setup</code>
         in a terminal. Either saves the change and restarts only what needs it.
       </p>
+
+      <%!-- Also while approval is off, so a device can be removed before it is turned back on. --%>
+      <section :if={@settings.approve_devices or @devices != []} class="settings-section">
+        <div class="heading-row">
+          <h2 class="kicker">Approved devices</h2>
+          <span class="stat-note">browsers on other devices that may open this board</span>
+        </div>
+        <div class="machine-list">
+          <div :for={d <- @devices} class="machine-row">
+            <b>{d.name}</b>
+            <span>{d.address}</span>
+            <span>Approved {day(d.approved_at)} · last opened {day(d.seen_at)}</span>
+            <span></span>
+            <button class="machine-disconnect" phx-click="remove_device" phx-value-id={d.id}>
+              Remove
+            </button>
+          </div>
+        </div>
+        <p :if={@devices == []} class="detail-note">No device is approved yet.</p>
+        <p :if={@settings.approve_devices} class="stat-note">
+          A new device shows a code; approve it in the mailbox on the board. An approved device
+          can also change what this page changes and approve others. Remove signs it out at once.
+        </p>
+        <p :if={!@settings.approve_devices} class="stat-note">
+          Other devices need approval is off, so any device on the network can open the board
+          and none of these can change anything. Remove takes a device off this list, so it has
+          to be approved again once approval is back on.
+        </p>
+      </section>
 
       <section :if={@linked} class="settings-section">
         <div class="heading-row">
@@ -327,6 +375,20 @@ defmodule WallboardWeb.SettingsLive do
       s when s < 172_800 -> "Seen #{div(s, 3600)} h ago"
       s -> "Seen #{div(s, 86_400)} days ago"
     end
+  end
+
+  defp day(nil), do: "never"
+
+  # This machine's own day, as the rest of the board counts days.
+  defp day(at) do
+    {date, _} =
+      at
+      |> DateTime.from_unix!()
+      |> DateTime.to_naive()
+      |> NaiveDateTime.to_erl()
+      |> :calendar.universal_time_to_local_time()
+
+    date |> Date.from_erl!() |> Calendar.strftime("%b %-d")
   end
 
   defp sessions(1), do: "1 session"

@@ -15,6 +15,21 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.4.2
+
+0.4.2 replaces the board password with approval by code. Before, every other
+device had to add `?token=` and the password to the board's address, and the
+Mac running the board was locked out of its own board too. Now, with **Other
+devices need approval** turned on in Settings, a new device (an iPad, say)
+shows a six-digit code. The same code shows in the board's mailbox, with
+**Approve** and **Refuse**. Approve, and the board opens on that device by
+itself and stays open. The Mac that runs the board never needs a code
+(through a proxy on that Mac, such as Tailscale Serve, a browser counts as
+another device). The
+board's Settings page lists approved devices, and **Remove** signs one out at
+once. A board that had a password asks for approval after the update, so
+each device needs approving once.
+
 ## What's new in 0.4.1
 
 0.4.1 fixes one thing: installing a new version over a running board now
@@ -107,7 +122,8 @@ the 0.2.0 download had the same built-in secret for remote control, which
 Open VitalAIze again any time to see the board, restart it, change its
 settings or remove it. **Settings** in the app shows every setting and saves
 it there, with no browser. Most changes take effect within a few seconds; a
-few (the ports, the board password, what this Mac does) restart the board,
+few (the ports, whether other devices need approval, what this Mac does)
+restart the board,
 and only then. The board's own Settings page shows the settings and can no
 longer change them.
 

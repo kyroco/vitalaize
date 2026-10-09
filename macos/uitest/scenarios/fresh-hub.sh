@@ -43,8 +43,8 @@ acme/rockets"
   check "the repositories too" setting_is github.repos "acme/rockets"
   check "the main branch too" setting_is github.branch "trunk"
   check "the board still answers" answers "$PORT2"
-  check "and asks for its password" test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$PORT2/")" = 401
-  check "and opens with it" test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$PORT2/?token=acme-secret")" = 200
+  check "and opens on this Mac with no code" test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$PORT2/")" = 200
+  check "and shows another device a code to approve" sh -c "curl -s --max-time 3 -H 'Host: board.example' 'http://127.0.0.1:$PORT2/' | grep -q 'Approve this device'"
   check "the saved settings as they were are in the backup folder" ls "$DATA"/backups/*/settings.json
 
   sqlite3 "$DATA/wallboard.db" "create table uitest_marker(x); insert into uitest_marker values('history');"

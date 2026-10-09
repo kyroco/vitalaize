@@ -11,7 +11,7 @@ defmodule WallboardWeb.Router do
     plug :accepts, ["html"]
     plug :fetch_session
     plug :fetch_query_params
-    # Before Auth, so its "wrong token" page gets these headers too.
+    # Before Auth, so its "approve this device" page gets these headers too.
     plug :put_secure_browser_headers, %{"content-security-policy" => @csp}
     plug WallboardWeb.Auth
     plug :protect_from_forgery
@@ -26,7 +26,7 @@ defmodule WallboardWeb.Router do
   end
 
   # A machine with no certificate yet asks for one here (see
-  # Wallboard.Pairing). No cookies, no password: it has neither, and the
+  # Wallboard.Pairing). No cookies, no approval: it has neither, and the
   # door's own limits and the owner's Approve are what guard it. A paired
   # machine whose link keeps failing asks /check whether it was removed.
   scope "/pair", WallboardWeb do

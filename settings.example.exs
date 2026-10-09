@@ -35,11 +35,12 @@
   # The web address is http://<this Mac's address>:<port>/
   port: 4747,
 
-  # Optional. With no token, anyone on the same network can open the board.
-  # Set one (for example the output of: openssl rand -hex 16) and the first
-  # visit from each device needs /?token=<token> at the end of the address.
-  # Worth setting if you take your Mac to cafes or hotels with the board on.
-  token: nil,
+  # Off (nil or false): anyone on the same network can open the board.
+  # true: a browser on another device first shows a six-digit code, and
+  # opens the board once you approve that code in the board's mailbox. This
+  # machine itself never needs one. Worth turning on if you take your Mac
+  # to cafes or hotels with the board on.
+  approve_devices: nil,
 
   # Seconds before the board flips to the other page. 0 turns rotation off.
   rotate_seconds: 30,

@@ -6,7 +6,7 @@ wait 40 "The board is running"
 click "Settings"
 wait 40 "Board name"
 type "Time zone" "America/Chicago"
-type "Board password (restarts)" "acme-secret"
+toggle "Other devices need approval (restarts)"
 toggle "Tell me when a new version is out"
 toggle "Korium numbers"
 type "Slack webhook" "https://localhost:9/acme-hook"
@@ -57,5 +57,5 @@ scroll bottom
 snap 16-settings-all
 click "Back"
 wait 20 "The board is running"
-expect "This board has a password."
-snap 16-status-password
+expect "Other devices need approval."
+snap 16-status-approval

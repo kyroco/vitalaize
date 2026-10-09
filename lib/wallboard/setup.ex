@@ -13,8 +13,8 @@ defmodule Wallboard.Setup do
     * Most settings are read as they are used. The running board or
       collector looks at the file every two seconds
       (`Wallboard.Settings.Watch`), so those take effect by themselves.
-    * A few are only read at the start: the ports, the role, the board
-      password, whether the hub takes collectors. For those the service
+    * A few are only read at the start: the ports, the role, whether
+      other devices need approval, whether the hub takes collectors. For those the service
       on this machine is restarted (`Wallboard.Setup.Service`), and only
       then. A hub that restarts tells its collectors "back soon" first,
       so they wait instead of trying again and again.

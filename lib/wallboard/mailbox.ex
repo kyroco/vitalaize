@@ -3,10 +3,10 @@ defmodule Wallboard.Mailbox do
   The mailbox: the envelope in the board's header, and the list of things
   the board asks its owner to decide.
 
-  It holds administrative decisions only: a new machine that wants to
-  connect, a repo to track, and later a new version to install. It
-  never holds anything about an agent waiting on its person. Those stay
-  the "Needs you" banner and the session cards.
+  It holds administrative decisions only: a device that wants to open the
+  board, a new machine that wants to connect, a repo to track, and later a
+  new version to install. It never holds anything about an agent waiting
+  on its person. Those stay the "Needs you" banner and the session cards.
 
   An item goes away once someone acts on it. Nothing here is saved: each
   kind of item keeps its own state and the mailbox asks it.
@@ -44,6 +44,7 @@ defmodule Wallboard.Mailbox do
 
   # Every kind of item, in the order the mailbox lists them.
   @kinds [
+    {"device", Wallboard.Mailbox.NewDevice},
     {"machine", Wallboard.Mailbox.NewMachine},
     {"repo", Wallboard.Mailbox.NewRepo}
   ]

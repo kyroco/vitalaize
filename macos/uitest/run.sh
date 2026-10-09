@@ -218,7 +218,8 @@ wait_until() {
 mailbox() { node "$HERE/mailbox.mjs" "$@"; }
 mailbox_has_code() { [ -n "$(mailbox "$1" list 2>/dev/null)" ]; }
 
-# A board with a password answers 401 until it is given.
+# A board that asks other devices for approval answers them 401 until
+# they are approved. This Mac itself always gets 200.
 answers() {
   case "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:$1/")" in
     200 | 401) return 0 ;;
