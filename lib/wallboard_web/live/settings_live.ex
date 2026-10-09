@@ -253,7 +253,8 @@ defmodule WallboardWeb.SettingsLive do
         in a terminal. Either saves the change and restarts only what needs it.
       </p>
 
-      <section :if={@settings.approve_devices} class="settings-section">
+      <%!-- Also while approval is off, so a device can be removed before it is turned back on. --%>
+      <section :if={@settings.approve_devices or @devices != []} class="settings-section">
         <div class="heading-row">
           <h2 class="kicker">Approved devices</h2>
           <span class="stat-note">browsers on other devices that may open this board</span>

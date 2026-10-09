@@ -617,6 +617,7 @@ defmodule Wallboard.RepoPromptsTest do
             values: SettingsLive.values(settings),
             errors: %{},
             machines: [],
+            devices: [],
             ignored_repos: RepoPrompts.ignored()
           })
         )

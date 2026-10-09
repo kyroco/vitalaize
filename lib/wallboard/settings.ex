@@ -577,10 +577,11 @@ defmodule Wallboard.Settings do
     end
   end
 
-  # A save that says whether devices need approval says it for good: it is
-  # kept even when it matches the file, and an old board password no
-  # longer decides it (see `approve_devices/1`).
-  defp settle_approval(saved, %{"approve_devices" => raw}) do
+  # An old board password saved here turns approval on (see
+  # `approve_devices/1`). A save that says whether devices need approval
+  # takes its place, so the save is kept as said even when it matches the
+  # file, or the password would turn approval back on.
+  defp settle_approval(%{token: _} = saved, %{"approve_devices" => raw}) do
     {:ok, on} = parse(:boolean, raw, [:approve_devices])
     saved |> Map.delete(:token) |> Map.put(:approve_devices, on)
   end

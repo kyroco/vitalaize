@@ -63,8 +63,26 @@ defmodule WallboardWeb.Auth do
   end
 
   # A plain request from this machine, by one of its own names (see `who/2`
-  # for why the name matters).
-  defp local_conn?(conn), do: this_machine?(conn.remote_ip) and own_host?(conn.host)
+  # for why the name matters), that no proxy passed on.
+  defp local_conn?(conn),
+    do: this_machine?(conn.remote_ip) and own_host?(conn.host) and not forwarded?(conn)
+
+  @proxy_headers ~w(forwarded x-forwarded-for x-forwarded-host x-real-ip)
+
+  @doc """
+  True when a request came through a proxy that says so (Tailscale Serve,
+  cloudflared, ngrok, Caddy and the like add one of these headers). Every
+  visitor through a proxy on this machine connects from this machine, so
+  only these headers tell them from the person at it. A proxy that adds
+  none of them cannot be told apart.
+  """
+  def forwarded?(%Plug.Conn{req_headers: headers}),
+    do: Enum.any?(headers, fn {name, _} -> name in @proxy_headers end)
+
+  def forwarded?(headers) when is_list(headers),
+    do: Enum.any?(headers, fn {name, _} -> String.downcase(name) in @proxy_headers end)
+
+  def forwarded?(_), do: false
 
   @doc """
   Who a live connection is, for `may_decide?/1`: whether it comes from this
@@ -88,7 +106,10 @@ defmodule WallboardWeb.Auth do
         _ -> false
       end
 
-    local? = from_here? and asked_by_own_name?
+    # Through a proxy on this machine, everyone connects from here.
+    proxied? = socket |> Phoenix.LiveView.get_connect_info(:x_headers) |> forwarded?()
+
+    local? = from_here? and asked_by_own_name? and not proxied?
 
     %{local?: local?, device: session["device"]}
   end

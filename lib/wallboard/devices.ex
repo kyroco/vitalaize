@@ -16,9 +16,11 @@ defmodule Wallboard.Devices do
   with a hash of each key, never the key itself. Removing a device signs
   it out at once, since every page and every decision checks the list.
 
-  The door has the limits machine pairing has (`Wallboard.Pairing.Door`):
-  one waiting request per address, only so many in the mailbox, a few asks
-  a minute from one address, and a request ends after ten minutes.
+  The door has limits like machine pairing's (`Wallboard.Pairing.Door`):
+  two waiting requests per address, only so many in the mailbox, a few asks
+  a minute from one address, and a request ends after ten minutes. Each
+  request belongs to the browser that made it: only the session holding its
+  id, from the address that asked, collects the approval.
   """
 
   use GenServer
@@ -28,6 +30,7 @@ defmodule Wallboard.Devices do
 
   @limits %{
     max_pending: 5,
+    max_per_address: 2,
     starts_per_minute: 6,
     starts_per_minute_all: 30,
     # A waiting request ends this long after it was made, whatever happens.
@@ -117,11 +120,13 @@ defmodule Wallboard.Devices do
     s = s |> prune() |> roll()
     waiting = for {_, r} <- s.requests, r.state == :pending, do: r
 
+    # Every ask gets a request of its own, never another browser's: the
+    # browser that made one keeps its id in its cookie, and whoever holds
+    # that id is who collects the approval. Several browsers can share an
+    # address (behind a router, or a proxy on this machine).
     cond do
-      Enum.any?(waiting, &(&1.address == address)) ->
-        # One per address: the same browser asking again gets its own back.
-        r = Enum.find(waiting, &(&1.address == address))
-        {:reply, {:ok, r.id, r.code}, touch(s, r.id)}
+      Enum.count(waiting, &(&1.address == address)) >= s.limits.max_per_address ->
+        {:reply, {:error, :busy}, s}
 
       length(waiting) >= s.limits.max_pending ->
         {:reply, {:error, :busy}, s}
@@ -188,13 +193,22 @@ defmodule Wallboard.Devices do
             Logger.info("Devices: #{r.name} at #{address} opened the board.")
             broadcast()
 
+            # Kept until the request runs out, so a second tab or a reload
+            # that asks at the same moment gets the same key, not a new code.
             {:reply, {:approved, key},
-             %{s | devices: devices, requests: Map.delete(s.requests, id)}}
+             %{
+               s
+               | devices: devices,
+                 requests: Map.put(s.requests, id, Map.merge(r, %{state: :collected, key: key}))
+             }}
 
           {:error, reason} ->
             Logger.warning("Devices: could not save the approved device: #{inspect(reason)}")
             {:reply, {:pending, r.code}, s}
         end
+
+      %{address: ^address, state: :collected, key: key} ->
+        {:reply, {:approved, key}, s}
 
       %{address: ^address, state: :refused} ->
         {:reply, :refused, %{s | requests: Map.delete(s.requests, id)}}
@@ -425,7 +439,13 @@ defmodule Wallboard.Devices do
       {:ok, key} when byte_size(key) >= 64 ->
         key
 
-      _ ->
+      found ->
+        if match?({:ok, _}, found),
+          do:
+            Logger.warning(
+              "Devices: #{file} was too short, so a new one is made. Each device needs approving again."
+            )
+
         key = :crypto.strong_rand_bytes(64) |> Base.encode64()
         tmp = file <> ".#{System.unique_integer([:positive])}.tmp"
         File.write!(tmp, "")

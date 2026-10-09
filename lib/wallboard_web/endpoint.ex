@@ -13,7 +13,8 @@ defmodule WallboardWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, :uri, session: @session_options]],
+    # :x_headers shows a proxy's X-Forwarded-For (see WallboardWeb.Auth.who/2).
+    websocket: [connect_info: [:peer_data, :uri, :x_headers, session: @session_options]],
     longpoll: false
 
   # Files asked for without a ?v= fingerprint are checked with the server on

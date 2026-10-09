@@ -47,6 +47,15 @@ defmodule Wallboard.DevicesTest do
 
   defp session(conn), do: Plug.Conn.get_session(conn)
 
+  # A device asks, the owner approves, and it collects its key.
+  defp approved_key do
+    ip = "192.0.2.#{System.unique_integer([:positive]) |> rem(250)}"
+    {:ok, id, _} = Devices.ask(ip, "iPad")
+    :ok = Devices.approve(id)
+    {:approved, key} = Devices.status(id, ip)
+    key
+  end
+
   defp code(conn) do
     [_, code] = Regex.run(~r/class="code">(\d{3}-\d{3})</, conn.resp_body)
     code
@@ -142,6 +151,29 @@ defmodule Wallboard.DevicesTest do
       assert [_] = Mailbox.items()
     end
 
+    test "another browser at the same address gets a request and a code of its own",
+         %{dir: dir} do
+      start(dir)
+      ipad = visit(%{})
+      other = visit(%{})
+      refute session(ipad)["device_ask"] == session(other)["device_ask"]
+      refute code(ipad) == code(other)
+
+      # The owner approves the iPad's code. The other browser, however
+      # often it looks, collects nothing.
+      [_, _] = items = Mailbox.items()
+      ipad_item = Enum.find(items, fn i -> {:code, code(ipad)} in i.body end)
+      :ok = Mailbox.act(ipad_item.id, "approve")
+
+      for _ <- 1..3 do
+        looked = visit(session(other))
+        assert looked.status == 401
+        refute session(looked)["device"]
+      end
+
+      assert visit(session(ipad)).status == 303
+    end
+
     test "cannot collect an approval from another address", %{dir: dir} do
       start(dir)
       conn = visit(%{})
@@ -157,19 +189,27 @@ defmodule Wallboard.DevicesTest do
   end
 
   describe "the door" do
-    test "has room for only so many, and only so many asks a minute from one address",
-         %{dir: dir} do
-      start(dir, max_pending: 2, starts_per_minute: 1)
+    test "has room for only so many, from one address and in all", %{dir: dir} do
+      start(dir, max_pending: 3, max_per_address: 2)
 
-      assert {:ok, _, _} = Devices.ask("192.0.2.1", "a")
-      # The same address gets its own request back, not a new one.
-      assert {:ok, _, _} = Devices.ask("192.0.2.1", "a")
+      assert {:ok, a, _} = Devices.ask("192.0.2.1", "a")
+      assert {:ok, b, _} = Devices.ask("192.0.2.1", "a")
+      refute a == b
+      assert {:error, :busy} = Devices.ask("192.0.2.1", "a")
       assert {:ok, _, _} = Devices.ask("192.0.2.2", "b")
       assert {:error, :busy} = Devices.ask("192.0.2.3", "c")
 
       busy = visit(%{}, ip: {192, 0, 2, 4})
       assert busy.status == 503
       assert busy.resp_body =~ "busy"
+    end
+
+    test "only so many asks a minute from one address", %{dir: dir} do
+      start(dir, starts_per_minute: 1)
+      assert {:ok, id, _} = Devices.ask("192.0.2.1", "a")
+      :ok = Devices.refuse(id)
+      assert :refused = Devices.status(id, "192.0.2.1")
+      assert {:error, :busy} = Devices.ask("192.0.2.1", "a")
     end
 
     test "lets a request go once its browser stops looking", %{dir: dir} do
@@ -214,9 +254,31 @@ defmodule Wallboard.DevicesTest do
       assert Auth.may_decide?(%{local?: true, device: nil})
     end
 
-    test "asked by somebody else's name is another device", %{dir: dir} do
+    test "asked by somebody else's name is sent to its own name, and asks nothing",
+         %{dir: dir} do
+      # A page some site led this Mac's own browser to.
       start(dir)
-      assert visit(%{}, ip: {127, 0, 0, 1}, host: "evil.example").status == 401
+      conn = visit(%{}, ip: {127, 0, 0, 1}, host: "evil.example")
+      assert conn.status == 403
+      assert conn.resp_body =~ "own name"
+      assert Mailbox.items() == []
+    end
+
+    test "through a proxy that says so is another device", %{dir: dir} do
+      start(dir)
+
+      conn =
+        Plug.Test.conn(:get, "/")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> Map.put(:host, "localhost")
+        |> Plug.Conn.put_req_header("x-forwarded-for", "100.64.0.9")
+        |> Plug.Test.init_test_session(%{})
+        |> Plug.Conn.fetch_query_params()
+        |> Auth.call([])
+
+      assert conn.status == 401
+      assert conn.resp_body =~ "Approve this device"
+      assert [_] = Mailbox.items()
     end
   end
 
@@ -245,6 +307,44 @@ defmodule Wallboard.DevicesTest do
       })
     end
 
+    test "drawn before approval was turned on cannot connect live after", %{dir: dir} do
+      # The page came through while the board was open to all; then the
+      # board restarted asking for approval, and the page reconnects.
+      start(dir)
+
+      Settings.put(%{
+        approve_devices: false,
+        archive: %{enabled: false},
+        new_relic: %{enabled: false}
+      })
+
+      conn = %{build_conn() | remote_ip: {192, 0, 2, 7}} |> get("/settings")
+      assert conn.status == 200
+
+      Settings.put(%{
+        approve_devices: true,
+        archive: %{enabled: false},
+        new_relic: %{enabled: false}
+      })
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(conn)
+    end
+
+    test "Remove on the Settings page signs that device out", %{dir: dir} do
+      start(dir)
+      keys = for _ <- 1..2, do: approved_key()
+      [mine, theirs] = keys
+      [%{id: their_id}, %{id: my_id}] = Devices.list()
+
+      {:ok, view, _} = build_conn() |> init_test_session(%{"device" => mine}) |> live("/settings")
+      html = view |> element(~s(button[phx-value-id="#{their_id}"])) |> render_click()
+
+      assert html =~ "The device is removed"
+      assert [%{id: ^my_id}] = Devices.list()
+      refute Devices.approved?(theirs)
+      assert Devices.approved?(mine)
+    end
+
     test "on a device that is removed goes back to the code at once", %{dir: dir} do
       start(dir)
       {:ok, id, _} = Devices.ask("127.0.0.1", "iPad")
@@ -264,8 +364,8 @@ defmodule Wallboard.DevicesTest do
 
     test "with a key nobody approved does not open", %{dir: dir} do
       start(dir)
-      conn = build_conn() |> init_test_session(%{"device" => "made up"})
-      conn = get(conn, "/settings")
+      conn = %{build_conn() | remote_ip: {192, 0, 2, 7}}
+      conn = conn |> init_test_session(%{"device" => "made up"}) |> get("/settings")
       assert conn.status == 401
       assert conn.resp_body =~ "Approve this device"
     end
@@ -281,7 +381,44 @@ defmodule Wallboard.DevicesTest do
     end
   end
 
+  describe "last opened" do
+    test "follows the device's visits", %{dir: dir} do
+      start(dir, seen_ms: 0)
+      key = approved_key()
+      file = Path.join(dir, "devices.json")
+      [d] = Jason.decode!(File.read!(file))
+      File.write!(file, Jason.encode!([%{d | "seen_at" => 0}]))
+      stop_supervised!(Devices)
+      start(dir, seen_ms: 0)
+      assert [%{seen_at: 0}] = Devices.list()
+
+      assert Devices.approved?(key)
+      assert [%{seen_at: at}] = Devices.list()
+      assert at > 0
+    end
+  end
+
+  describe "two looks at the same approval at once" do
+    test "both get the same key, so neither loses it", %{dir: dir} do
+      start(dir)
+      {:ok, id, _} = Devices.ask("192.0.2.7", "iPad")
+      :ok = Devices.approve(id)
+      assert {:approved, key} = Devices.status(id, "192.0.2.7")
+      assert {:approved, ^key} = Devices.status(id, "192.0.2.7")
+      assert [_] = Devices.list()
+    end
+  end
+
   describe "the cookie key" do
+    test "is what the board signs its cookies with, never one anyone could work out", %{dir: dir} do
+      settings = Settings.merge(Settings.defaults(), %{archive: %{path: Path.join(dir, "w.db")}})
+      key = Settings.secret_key_base(settings)
+      assert key == Devices.cookie_key!(Devices.dir(settings))
+
+      refute key ==
+               :crypto.hash(:sha512, "wallboard:wallboard-without-a-token") |> Base.encode64()
+    end
+
     test "is made once at random, kept for this user only, and the same after", %{dir: dir} do
       key = Devices.cookie_key!(dir)
       assert byte_size(key) >= 64

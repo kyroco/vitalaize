@@ -27,6 +27,12 @@ defmodule WallboardWeb.DevicePage do
         else: conn
 
     cond do
+      # From this machine, by a name that is not its own, and through no
+      # proxy: a page some site led this machine's own browser to. The
+      # person at this machine opens the board by its own name instead.
+      WallboardWeb.Auth.this_machine?(conn.remote_ip) and not WallboardWeb.Auth.forwarded?(conn) ->
+        page(conn, 403, :this_machine, port: conn.port)
+
       get_session(conn, :device_refused) ->
         page(conn, 403, :refused)
 
@@ -98,7 +104,8 @@ defmodule WallboardWeb.DevicePage do
         </p>
         <p class="code">{@code}</p>
         <p class="note">
-          This page opens the board by itself once it is approved. The code lasts ten minutes.
+          This page opens the board by itself once it is approved. Keep it open: closed for
+          more than a minute, it shows a new code.
         </p>
       </.page>
       """
@@ -110,6 +117,19 @@ defmodule WallboardWeb.DevicePage do
         <h1>This device was refused</h1>
         <p>The board's owner refused it in the mailbox.</p>
         <p><a href="/?ask=again">Ask again</a></p>
+      </.page>
+      """
+    end
+
+    def this_machine(assigns) do
+      ~H"""
+      <.page>
+        <h1>Open the board by this Mac's own name</h1>
+        <p>
+          This is the Mac that runs the board, so it needs no code. Open
+          <a href={"http://localhost:#{@port}/"}>http://localhost:{@port}</a>
+          instead.
+        </p>
       </.page>
       """
     end
