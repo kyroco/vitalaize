@@ -644,10 +644,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// True when the board asks for a password. The password itself is
-    /// never handed to the app, only that there is one.
-    var hasPassword: Bool {
-        doc?.sections.flatMap { $0.fields }.first { $0.key == "token" }?.value.isEmpty == false
+    /// True when a browser on another device shows a code and waits until
+    /// it is approved in the board's mailbox.
+    var approvesDevices: Bool {
+        doc?.sections.flatMap { $0.fields }.first { $0.key == "approve_devices" }?.value == "true"
     }
 
     func open(_ path: String) {

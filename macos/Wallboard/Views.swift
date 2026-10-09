@@ -564,8 +564,8 @@ struct StatusView: View {
                         .disabled(state.mending)
                     Button("Show the log") { Shell.open(Setup.logFile) }
                 }
-                if state.hasPassword {
-                    Text("This board has a password. The first time a browser opens it, add ?token= and the password to the end of the address.")
+                if state.approvesDevices {
+                    Text("Other devices need approval. A new one shows a code; approve it in the mailbox on the board. This Mac never needs one.")
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Other machines connect by running this app there (or vitalaize setup on Linux) and picking Collector only. Each shows a code; approve it in the mailbox on the board.")
