@@ -38,6 +38,70 @@ defmodule Wallboard.BoardGitHubFactsTest do
     refute log =~ "PLANTED"
   end
 
+  # Facts with issue text, for a repository the board does not draw, so
+  # only what the page keeps of them is tested.
+  @with_text %{
+    repos: [
+      %{
+        repo: "acme/other",
+        error: nil,
+        facts: %{
+          issues: [
+            %{
+              number: 1,
+              title: "Tax rules",
+              body: "PLANTED body",
+              parked_reason: "PLANTED reason"
+            }
+          ],
+          milestones: [
+            %{
+              number: 2,
+              title: "Taxes",
+              issues: [%{number: 1, title: "Tax rules", body: "PLANTED body"}]
+            }
+          ]
+        }
+      }
+    ]
+  }
+
+  defmodule FakeGitHub do
+    use GenServer
+
+    def start_link(facts), do: GenServer.start_link(__MODULE__, facts, name: :github)
+
+    @impl true
+    def init(facts), do: {:ok, facts}
+
+    @impl true
+    def handle_call(:snapshot, _from, facts),
+      do: {:reply, %{facts: facts, meta: %{fetched_at: nil, error: nil, interval: 30_000}}, facts}
+  end
+
+  test "the board keeps no issue bodies or comment lines from the facts it is sent" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{__changed__: %{}, github: nil, runners: %{}, open_run: nil, run_view: nil}
+    }
+
+    {:noreply, socket} = BoardLive.handle_info({:source, :github, @with_text, %{}}, socket)
+
+    refute inspect(socket.assigns) =~ "PLANTED"
+    [%{facts: kept}] = socket.assigns.github.repos
+    assert [%{number: 1, title: "Tax rules"}] = kept.issues
+    assert [%{title: "Taxes", issues: [%{title: "Tax rules"}]}] = kept.milestones
+  end
+
+  test "a board opened afresh keeps no issue bodies or comment lines either" do
+    start_supervised!({FakeGitHub, @with_text})
+
+    {:ok, socket} =
+      BoardLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}})
+
+    refute inspect(socket.assigns) =~ "PLANTED"
+    assert [%{facts: %{issues: [%{title: "Tax rules"}]}}] = socket.assigns.github.repos
+  end
+
   test "every path that works out the GitHub view logs no fact text, and falls back to the last good facts" do
     good = %{repos: []}
     bad = %{repos: [%{repo: "acme/shop", facts: %{body: "PLANTED issue body"}, error: nil}]}
