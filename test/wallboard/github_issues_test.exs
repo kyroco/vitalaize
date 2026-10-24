@@ -57,6 +57,41 @@ defmodule Wallboard.GitHubIssuesTest do
       assert two.issues_cut
     end
 
+    test "ten closed milestones all updated in the last day may have left one closed that day out" do
+      closed =
+        for n <- 1..10 do
+          %{
+            "number" => 100 + n,
+            "title" => "Closed #{n}",
+            "state" => "CLOSED",
+            "closedAt" => "2026-10-20T10:00:00Z",
+            "updatedAt" => "2026-10-20T11:00:00Z",
+            "issues" => %{"pageInfo" => %{"hasNextPage" => false}, "nodes" => []}
+          }
+        end
+
+      page = fn last_updated ->
+        nodes = List.update_at(closed, 9, &Map.put(&1, "updatedAt", last_updated))
+
+        Jason.encode!(%{
+          "data" => %{
+            "repository" => %{
+              "openMilestones" => %{"pageInfo" => %{"hasNextPage" => false}, "nodes" => []},
+              "closedMilestones" => %{"nodes" => nodes}
+            }
+          }
+        })
+      end
+
+      {:ok, full} = GitHub.parse_milestones(page.("2026-10-20T08:00:00Z"), @now)
+      assert length(full.milestones) == 10
+      assert full.cut
+
+      {:ok, older} = GitHub.parse_milestones(page.("2026-10-18T08:00:00Z"), @now)
+      refute older.cut
+      refute milestones_page().cut
+    end
+
     test "the next page of open milestones starts where GitHub says" do
       assert milestones_page().next == "Y3Vyc29yOjM="
 
