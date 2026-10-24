@@ -14,14 +14,13 @@ defmodule Wallboard.Sources.GitHub do
       (self-hosted) runners, to show each one online, busy or offline. That
       call needs admin rights on the repository; when GitHub refuses it, it
       is asked again only once an hour (see `Wallboard.Runners`)
-
     * at most every two minutes, one GraphQL call for the repository's
       milestones and one for its issues, with each issue's projects, linked
       branches, closing pull requests, blockers and labels (see
       `fetch_issues/3`). A repository with more open milestones or issues
       than one page holds takes one call more per page, up to `issue_pages`
-      pages of each. Without the `read:project` scope the issues are asked
-      for without projects, and with them again only once an hour
+      pages of each. When GitHub refuses projects because the sign-in lacks
+      the `read:project` scope, the issues are asked for again without them
 
   At the default 30 seconds with two runs going that is about 600 calls an
   hour for each repository, so six repositories stay inside GitHub's 5,000.
@@ -48,10 +47,6 @@ defmodule Wallboard.Sources.GitHub do
 
   # Milestones and issues change slowly: they are read at most this often.
   @issues_every_s 120
-
-  # How long to wait before asking for projects again once GitHub said the
-  # sign-in lacks the read:project scope.
-  @no_project_scope_s 3600
 
   # How much of an issue's text is kept: enough for the start of it.
   @body_chars 600
@@ -167,12 +162,7 @@ defmodule Wallboard.Sources.GitHub do
         e
         | facts:
             e.facts &&
-              Map.drop(e.facts, [
-                :deploys_checked_at,
-                :runners_checked_at,
-                :issues_checked_at,
-                :project_scope_at
-              ])
+              Map.drop(e.facts, [:deploys_checked_at, :runners_checked_at, :issues_checked_at])
       }
     end)
   end
@@ -242,8 +232,7 @@ defmodule Wallboard.Sources.GitHub do
     :issues,
     :issues_cut,
     :issues_checked_at,
-    :project_scope,
-    :project_scope_at
+    :project_scope
   ]
 
   @doc """
@@ -275,60 +264,43 @@ defmodule Wallboard.Sources.GitHub do
       prev && prev[:issues_checked_at] &&
         DateTime.diff(now, prev.issues_checked_at, :second) < @issues_every_s
 
-    if fresh?, do: last, else: read_issues_now(gh, prev, last, now)
+    if fresh?, do: last, else: read_issues_now(gh, last, now)
   end
 
-  # `project_scope_at` is when projects were last asked for.
-  defp read_issues_now(gh, prev, last, now) do
-    # Once GitHub has said the scope is missing, projects are left out of
-    # the query until an hour has passed, so each read is one call.
-    projects? =
-      !(prev && prev[:project_scope] == :missing && prev[:project_scope_at] &&
-          DateTime.diff(now, prev.project_scope_at, :second) < @no_project_scope_s)
-
+  defp read_issues_now(gh, last, now) do
     pages = max(gh[:issue_pages] || 1, 1)
 
-    read =
-      with {:ok, ms} <-
-             paged(&milestones_call(gh, &1), &parse_milestones(&1, now), :milestones, pages) do
-        case read_issues(gh, projects?, now, pages) do
-          {:ok, is} ->
-            {:ok, ms, is}
+    with {:ok, ms} <-
+           paged(&milestones_call(gh, &1), &parse_milestones(&1, now), :milestones, pages),
+         {:ok, is, scope} <- read_issues_any_scope(gh, now, pages) do
+      %{
+        milestones: ms.items,
+        milestones_cut: ms.cut,
+        issues: Enum.uniq_by(is.items, & &1.number),
+        issues_cut: is.cut,
+        issues_checked_at: now,
+        project_scope: scope
+      }
+    else
+      _ -> %{last | issues_checked_at: now}
+    end
+  end
 
-          {:error, :no_project_scope} when projects? ->
-            case read_issues(gh, false, now, pages) do
-              {:ok, is} -> {:missing_now, ms, is}
-              {:error, _} -> {:error, :no_project_scope}
-            end
-
-          error ->
-            error
-        end
-      end
-
-    scope =
-      case read do
-        {:missing_now, _, _} -> %{project_scope: :missing, project_scope_at: now}
-        {:error, :no_project_scope} -> %{project_scope: :missing, project_scope_at: now}
-        _ when projects? -> %{project_scope: :ok, project_scope_at: now}
-        _ -> %{project_scope: :missing, project_scope_at: last.project_scope_at}
-      end
-
-    case read do
-      {_, ms, is} ->
-        Map.merge(scope, %{
-          milestones: ms.items,
-          milestones_cut: ms.cut,
-          issues: Enum.uniq_by(is.items, & &1.number),
-          issues_cut: is.cut,
-          issues_checked_at: now
-        })
+  # The issues with their projects or, when GitHub says the sign-in lacks
+  # the read:project scope, without them: {:ok, read, :ok | :missing} or
+  # {:error, reason}. Projects are asked for on every read, so a scope added
+  # since is found on the next one; while it is missing, each read takes
+  # one call more.
+  defp read_issues_any_scope(gh, now, pages) do
+    case read_issues(gh, true, now, pages) do
+      {:ok, is} ->
+        {:ok, is, :ok}
 
       {:error, :no_project_scope} ->
-        last |> Map.merge(scope) |> Map.put(:issues_checked_at, now)
+        with {:ok, is} <- read_issues(gh, false, now, pages), do: {:ok, is, :missing}
 
-      {:error, _} ->
-        %{last | issues_checked_at: now}
+      error ->
+        error
     end
   end
 
