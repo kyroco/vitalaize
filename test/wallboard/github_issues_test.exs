@@ -362,6 +362,16 @@ defmodule Wallboard.GitHubIssuesTest do
       assert third.issues_checked_at == DateTime.add(@now, 130, :second)
     end
 
+    test "open issues are paged in the order they were made, which an edit between pages cannot change",
+         c do
+      GitHub.fetch_issues(%{c.gh | issue_pages: 2}, nil, @now)
+      queries = File.read!(Path.join(c.dir, "queries"))
+
+      # Both pages of open issues, and only by creation.
+      assert length(Regex.scan(~r/openIssues: issues\(/, queries)) == 2
+      assert length(Regex.scan(~r/openIssues: issues\([^)]*field: CREATED_AT/, queries)) == 2
+    end
+
     test "the owner and name reach gh as text, so a name of digits stays a name", c do
       settings = Settings.merge(c.settings, %{github: %{repo: "acme/2026"}})
       facts(GitHub.poll(settings, nil, %{}, @now))
