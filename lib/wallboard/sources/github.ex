@@ -58,7 +58,7 @@ defmodule Wallboard.Sources.GitHub do
   milestone { number }
   labels(first: 20) { nodes { name } }
   linkedBranches(first: 10) { nodes { ref { name } } }
-  closedByPullRequestsReferences(first: 10) { nodes { number state } }
+  closedByPullRequestsReferences(first: 10) { nodes { number state repository { nameWithOwner } } }
   blockedBy(first: 20) { nodes { number state repository { nameWithOwner } } }
   comments(last: 1) { nodes { body } }
   """
@@ -818,7 +818,7 @@ defmodule Wallboard.Sources.GitHub do
   Each issue is `%{number, title, state, closed_at, body, milestone,
   labels, projects, branches, closing_prs, blocked_by, parked_reason}`:
   `projects` is nil when the query left them out, `closing_prs` and
-  `blocked_by` hold only open ones, and `parked_reason` is the first line of
+  `blocked_by` hold only open ones, each as `%{repo, number}`, and `parked_reason` is the first line of
   the newest comment of an open issue with the `parked` label. `body` is the
   first 600 characters.
   """
@@ -922,9 +922,9 @@ defmodule Wallboard.Sources.GitHub do
         for(%{"ref" => %{"name" => b}} <- get_in(i, ["linkedBranches", "nodes"]) || [], do: b),
       closing_prs:
         for(
-          %{"number" => n, "state" => "OPEN"} <-
+          %{"number" => n, "state" => "OPEN"} = p <-
             get_in(i, ["closedByPullRequestsReferences", "nodes"]) || [],
-          do: n
+          do: %{repo: get_in(p, ["repository", "nameWithOwner"]), number: n}
         ),
       blocked_by:
         for(
