@@ -113,6 +113,8 @@ defmodule WallboardWeb.SettingsLive do
     :exit, _ -> false
   end
 
+  defdelegate read_minutes(settings), to: Wallboard.Sources.GitHub, as: :issue_read_minutes
+
   defp local_sessions do
     for name <- [:claude, :codex], reduce: 0 do
       n -> n + length((Poller.snapshot(name).facts || %{})[:sessions] || [])
@@ -366,7 +368,7 @@ defmodule WallboardWeb.SettingsLive do
                 The board cannot see which GitHub project an issue is in: your gh sign-in
                 lacks the read:project scope. To add it, run
                 <code>gh auth refresh -s read:project</code>
-                on this machine. The board checks again every two minutes.
+                on this machine. The board checks again every {read_minutes(@settings)} minutes.
               </p>
             </dd>
           </div>

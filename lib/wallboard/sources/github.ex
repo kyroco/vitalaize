@@ -225,6 +225,21 @@ defmodule Wallboard.Sources.GitHub do
     end
   end
 
+  @doc """
+  How often milestones and issues are read, in whole minutes rounded up:
+  on the first poll at least two minutes after the last read, so with
+  polls every `github.poll_seconds`.
+  """
+  def issue_read_minutes(settings) do
+    seconds =
+      case settings.github.poll_seconds do
+        poll when is_integer(poll) and poll > 0 -> div(@issues_every_s + poll - 1, poll) * poll
+        _ -> @issues_every_s
+      end
+
+    div(seconds + 59, 60)
+  end
+
   # What the issue read adds to a repository's facts.
   @issue_keys [
     :milestones,
