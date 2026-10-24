@@ -402,6 +402,11 @@ defmodule Wallboard.GitHubIssuesTest do
       assert html =~ "gh auth refresh -s read:project"
     end
 
+    test "the note promises nothing the board does not show yet" do
+      # No page draws milestones or issues until the Project tab is built.
+      refute settings_html(true) =~ "still show"
+    end
+
     test "says nothing about it when the scope is there" do
       refute settings_html(false) =~ "read:project"
     end
