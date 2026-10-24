@@ -158,21 +158,13 @@ defmodule WallboardWeb.BoardLive do
   def handle_info({:runners, states}, socket) when is_map(states),
     do: {:noreply, socket |> assign(runners: states) |> derive_github()}
 
-  # An error while working out what to show from the facts is caught rather
-  # than left to crash the page: a LiveView's crash report prints its state
-  # and the message, and both hold the facts, issue text included. The log
-  # says only what kind of error it was; the last good facts stay.
-  def handle_info({:source, :github, facts, meta}, socket) do
-    {:noreply,
-     socket
-     |> assign(github: facts, github_meta: meta, now: now())
-     |> derive_github()
-     |> derive_run()}
-  rescue
-    e ->
-      Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
-      {:noreply, socket}
-  end
+  def handle_info({:source, :github, facts, meta}, socket),
+    do:
+      {:noreply,
+       socket
+       |> assign(github: facts, github_meta: meta, now: now())
+       |> derive_github()
+       |> derive_run()}
 
   def handle_info({:source, :new_relic, facts, meta}, socket),
     do: {:noreply, assign(socket, nr: facts, nr_meta: meta)}
@@ -482,6 +474,12 @@ defmodule WallboardWeb.BoardLive do
   # poller's, so one added or removed on the settings page shows without a
   # reload. A runner GitHub does not list takes its state from a collector
   # on its machine, when one reports it.
+  #
+  # An error here is caught rather than left to crash the page, whichever
+  # message brought it: a LiveView's crash report prints its state and the
+  # message, and both hold the facts, issue text included. The log says
+  # only what kind of error it was, and the facts go back to the last ones
+  # that worked, so the next tick does not fail on the same ones.
   defp derive_github(socket) do
     %{github: facts, now: now} = socket.assigns
     repos = GitHub.repos(facts, Settings.get(), now, socket.assigns[:runners] || %{})
@@ -491,8 +489,13 @@ defmodule WallboardWeb.BoardLive do
       git: repos,
       git_columns: columns,
       git_quiet: quiet,
-      gh: repos |> List.first() |> then(&(&1 && &1.s))
+      gh: repos |> List.first() |> then(&(&1 && &1.s)),
+      github_good: facts
     )
+  rescue
+    e ->
+      Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
+      assign(socket, github: socket.assigns[:github_good])
   end
 
   # The open run and its jobs. A run that leaves GitHub's last-day list
@@ -500,6 +503,8 @@ defmodule WallboardWeb.BoardLive do
   # running runs, from the archive, or from one read of that run alone.
   defp derive_run(%{assigns: %{open_run: nil}} = socket), do: assign(socket, run_view: nil)
 
+  # An error here is caught for the same reason as in derive_github/1; the
+  # run's panel closes.
   defp derive_run(%{assigns: %{open_run: %{repo: repo, id: id}}} = socket) do
     seen = socket.assigns.run_view && socket.assigns.run_view.run
 
@@ -514,6 +519,10 @@ defmodule WallboardWeb.BoardLive do
           run_view: %{repo: repo, run: run, jobs: jobs, listed: listed_runners(socket, repo)}
         )
     end
+  rescue
+    e ->
+      Logger.error("The board could not show a run: #{inspect(e.__struct__)}")
+      assign(socket, open_run: nil, run_view: nil)
   end
 
   # The runners GitHub lists as the repository's own, now and before (see
