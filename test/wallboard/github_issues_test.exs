@@ -188,6 +188,30 @@ defmodule Wallboard.GitHubIssuesTest do
       assert issue(read, 10).parked_reason == nil
     end
 
+    test "a newest comment that starts with blank lines gives its first line with words" do
+      text =
+        Jason.encode!(%{
+          "data" => %{
+            "repository" => %{
+              "openIssues" => %{
+                "nodes" => [
+                  %{
+                    "number" => 20,
+                    "title" => "Tax rules",
+                    "state" => "OPEN",
+                    "labels" => %{"nodes" => [%{"name" => "parked"}]},
+                    "comments" => %{"nodes" => [%{"body" => "\n  \nWaiting on legal.\nMore."}]}
+                  }
+                ]
+              }
+            }
+          }
+        })
+
+      {:ok, read} = GitHub.parse_issues(text, @now)
+      assert issue(read, 20).parked_reason == "Waiting on legal."
+    end
+
     test "the label is read in any letter case, and an empty newest comment gives no reason" do
       parked = issue(page_one(), 15)
       assert parked.labels == ["parked"]
@@ -370,6 +394,14 @@ defmodule Wallboard.GitHubIssuesTest do
       # Both pages of open issues, and only by creation.
       assert length(Regex.scan(~r/openIssues: issues\(/, queries)) == 2
       assert length(Regex.scan(~r/openIssues: issues\([^)]*field: CREATED_AT/, queries)) == 2
+    end
+
+    test "up to 100 labels are read, so a parked label past the twentieth is seen", c do
+      GitHub.fetch_issues(c.gh, nil, @now)
+      queries = File.read!(Path.join(c.dir, "queries"))
+
+      assert queries =~ "labels(first: 100)"
+      refute queries =~ "labels(first: 20)"
     end
 
     test "the owner and name reach gh as text, so a name of digits stays a name", c do
