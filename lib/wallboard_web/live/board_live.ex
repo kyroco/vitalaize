@@ -103,7 +103,7 @@ defmodule WallboardWeb.BoardLive do
       |> assign(stream: Wallboard.Link.Sessions.cards())
       # What collectors say about the GitHub runners on their machines.
       |> assign(runners: Wallboard.Link.RunnerStates.states())
-      |> assign(github: github.facts, github_meta: github.meta)
+      |> assign(github: GitHub.without_text(github.facts), github_meta: github.meta)
       |> assign(nr: nr.facts, nr_meta: nr.meta)
       |> assign(usage: usage.facts, usage_meta: usage.meta)
       |> assign(dev: dev.facts, dev_meta: dev.meta, dev_on?: DevPower.enabled?(settings))
@@ -162,7 +162,7 @@ defmodule WallboardWeb.BoardLive do
     do:
       {:noreply,
        socket
-       |> assign(github: facts, github_meta: meta, now: now())
+       |> assign(github: GitHub.without_text(facts), github_meta: meta, now: now())
        |> derive_github()
        |> derive_run()}
 

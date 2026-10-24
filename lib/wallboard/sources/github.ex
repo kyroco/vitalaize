@@ -170,6 +170,36 @@ defmodule Wallboard.Sources.GitHub do
   # ---------------------------------------------------------------------------
   # Fetching
 
+  @doc """
+  The facts without the issue text no screen draws yet: each issue's body
+  and parked reason, and each milestone issue's body. The board keeps only
+  this, so a crash report of its page, which prints the page's state,
+  holds no issue text. A screen that draws the text keeps only what it
+  draws.
+  """
+  def without_text(%{repos: entries} = facts) when is_list(entries) do
+    %{facts | repos: Enum.map(entries, &%{&1 | facts: entry_without_text(&1.facts)})}
+  end
+
+  def without_text(facts), do: facts
+
+  defp entry_without_text(%{} = facts) do
+    facts
+    |> Map.replace_lazy(:issues, &list_without(&1, [:body, :parked_reason]))
+    |> Map.replace_lazy(:milestones, fn
+      ms when is_list(ms) ->
+        for m <- ms, do: Map.replace_lazy(m, :issues, &list_without(&1, [:body]))
+
+      other ->
+        other
+    end)
+  end
+
+  defp entry_without_text(facts), do: facts
+
+  defp list_without(list, keys) when is_list(list), do: Enum.map(list, &Map.drop(&1, keys))
+  defp list_without(other, _keys), do: other
+
   # One repository's read, in its own task. A raise, throw or exit is caught
   # here: left to escape, it would end the task with a crash report and
   # take the whole poll down with the error's text, which can hold what
