@@ -15,7 +15,7 @@ defmodule Wallboard.PollerCrashTest do
       facts = %{body: "PLANTED issue body", how: :persistent_term.get({__MODULE__, :how})}
 
       # A raise inside the check itself, with the facts in its text.
-      if facts.how == :poll_raises, do: Map.fetch!(facts, :not_there)
+      if facts.how == :poll_raises, do: _ = Map.fetch!(facts, Enum.random([:not_there]))
       {:ok, facts, "PLANTED memory"}
     end
 

@@ -20,6 +20,12 @@ defmodule Wallboard.Poller do
 
   @topic "board"
 
+  # The poller's state. It never prints its facts or memory: a crash report
+  # lists a failed call's arguments, the state among them, and the facts
+  # can hold issue text.
+  @derive {Inspect, except: [:facts, :memory]}
+  defstruct [:name, :source, :interval, :timeout, :facts, :memory, :fetched_at, :error, :task]
+
   def topic, do: @topic
 
   def start_link(opts) do
@@ -47,7 +53,7 @@ defmodule Wallboard.Poller do
     source = Keyword.fetch!(opts, :source)
     interval = Keyword.fetch!(opts, :interval_ms)
 
-    state = %{
+    state = %__MODULE__{
       name: Keyword.fetch!(opts, :name),
       source: source,
       interval: interval,
