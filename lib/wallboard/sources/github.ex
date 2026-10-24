@@ -54,7 +54,7 @@ defmodule Wallboard.Sources.GitHub do
   # What is read of each issue. Projects need the read:project scope, so
   # they are asked for apart (`@issue_projects`).
   @issue_fields """
-  number title state closedAt body
+  number title state closedAt updatedAt body
   milestone { number }
   labels(first: 20) { nodes { name } }
   linkedBranches(first: 10) { nodes { ref { name } } }
@@ -807,8 +807,9 @@ defmodule Wallboard.Sources.GitHub do
   @doc """
   Parses one page of a repository's issues: `{:ok, %{issues, next, cut}}`,
   where `next` is where the next page of open issues starts (nil when there
-  is none) and `cut` is true when the first page's list of issues closed in
-  the last day was full, so more may be missing.
+  is none) and `cut` is true when the first page's 100 most recently
+  updated closed issues were all updated in the last day, so an issue
+  closed in that day may be missing.
 
   Each issue is `%{number, title, state, closed_at, body, milestone,
   labels, projects, branches, closing_prs, blocked_by, parked_reason}`:
@@ -827,11 +828,20 @@ defmodule Wallboard.Sources.GitHub do
        %{
          issues: Enum.map(open["nodes"] || [], &issue/1) ++ closed,
          next: next_page(open),
-         cut:
-           closed_nodes != [] and length(closed) == length(closed_nodes) and
-             length(closed_nodes) >= 100
+         cut: more_since?(closed_nodes, 100, now)
        }}
     end
+  end
+
+  # True when a list of the most recently updated, asked for `size` at a
+  # time, came back full and still within the last day at its end: one
+  # closed in that day may be past it.
+  defp more_since?(nodes, size, now) do
+    length(nodes) >= size and
+      case time(List.last(nodes)["updatedAt"]) do
+        nil -> true
+        at -> DateTime.compare(at, DateTime.add(now, -24 * 3600, :second)) != :lt
+      end
   end
 
   defp repository(text) do
