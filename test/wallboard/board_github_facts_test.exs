@@ -37,4 +37,37 @@ defmodule Wallboard.BoardGitHubFactsTest do
     assert log =~ "KeyError"
     refute log =~ "PLANTED"
   end
+
+  test "every path that works out the GitHub view logs no fact text, and falls back to the last good facts" do
+    good = %{repos: []}
+    bad = %{repos: [%{repo: "acme/shop", facts: %{body: "PLANTED issue body"}, error: nil}]}
+
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        github: good,
+        now: DateTime.utc_now(),
+        runners: %{},
+        open_run: nil,
+        run_view: nil
+      }
+    }
+
+    # Good facts taken in first, so the board has something to fall back to.
+    {:noreply, socket} = BoardLive.handle_info({:runners, %{}}, socket)
+
+    # Bad facts in the socket, as a later message or a tick would find them.
+    socket = Phoenix.Component.assign(socket, github: bad)
+
+    log =
+      capture_log(fn ->
+        assert {:noreply, after_runners} =
+                 BoardLive.handle_info({:runners, %{"air-1" => :online}}, socket)
+
+        assert after_runners.assigns.github == good
+      end)
+
+    assert log =~ "KeyError"
+    refute log =~ "PLANTED"
+  end
 end
