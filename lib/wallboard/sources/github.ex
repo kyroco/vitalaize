@@ -268,7 +268,13 @@ defmodule Wallboard.Sources.GitHub do
   end
 
   defp read_issues_now(gh, last, now) do
-    pages = max(gh[:issue_pages] || 1, 1)
+    # Settings.normalize checks the shared value, but a repository's own
+    # entry is laid over it as the file has it, so it is checked here too.
+    pages =
+      case gh[:issue_pages] do
+        n when is_integer(n) and n >= 1 -> n
+        _ -> 1
+      end
 
     with {:ok, ms} <-
            paged(&milestones_call(gh, &1), &parse_milestones(&1, now), :milestones, pages),
