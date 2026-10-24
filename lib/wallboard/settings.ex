@@ -1576,6 +1576,7 @@ defmodule Wallboard.Settings do
     # A hub keeps only what other machines send.
     |> update_in([:archive, :collect_local], &(&1 && role != :hub))
     |> update_in([:claude, :poll_seconds], &whole(&1, @defaults.claude.poll_seconds))
+    |> update_in([:github, :issue_pages], &whole(&1, @defaults.github.issue_pages))
     |> update_in([:codex, :idle_minutes], fn
       n when is_integer(n) and n >= 0 -> n
       _ -> @defaults.codex.idle_minutes
