@@ -325,21 +325,62 @@ defmodule Wallboard.Sources.GitHub do
     end
   end
 
-  defp read_issues(gh, projects?, now, pages),
-    do: paged(&issues_call(gh, projects?, &1), &parse_issues(&1, now), :issues, pages)
+  defp read_issues(gh, projects?, now, pages) do
+    with {:ok, read} <-
+           paged(&issues_call(gh, projects?, &1), &parse_issues(&1, now), :issues, pages) do
+      if read.pages > 1, do: add_moved(gh, projects?, now, read), else: {:ok, read}
+    end
+  end
+
+  # Open issues are read most recently updated first, so a cut keeps the
+  # ones being worked. An issue updated while the pages are read jumps ahead
+  # of the cursor, onto a page already read; so after several pages, one
+  # more call asks for those updated since the read began. They go first,
+  # so their newer copy is the one kept.
+  defp add_moved(gh, projects?, now, read) do
+    fields = if projects?, do: @issue_fields <> @issue_projects, else: @issue_fields
+
+    query = """
+    query($owner: String!, $name: String!, $since: DateTime!) {
+      repository(owner: $owner, name: $name) {
+        movedIssues: issues(states: OPEN, first: 100, filterBy: {since: $since}, orderBy: {field: UPDATED_AT, direction: DESC}) {
+          nodes { #{fields} }
+        }
+      }
+    }
+    """
+
+    with {:ok, text} <- graphql_call(gh, query, ["-f", "since=" <> DateTime.to_iso8601(now)]),
+         {:ok, repo} <- repository(text) do
+      nodes = get_in(repo, ["movedIssues", "nodes"]) || []
+
+      {:ok,
+       %{
+         read
+         | items: Enum.map(nodes, &issue/1) ++ read.items,
+           cut: read.cut or length(nodes) >= 100
+       }}
+    end
+  end
 
   # Reads up to `left` pages: `call` takes where a page starts (nil for the
   # first) and gives GitHub's answer, `parse` reads it into a map with the
   # page's items under `key`, `next` and, optionally, `cut`. Returns
-  # {:ok, %{first, items, cut}}, where `first` is the first page as parsed
-  # and `cut` is true when GitHub had more pages, or {:error, reason}.
+  # {:ok, %{first, items, cut, pages}}, where `first` is the first page as
+  # parsed, `cut` is true when GitHub had more pages and `pages` is how many
+  # were read, or {:error, reason}.
   defp paged(call, parse, key, left, cursor \\ nil, acc \\ nil) do
     with {:ok, text} <- call.(cursor),
          {:ok, page} <- parse.(text) do
       acc =
         if acc,
-          do: %{acc | items: acc.items ++ page[key], cut: acc.cut or page[:cut] == true},
-          else: %{first: page, items: page[key], cut: page[:cut] == true}
+          do: %{
+            acc
+            | items: acc.items ++ page[key],
+              cut: acc.cut or page[:cut] == true,
+              pages: acc.pages + 1
+          },
+          else: %{first: page, items: page[key], cut: page[:cut] == true, pages: 1}
 
       cond do
         is_nil(page.next) -> {:ok, acc}
@@ -349,16 +390,20 @@ defmodule Wallboard.Sources.GitHub do
     end
   end
 
-  defp milestones_call(gh, cursor), do: graphql_call(gh, milestones_query(cursor), cursor)
+  defp milestones_call(gh, cursor),
+    do: graphql_call(gh, milestones_query(cursor), after_var(cursor))
 
   defp issues_call(gh, projects?, cursor),
-    do: graphql_call(gh, issues_query(projects?, cursor), cursor)
+    do: graphql_call(gh, issues_query(projects?, cursor), after_var(cursor))
 
-  defp graphql_call(gh, query, cursor) do
+  defp after_var(nil), do: []
+  defp after_var(cursor), do: ["-f", "after=" <> cursor]
+
+  # `more` is the query's other variables, as gh flags.
+  defp graphql_call(gh, query, more) do
     [owner, name] = String.split(gh.repo, "/", parts: 2)
     # -f, not -F: -F would send a name of digits as a number.
-    vars = ["-f", "owner=" <> owner, "-f", "name=" <> name]
-    vars = if cursor, do: vars ++ ["-f", "after=" <> cursor], else: vars
+    vars = ["-f", "owner=" <> owner, "-f", "name=" <> name | more]
 
     case Cmd.run("gh", ["api", "graphql", "-f", "query=" <> query | vars], timeout: 30_000) do
       {:ok, text} ->
@@ -393,11 +438,9 @@ defmodule Wallboard.Sources.GitHub do
   defp issues_query(projects?, cursor) do
     fields = if projects?, do: @issue_fields <> @issue_projects, else: @issue_fields
 
-    # Newest first, by when each was made: an issue edited between two
-    # page reads keeps its place, where by update time it would jump ahead
-    # of the cursor and be in neither page.
+    # Most recently updated first (see add_moved/4 for paging).
     open = """
-    openIssues: issues(states: OPEN, first: 100#{if cursor, do: ", after: $after"}, orderBy: {field: CREATED_AT, direction: DESC}) {
+    openIssues: issues(states: OPEN, first: 100#{if cursor, do: ", after: $after"}, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes { #{fields} }
     }

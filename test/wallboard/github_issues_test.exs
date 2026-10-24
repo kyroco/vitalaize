@@ -495,7 +495,8 @@ defmodule Wallboard.GitHubIssuesTest do
                "milestones",
                "milestones_page_2",
                "issues+projects",
-               "issues_page_2+projects"
+               "issues_page_2+projects",
+               "issues_moved+projects"
              ]
 
       refute read.issues_cut
