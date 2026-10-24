@@ -335,7 +335,8 @@ defmodule Wallboard.Sources.GitHub do
 
   defp graphql_call(gh, query, cursor) do
     [owner, name] = String.split(gh.repo, "/", parts: 2)
-    vars = ["-F", "owner=" <> owner, "-F", "name=" <> name]
+    # -f, not -F: -F would send a name of digits as a number.
+    vars = ["-f", "owner=" <> owner, "-f", "name=" <> name]
     vars = if cursor, do: vars ++ ["-f", "after=" <> cursor], else: vars
 
     case Cmd.run("gh", ["api", "graphql", "-f", "query=" <> query | vars], timeout: 30_000) do
@@ -576,11 +577,12 @@ defmodule Wallboard.Sources.GitHub do
         "graphql",
         "-f",
         "query=" <> @gql,
-        "-F",
+        # -f, not -F: -F would send a name of digits as a number.
+        "-f",
         "owner=" <> owner,
-        "-F",
+        "-f",
         "name=" <> name,
-        "-F",
+        "-f",
         "branch=" <> gh.branch
       ],
       timeout: 30_000

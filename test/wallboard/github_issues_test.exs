@@ -367,7 +367,8 @@ defmodule Wallboard.GitHubIssuesTest do
       facts(GitHub.poll(settings, nil, %{}, @now))
 
       assert "queue" in asked(c.dir)
-      refute File.exists?(Path.join(c.dir, "typed")), File.read!(Path.join(c.dir, "typed"))
+      typed = Path.join(c.dir, "typed")
+      if File.exists?(typed), do: flunk("sent with -F: " <> File.read!(typed))
     end
 
     test "when issues were read less than two minutes ago, the issue keys do not count as news",
