@@ -16,6 +16,9 @@ defmodule Wallboard.PollerCrashTest do
 
       # A raise inside the check itself, with the facts in its text.
       if facts.how == :poll_raises, do: _ = Map.fetch!(facts, Enum.random([:not_there]))
+      # A throw, or an exit like a timed-out call, carrying what it read.
+      if facts.how == :poll_throws, do: throw({:read, facts})
+      if facts.how == :poll_exits, do: exit({:timeout, {GenServer, :call, [:store, facts]}})
       {:ok, facts, "PLANTED memory"}
     end
 
@@ -91,6 +94,26 @@ defmodule Wallboard.PollerCrashTest do
 
     assert log =~ "FunctionClauseError"
     refute log =~ "PLANTED"
+  end
+
+  for how <- [:poll_throws, :poll_exits] do
+    test "a #{how} inside a source's check is logged once, by its kind alone" do
+      :persistent_term.put({Source, :how}, unquote(how))
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} =
+            GenServer.start(Poller, [name: nil, source: Source, interval_ms: 1_000], [])
+
+          Process.sleep(200)
+          assert Process.alive?(pid)
+          GenServer.stop(pid)
+        end)
+
+      refute log =~ "PLANTED"
+      assert [_] = Regex.scan(~r/the check failed/, log)
+      refute log =~ "terminating"
+    end
   end
 
   test "a raise inside a source's check is logged once, by its kind alone" do
