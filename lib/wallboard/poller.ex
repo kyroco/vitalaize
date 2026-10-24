@@ -124,14 +124,17 @@ defmodule Wallboard.Poller do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # Runs a source's check. A raise is caught here rather than left to crash
-  # the task, whose crash report prints the error's text, and that can hold
-  # what the check read. It becomes a failed check that names only the
-  # kind of error, logged once like any other.
+  # Runs a source's check. A raise, throw or exit is caught here rather than
+  # left to crash the task, whose crash report prints the error's text or
+  # value, and that can hold what the check read (a timed-out call carries
+  # its arguments). It becomes a failed check that names only the kind,
+  # logged once like any other.
   defp checked(source, settings, facts, memory, now) do
     source.poll(settings, facts, memory, now)
   rescue
     e -> {:error, "the check raised #{inspect(e.__struct__)}", memory}
+  catch
+    kind, _ -> {:error, "the check failed (#{kind})", memory}
   end
 
   # Takes in a poll's result. An error here is caught rather than left to
