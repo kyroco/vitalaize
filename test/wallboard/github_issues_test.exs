@@ -616,7 +616,7 @@ defmodule Wallboard.GitHubIssuesTest do
 
     test "says which scope to add when the sign-in lacks read:project" do
       html = settings_html(true)
-      assert html =~ "lacks the read:project scope"
+      assert html =~ "lacks permission to read projects (the read:project scope)"
       assert html =~ "gh auth refresh -s read:project"
     end
 
@@ -632,9 +632,14 @@ defmodule Wallboard.GitHubIssuesTest do
     test "says how soon the board checks again, from how often it polls GitHub" do
       # Issues are read on the first poll at least two minutes after the
       # last; each poll's own run time adds a little, hence "about".
-      assert settings_html(true) =~ "checks again about every 2 minutes"
-      assert settings_html(true, %{poll_seconds: 300}) =~ "checks again about every 5 minutes"
-      assert settings_html(true, %{poll_seconds: 50}) =~ "checks again about every 3 minutes"
+      assert settings_html(true) =~
+               "tries again about every 2 minutes, and this note goes away once it works"
+
+      assert settings_html(true, %{poll_seconds: 300}) =~
+               "tries again about every 5 minutes, and this note goes away once it works"
+
+      assert settings_html(true, %{poll_seconds: 50}) =~
+               "tries again about every 3 minutes, and this note goes away once it works"
     end
   end
 
