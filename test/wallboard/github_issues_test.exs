@@ -404,6 +404,21 @@ defmodule Wallboard.GitHubIssuesTest do
       refute queries =~ "labels(first: 20)"
     end
 
+    test "a quoted issue_pages in a repository's own entry reads one page instead of crashing",
+         c do
+      # A repository's entry is laid over the shared settings as it is, so
+      # Settings.normalize never sees it.
+      settings =
+        Settings.merge(c.settings, %{github: %{repos: [%{repo: "acme/shop", issue_pages: "2"}]}})
+
+      [gh] = Settings.github_repos(settings)
+      assert gh.issue_pages == "2"
+
+      read = GitHub.fetch_issues(gh, nil, @now)
+      assert asked(c.dir) == ["milestones", "issues+projects"]
+      assert read.issues_cut
+    end
+
     test "the owner and name reach gh as text, so a name of digits stays a name", c do
       settings = Settings.merge(c.settings, %{github: %{repo: "acme/2026"}})
       facts(GitHub.poll(settings, nil, %{}, @now))
