@@ -235,7 +235,17 @@ defmodule Wallboard.GitHubIssuesTest do
       # for projects is refused as GitHub refuses it.
       File.write!(Path.join(dir, "gh"), """
       #!/bin/sh
+      # gh -F turns a value of digits, true, false or null into a number or
+      # a boolean; an owner or name sent that way is written down.
+      prev=""
+      for a in "$@"; do
+        if [ "$prev" = "-F" ]; then
+          case "$a" in owner=*|name=*) echo "$a" >> "$WALLBOARD_TEST_GH/typed" ;; esac
+        fi
+        prev="$a"
+      done
       if [ "$2" = "graphql" ]; then
+        echo "$4" >> "$WALLBOARD_TEST_GH/queries"
         case "$4" in
           *ProjectV2*) what=project ;;
           *openMilestones*'after: $after'*) what=milestones_page_2 ;;
@@ -350,6 +360,14 @@ defmodule Wallboard.GitHubIssuesTest do
       assert "milestones" in calls
       assert "issues+projects" in calls
       assert third.issues_checked_at == DateTime.add(@now, 130, :second)
+    end
+
+    test "the owner and name reach gh as text, so a name of digits stays a name", c do
+      settings = Settings.merge(c.settings, %{github: %{repo: "acme/2026"}})
+      facts(GitHub.poll(settings, nil, %{}, @now))
+
+      assert "queue" in asked(c.dir)
+      refute File.exists?(Path.join(c.dir, "typed")), File.read!(Path.join(c.dir, "typed"))
     end
 
     test "when issues were read less than two minutes ago, the issue keys do not count as news",
