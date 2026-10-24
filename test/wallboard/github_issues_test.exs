@@ -272,6 +272,7 @@ defmodule Wallboard.GitHubIssuesTest do
         echo "$4" >> "$WALLBOARD_TEST_GH/queries"
         case "$4" in
           *ProjectV2*) what=project ;;
+          *movedIssues*) what=issues_moved ;;
           *openMilestones*'after: $after'*) what=milestones_page_2 ;;
           *openMilestones*) what=milestones ;;
           *'after: $after'*) what=issues_page_2 ;;
@@ -293,6 +294,7 @@ defmodule Wallboard.GitHubIssuesTest do
           milestones_page_2) cat "#{fixtures}/milestones_page_2.json" ;;
           milestones) cat "#{fixtures}/milestones.json" ;;
           issues_page_2*) cat "#{fixtures}/issues_page_2.json" ;;
+          issues_moved*) cat "#{fixtures}/issues_moved.json" ;;
           issues+projects) cat "#{fixtures}/issues.json" ;;
           issues) cat "#{fixtures}/issues_no_projects.json" ;;
           project) cat "#{fixtures}/project.json" ;;
@@ -386,14 +388,42 @@ defmodule Wallboard.GitHubIssuesTest do
       assert third.issues_checked_at == DateTime.add(@now, 130, :second)
     end
 
-    test "open issues are paged in the order they were made, which an edit between pages cannot change",
+    test "open issues are read most recently updated first, so a cut keeps the ones being worked",
          c do
-      GitHub.fetch_issues(%{c.gh | issue_pages: 2}, nil, @now)
+      GitHub.fetch_issues(c.gh, nil, @now)
       queries = File.read!(Path.join(c.dir, "queries"))
 
-      # Both pages of open issues, and only by creation.
-      assert length(Regex.scan(~r/openIssues: issues\(/, queries)) == 2
-      assert length(Regex.scan(~r/openIssues: issues\([^)]*field: CREATED_AT/, queries)) == 2
+      assert length(
+               Regex.scan(
+                 ~r/openIssues: issues\([^)]*field: UPDATED_AT, direction: DESC/,
+                 queries
+               )
+             ) ==
+               1
+
+      # One page holds nothing that could move between pages.
+      refute queries =~ "movedIssues"
+    end
+
+    test "after a read of several pages, one more call finds the issues updated while it ran",
+         c do
+      read = GitHub.fetch_issues(%{c.gh | issue_pages: 2}, nil, @now)
+
+      assert asked(c.dir) == [
+               "milestones",
+               "milestones_page_2",
+               "issues+projects",
+               "issues_page_2+projects",
+               "issues_moved+projects"
+             ]
+
+      # #17 was updated between the page reads, so it jumped ahead of the
+      # cursor and is on neither page; #10, on both, is kept once.
+      assert issue(read, 17).title == "Card errors"
+      assert Enum.count(read.issues, &(&1.number == 10)) == 1
+
+      queries = File.read!(Path.join(c.dir, "queries"))
+      assert queries =~ ~r/movedIssues: issues\([^)]*filterBy: \{since: \$since\}/
     end
 
     test "up to 100 labels are read, so a parked label past the twentieth is seen", c do
