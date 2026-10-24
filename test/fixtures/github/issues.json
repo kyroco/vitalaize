@@ -119,15 +119,31 @@
               "nodes": [
                 {
                   "number": 40,
-                  "state": "OPEN"
+                  "state": "OPEN",
+                  "repository": {
+                    "nameWithOwner": "acme/shop"
+                  }
                 },
                 {
                   "number": 41,
-                  "state": "MERGED"
+                  "state": "MERGED",
+                  "repository": {
+                    "nameWithOwner": "acme/shop"
+                  }
                 },
                 {
                   "number": 42,
-                  "state": "CLOSED"
+                  "state": "CLOSED",
+                  "repository": {
+                    "nameWithOwner": "acme/shop"
+                  }
+                },
+                {
+                  "number": 40,
+                  "state": "OPEN",
+                  "repository": {
+                    "nameWithOwner": "acme/web"
+                  }
                 }
               ]
             },

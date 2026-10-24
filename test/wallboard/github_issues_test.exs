@@ -114,8 +114,13 @@ defmodule Wallboard.GitHubIssuesTest do
 
       # A linked branch that was deleted has no name, and is left out.
       assert card.branches == ["robin/10-card-form"]
-      # Merged and closed pull requests no longer close it.
-      assert card.closing_prs == [40]
+      # Merged and closed pull requests no longer close it; one from another
+      # repository keeps its repository, so it is not taken for #40 here.
+      assert card.closing_prs == [
+               %{repo: "acme/shop", number: 40},
+               %{repo: "acme/web", number: 40}
+             ]
+
       # A closed blocker no longer blocks it; one in another repository does.
       assert card.blocked_by == [%{repo: "acme/shop", number: 9}, %{repo: "acme/api", number: 3}]
       assert String.length(card.body) == 600
