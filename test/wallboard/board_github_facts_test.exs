@@ -134,4 +134,32 @@ defmodule Wallboard.BoardGitHubFactsTest do
     assert log =~ "KeyError"
     refute log =~ "PLANTED"
   end
+
+  test "an open run that cannot be shown closes its panel, and the log names only the error's kind" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        github: nil,
+        runners: %{},
+        open_run: %{repo: "acme/other", id: 1},
+        run_view: nil
+      }
+    }
+
+    # A run with no id: looking for the open run among them raises a
+    # KeyError, whose text holds the run.
+    facts = %{
+      repos: [%{repo: "acme/other", facts: %{runs: [%{title: "PLANTED run title"}]}, error: nil}]
+    }
+
+    log =
+      capture_log(fn ->
+        assert {:noreply, socket} = BoardLive.handle_info({:source, :github, facts, %{}}, socket)
+        assert socket.assigns.open_run == nil
+        assert socket.assigns.run_view == nil
+      end)
+
+    assert log =~ "could not show a run: KeyError"
+    refute log =~ "PLANTED"
+  end
 end
