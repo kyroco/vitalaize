@@ -418,9 +418,11 @@ defmodule Wallboard.GitHubIssuesTest do
              ]
 
       # #17 was updated between the page reads, so it jumped ahead of the
-      # cursor and is on neither page; #10, on both, is kept once.
+      # cursor and is on neither page; #10, renamed during the read, is
+      # kept once, as its newer copy.
       assert issue(read, 17).title == "Card errors"
       assert Enum.count(read.issues, &(&1.number == 10)) == 1
+      assert issue(read, 10).title == "Card form, renamed"
 
       queries = File.read!(Path.join(c.dir, "queries"))
       assert queries =~ ~r/movedIssues: issues\([^)]*filterBy: \{since: \$since\}/
