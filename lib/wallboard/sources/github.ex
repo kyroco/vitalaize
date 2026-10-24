@@ -171,11 +171,12 @@ defmodule Wallboard.Sources.GitHub do
   # Fetching
 
   @doc """
-  The facts without the issue text no screen draws yet: each issue's body
-  and parked reason, and each milestone issue's body. The board keeps only
-  this, so a crash report of its page, which prints the page's state,
-  holds no issue text. A screen that draws the text keeps only what it
-  draws.
+  The facts without the issue text no screen draws yet: each issue's
+  title, body and parked reason, and each milestone's title and its
+  issues' titles and bodies. Numbers, states and links stay. The board
+  keeps only this, so a crash report of its page, which prints the page's
+  state, holds no issue text. A screen that draws the text keeps only what
+  it draws.
   """
   def without_text(%{repos: entries} = facts) when is_list(entries) do
     %{facts | repos: Enum.map(entries, &%{&1 | facts: entry_without_text(&1.facts)})}
@@ -183,12 +184,16 @@ defmodule Wallboard.Sources.GitHub do
 
   def without_text(facts), do: facts
 
+  @issue_text [:title, :body, :parked_reason]
+
   defp entry_without_text(%{} = facts) do
     facts
-    |> Map.replace_lazy(:issues, &list_without(&1, [:body, :parked_reason]))
+    |> Map.replace_lazy(:issues, &list_without(&1, @issue_text))
     |> Map.replace_lazy(:milestones, fn
       ms when is_list(ms) ->
-        for m <- ms, do: Map.replace_lazy(m, :issues, &list_without(&1, [:body]))
+        for m <- ms,
+            do:
+              m |> Map.delete(:title) |> Map.replace_lazy(:issues, &list_without(&1, @issue_text))
 
       other ->
         other
