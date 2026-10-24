@@ -1090,7 +1090,8 @@ defmodule Wallboard.SetupTest do
         values: Settings.shown(settings),
         machines: [],
         devices: [],
-        ignored_repos: []
+        ignored_repos: [],
+        no_project_scope?: false
       }
 
       assigns |> SettingsLive.render() |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()

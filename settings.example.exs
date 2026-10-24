@@ -141,6 +141,9 @@
     branch: "main",
     poll_seconds: 30,
     deploy_poll_seconds: 120,
+    # How many pages of 100 open issues to read from each repository, every
+    # two minutes. Each page is one more GitHub call.
+    issue_pages: 1,
     # The workflow file that gates merges, and the check name on pull requests.
     gate_workflow: "ci.yml",
     gate_check: "ci",

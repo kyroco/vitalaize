@@ -1,0 +1,34 @@
+{
+  "data": {
+    "repository": {
+      "openMilestones": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 5,
+            "title": "Checkout: 3. Gift cards",
+            "state": "OPEN",
+            "closedAt": null,
+            "issues": {
+              "pageInfo": {
+                "hasNextPage": false
+              },
+              "nodes": [
+                {
+                  "number": 16,
+                  "title": "Saved cards",
+                  "state": "OPEN",
+                  "closedAt": null,
+                  "body": "Keep a card for next time."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,276 @@
+{
+  "data": {
+    "repository": {
+      "closedIssues": {
+        "nodes": [
+          {
+            "number": 12,
+            "title": "Search box",
+            "state": "CLOSED",
+            "closedAt": "2026-10-20T10:00:00Z",
+            "body": "A box.",
+            "milestone": {
+              "number": 3
+            },
+            "labels": {
+              "nodes": []
+            },
+            "linkedBranches": {
+              "nodes": []
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": []
+            },
+            "blockedBy": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            },
+            "projectsV2": {
+              "nodes": [
+                {
+                  "id": "PVT_search",
+                  "number": 9,
+                  "title": "Search",
+                  "closed": true,
+                  "owner": {
+                    "login": "acme"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 13,
+            "title": "Old search spike",
+            "state": "CLOSED",
+            "closedAt": "2026-10-15T10:00:00Z",
+            "body": "Done long ago.",
+            "milestone": {
+              "number": 4
+            },
+            "labels": {
+              "nodes": []
+            },
+            "linkedBranches": {
+              "nodes": []
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": []
+            },
+            "blockedBy": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            },
+            "projectsV2": {
+              "nodes": [
+                {
+                  "id": "PVT_search",
+                  "number": 9,
+                  "title": "Search",
+                  "closed": true,
+                  "owner": {
+                    "login": "acme"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "openIssues": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "Y3Vyc29yOjI="
+        },
+        "nodes": [
+          {
+            "number": 10,
+            "title": "Card form",
+            "state": "OPEN",
+            "closedAt": null,
+            "body": "Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. ",
+            "milestone": {
+              "number": 1
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "name": "Feature"
+                }
+              ]
+            },
+            "linkedBranches": {
+              "nodes": [
+                {
+                  "ref": {
+                    "name": "robin/10-card-form"
+                  }
+                },
+                {
+                  "ref": null
+                }
+              ]
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": [
+                {
+                  "number": 40,
+                  "state": "OPEN"
+                },
+                {
+                  "number": 41,
+                  "state": "MERGED"
+                },
+                {
+                  "number": 42,
+                  "state": "CLOSED"
+                }
+              ]
+            },
+            "blockedBy": {
+              "nodes": [
+                {
+                  "number": 9,
+                  "state": "OPEN",
+                  "repository": {
+                    "nameWithOwner": "acme/shop"
+                  }
+                },
+                {
+                  "number": 8,
+                  "state": "CLOSED",
+                  "repository": {
+                    "nameWithOwner": "acme/shop"
+                  }
+                },
+                {
+                  "number": 3,
+                  "state": "OPEN",
+                  "repository": {
+                    "nameWithOwner": "acme/api"
+                  }
+                }
+              ]
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "body": "Started the form."
+                }
+              ]
+            },
+            "projectsV2": {
+              "nodes": [
+                {
+                  "id": "PVT_checkout",
+                  "number": 7,
+                  "title": "Checkout",
+                  "closed": false,
+                  "owner": {
+                    "login": "acme"
+                  }
+                },
+                {
+                  "id": "PVT_search",
+                  "number": 9,
+                  "title": "Search",
+                  "closed": true,
+                  "owner": {
+                    "login": "acme"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 14,
+            "title": "Refund rules",
+            "state": "OPEN",
+            "closedAt": null,
+            "body": "Who may refund.",
+            "milestone": {
+              "number": 2
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "name": "Feature"
+                },
+                {
+                  "name": "Parked"
+                }
+              ]
+            },
+            "linkedBranches": {
+              "nodes": []
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": []
+            },
+            "blockedBy": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "body": "Waiting on the payment provider's answer.\nThey said next week."
+                }
+              ]
+            },
+            "projectsV2": {
+              "nodes": [
+                {
+                  "id": "PVT_checkout",
+                  "number": 7,
+                  "title": "Checkout",
+                  "closed": false,
+                  "owner": {
+                    "login": "acme"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 15,
+            "title": "Receipt email",
+            "state": "OPEN",
+            "closedAt": null,
+            "body": "Send a receipt.",
+            "milestone": null,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "parked"
+                }
+              ]
+            },
+            "linkedBranches": {
+              "nodes": []
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": []
+            },
+            "blockedBy": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "body": ""
+                }
+              ]
+            },
+            "projectsV2": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

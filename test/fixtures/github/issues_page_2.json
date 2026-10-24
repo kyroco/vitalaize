@@ -1,0 +1,94 @@
+{
+  "data": {
+    "repository": {
+      "openIssues": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 16,
+            "title": "Saved cards",
+            "state": "OPEN",
+            "closedAt": null,
+            "body": "Keep a card for next time.",
+            "milestone": {
+              "number": 1
+            },
+            "labels": {
+              "nodes": []
+            },
+            "linkedBranches": {
+              "nodes": []
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": []
+            },
+            "blockedBy": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            },
+            "projectsV2": {
+              "nodes": [
+                {
+                  "id": "PVT_checkout",
+                  "number": 7,
+                  "title": "Checkout",
+                  "closed": false,
+                  "owner": {
+                    "login": "acme"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 10,
+            "title": "Card form",
+            "state": "OPEN",
+            "closedAt": null,
+            "body": "Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. Customers pay by card on the last step. ",
+            "milestone": {
+              "number": 1
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "name": "Feature"
+                }
+              ]
+            },
+            "linkedBranches": {
+              "nodes": []
+            },
+            "closedByPullRequestsReferences": {
+              "nodes": []
+            },
+            "blockedBy": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            },
+            "projectsV2": {
+              "nodes": [
+                {
+                  "id": "PVT_checkout",
+                  "number": 7,
+                  "title": "Checkout",
+                  "closed": false,
+                  "owner": {
+                    "login": "acme"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

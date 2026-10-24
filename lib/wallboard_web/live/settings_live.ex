@@ -61,6 +61,7 @@ defmodule WallboardWeb.SettingsLive do
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       ignored_repos: Wallboard.RepoPrompts.ignored(),
+      no_project_scope?: no_project_scope?(),
       devices: Wallboard.Devices.list(),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
@@ -93,6 +94,19 @@ defmodule WallboardWeb.SettingsLive do
     _ -> nil
   catch
     :exit, _ -> nil
+  end
+
+  # True when GitHub said the `gh` sign-in lacks the read:project scope
+  # (see `Wallboard.Sources.GitHub.fetch_issues/3`).
+  defp no_project_scope? do
+    Enum.any?(
+      (Poller.snapshot(:github).facts || %{})[:repos] || [],
+      &match?(%{facts: %{project_scope: :missing}}, &1)
+    )
+  rescue
+    _ -> false
+  catch
+    :exit, _ -> false
   end
 
   defp local_sessions do
@@ -338,6 +352,16 @@ defmodule WallboardWeb.SettingsLive do
               </div>
               <p class="detail-note">
                 You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
+              </p>
+            </dd>
+          </div>
+          <div :if={section == "GitHub" and @no_project_scope?} class="settings-value">
+            <dt>GitHub projects</dt>
+            <dd>
+              <p class="bad-ink detail-note">
+                The board cannot see which GitHub project an issue is in: your gh sign-in
+                lacks the read:project scope. Milestones and issues still show. To add the
+                scope, run <code>gh auth refresh -s read:project</code> on this machine.
               </p>
             </dd>
           </div>

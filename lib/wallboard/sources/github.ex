@@ -15,8 +15,20 @@ defmodule Wallboard.Sources.GitHub do
       call needs admin rights on the repository; when GitHub refuses it, it
       is asked again only once an hour (see `Wallboard.Runners`)
 
+    * at most every two minutes, one GraphQL call for the repository's
+      milestones and one for its issues, with each issue's projects, linked
+      branches, closing pull requests, blockers and labels (see
+      `fetch_issues/3`). A repository with more open milestones or issues
+      than one page holds takes one call more per page, up to `issue_pages`
+      pages of each. Without the `read:project` scope the issues are asked
+      for without projects, and with them again only once an hour
+
   At the default 30 seconds with two runs going that is about 600 calls an
   hour for each repository, so six repositories stay inside GitHub's 5,000.
+  The milestone and issue reads come to about 60 more calls an hour for
+  each repository. They count against GitHub's GraphQL limit, which is
+  apart from the 5,000 calls above and charges a few points a call (a page
+  of 100 issues cost 5 of its 5,000 points an hour when measured).
 
   A repository's gate and deploy workflows are its own (see
   `Wallboard.Settings.github_repos/1`). One with no gate workflow, or whose
@@ -33,6 +45,63 @@ defmodule Wallboard.Sources.GitHub do
 
   # How long to wait before asking again for runners GitHub refused to list.
   @runners_hidden_s 3600
+
+  # Milestones and issues change slowly: they are read at most this often.
+  @issues_every_s 120
+
+  # How long to wait before asking for projects again once GitHub said the
+  # sign-in lacks the read:project scope.
+  @no_project_scope_s 3600
+
+  # How much of an issue's text is kept: enough for the start of it.
+  @body_chars 600
+
+  # What is read of each issue. Projects need the read:project scope, so
+  # they are asked for apart (`@issue_projects`).
+  @issue_fields """
+  number title state closedAt body
+  milestone { number }
+  labels(first: 20) { nodes { name } }
+  linkedBranches(first: 10) { nodes { ref { name } } }
+  closedByPullRequestsReferences(first: 10) { nodes { number state } }
+  blockedBy(first: 20) { nodes { number state repository { nameWithOwner } } }
+  comments(last: 1) { nodes { body } }
+  """
+
+  @issue_projects """
+  projectsV2(first: 10) { nodes { id number title closed owner { ... on Organization { login } ... on User { login } } } }
+  """
+
+  @milestone_fields """
+  number title state closedAt
+  issues(first: 100) { pageInfo { hasNextPage } nodes { number title state closedAt body } }
+  """
+
+  # One page of a project's items: every issue in it, open or closed, with
+  # its milestone. GitHub leaves archived items out of the list.
+  @project_gql """
+  query($id: ID!, $after: String) {
+    node(id: $id) {
+      ... on ProjectV2 {
+        number title closed
+        items(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isArchived
+            content {
+              __typename
+              ... on Issue {
+                number title state closedAt
+                repository { nameWithOwner }
+                milestone { number title state closedAt }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  """
 
   @gql """
   query($owner: String!, $name: String!, $branch: String!) {
@@ -94,7 +163,17 @@ defmodule Wallboard.Sources.GitHub do
   # When the deploys were last checked is bookkeeping, not news.
   def fingerprint(%{repos: entries}) do
     Enum.map(entries, fn e ->
-      %{e | facts: e.facts && Map.drop(e.facts, [:deploys_checked_at, :runners_checked_at])}
+      %{
+        e
+        | facts:
+            e.facts &&
+              Map.drop(e.facts, [
+                :deploys_checked_at,
+                :runners_checked_at,
+                :issues_checked_at,
+                :project_scope_at
+              ])
+      }
     end)
   end
 
@@ -138,18 +217,237 @@ defmodule Wallboard.Sources.GitHub do
       listed = known_runners(gh.repo, runners, now)
 
       {:ok,
-       %{
-         runs: runs,
-         deploys: deploys.runs,
-         deploys_checked_at: deploys.checked_at,
-         workflows: deploys.workflows,
-         queue: repo.queue,
-         prs: repo.prs,
-         jobs: jobs,
-         own_by_run: own_by_run(gh.repo, runs, jobs, prev, now, listed),
-         runners: runners.listed,
-         runners_checked_at: runners.checked_at
-       }}
+       Map.merge(
+         %{
+           runs: runs,
+           deploys: deploys.runs,
+           deploys_checked_at: deploys.checked_at,
+           workflows: deploys.workflows,
+           queue: repo.queue,
+           prs: repo.prs,
+           jobs: jobs,
+           own_by_run: own_by_run(gh.repo, runs, jobs, prev, now, listed),
+           runners: runners.listed,
+           runners_checked_at: runners.checked_at
+         },
+         fetch_issues(gh, prev, now)
+       )}
+    end
+  end
+
+  # What the issue read adds to a repository's facts.
+  @issue_keys [
+    :milestones,
+    :milestones_cut,
+    :issues,
+    :issues_cut,
+    :issues_checked_at,
+    :project_scope,
+    :project_scope_at
+  ]
+
+  @doc """
+  The repository's milestones and issues, read at most every two minutes;
+  in between, the last ones read. `prev` is the repository's previous
+  facts. Returns the facts' issue keys:
+
+    * `milestones`: the open ones and those closed in the last day, each
+      with its issues (see `parse_milestones/2`)
+    * `issues`: the open issues and those closed in the last day, each with
+      its projects, linked branches, closing pull requests, blockers, labels
+      and, when parked, the reason (see `parse_issues/2`)
+    * `milestones_cut` and `issues_cut`: true when GitHub had more open
+      ones than `issue_pages` pages hold (or, for issues, more closed in
+      the last day than one page), so some are missing
+    * `project_scope`: `:missing` when the sign-in lacks `read:project`, so
+      each issue's projects are nil; otherwise `:ok`
+
+  Milestones and issues are two calls, each paged: GitHub refuses one
+  query that asks for both in a repository with many of them ("Resource
+  limits for this query exceeded"). When either read fails, the last
+  milestones and issues stay (nil before the first) and both are tried
+  again after the usual wait.
+  """
+  def fetch_issues(gh, prev, now) do
+    last = Map.new(@issue_keys, &{&1, prev && prev[&1]})
+
+    fresh? =
+      prev && prev[:issues_checked_at] &&
+        DateTime.diff(now, prev.issues_checked_at, :second) < @issues_every_s
+
+    if fresh?, do: last, else: read_issues_now(gh, prev, last, now)
+  end
+
+  # `project_scope_at` is when projects were last asked for.
+  defp read_issues_now(gh, prev, last, now) do
+    # Once GitHub has said the scope is missing, projects are left out of
+    # the query until an hour has passed, so each read is one call.
+    projects? =
+      !(prev && prev[:project_scope] == :missing && prev[:project_scope_at] &&
+          DateTime.diff(now, prev.project_scope_at, :second) < @no_project_scope_s)
+
+    pages = max(gh[:issue_pages] || 1, 1)
+
+    read =
+      with {:ok, ms} <-
+             paged(&milestones_call(gh, &1), &parse_milestones(&1, now), :milestones, pages) do
+        case read_issues(gh, projects?, now, pages) do
+          {:ok, is} ->
+            {:ok, ms, is}
+
+          {:error, :no_project_scope} when projects? ->
+            case read_issues(gh, false, now, pages) do
+              {:ok, is} -> {:missing_now, ms, is}
+              {:error, _} -> {:error, :no_project_scope}
+            end
+
+          error ->
+            error
+        end
+      end
+
+    scope =
+      case read do
+        {:missing_now, _, _} -> %{project_scope: :missing, project_scope_at: now}
+        {:error, :no_project_scope} -> %{project_scope: :missing, project_scope_at: now}
+        _ when projects? -> %{project_scope: :ok, project_scope_at: now}
+        _ -> %{project_scope: :missing, project_scope_at: last.project_scope_at}
+      end
+
+    case read do
+      {_, ms, is} ->
+        Map.merge(scope, %{
+          milestones: ms.items,
+          milestones_cut: ms.cut,
+          issues: Enum.uniq_by(is.items, & &1.number),
+          issues_cut: is.cut,
+          issues_checked_at: now
+        })
+
+      {:error, :no_project_scope} ->
+        last |> Map.merge(scope) |> Map.put(:issues_checked_at, now)
+
+      {:error, _} ->
+        %{last | issues_checked_at: now}
+    end
+  end
+
+  defp read_issues(gh, projects?, now, pages),
+    do: paged(&issues_call(gh, projects?, &1), &parse_issues(&1, now), :issues, pages)
+
+  # Reads up to `left` pages: `call` takes where a page starts (nil for the
+  # first) and gives GitHub's answer, `parse` reads it into a map with the
+  # page's items under `key`, `next` and, optionally, `cut`. Returns
+  # {:ok, %{first, items, cut}}, where `first` is the first page as parsed
+  # and `cut` is true when GitHub had more pages, or {:error, reason}.
+  defp paged(call, parse, key, left, cursor \\ nil, acc \\ nil) do
+    with {:ok, text} <- call.(cursor),
+         {:ok, page} <- parse.(text) do
+      acc =
+        if acc,
+          do: %{acc | items: acc.items ++ page[key], cut: acc.cut or page[:cut] == true},
+          else: %{first: page, items: page[key], cut: page[:cut] == true}
+
+      cond do
+        is_nil(page.next) -> {:ok, acc}
+        left <= 1 -> {:ok, %{acc | cut: true}}
+        true -> paged(call, parse, key, left - 1, page.next, acc)
+      end
+    end
+  end
+
+  defp milestones_call(gh, cursor), do: graphql_call(gh, milestones_query(cursor), cursor)
+
+  defp issues_call(gh, projects?, cursor),
+    do: graphql_call(gh, issues_query(projects?, cursor), cursor)
+
+  defp graphql_call(gh, query, cursor) do
+    [owner, name] = String.split(gh.repo, "/", parts: 2)
+    vars = ["-F", "owner=" <> owner, "-F", "name=" <> name]
+    vars = if cursor, do: vars ++ ["-f", "after=" <> cursor], else: vars
+
+    case Cmd.run("gh", ["api", "graphql", "-f", "query=" <> query | vars], timeout: 30_000) do
+      {:ok, text} ->
+        {:ok, text}
+
+      {:error, reason} ->
+        if no_project_scope?(reason), do: {:error, :no_project_scope}, else: {:error, reason}
+    end
+  end
+
+  # GitHub refuses the whole query when one field needs a scope the
+  # sign-in lacks, and names the scope.
+  defp no_project_scope?(reason), do: reason =~ "read:project"
+
+  # A later page is only the next open ones; the first also carries those
+  # closed in the last day.
+  defp milestones_query(cursor) do
+    open = """
+    openMilestones: milestones(states: OPEN, first: 50#{if cursor, do: ", after: $after"}, orderBy: {field: NUMBER, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { #{@milestone_fields} }
+    }
+    """
+
+    paged_query(open, cursor, """
+    closedMilestones: milestones(states: CLOSED, first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes { #{@milestone_fields} }
+    }
+    """)
+  end
+
+  defp issues_query(projects?, cursor) do
+    fields = if projects?, do: @issue_fields <> @issue_projects, else: @issue_fields
+
+    open = """
+    openIssues: issues(states: OPEN, first: 100#{if cursor, do: ", after: $after"}, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { #{fields} }
+    }
+    """
+
+    paged_query(open, cursor, """
+    closedIssues: issues(states: CLOSED, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes { #{fields} }
+    }
+    """)
+  end
+
+  defp paged_query(open, nil, first_only) do
+    """
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) { #{first_only} #{open} }
+    }
+    """
+  end
+
+  defp paged_query(open, _cursor, _first_only) do
+    """
+    query($owner: String!, $name: String!, $after: String!) {
+      repository(owner: $owner, name: $name) { #{open} }
+    }
+    """
+  end
+
+  @doc """
+  Every issue in a GitHub project, open and closed, with its milestone, so
+  every milestone the project has used is known, shipped ones too. `id` is
+  the project's node id, as an issue's `projects` give it; `pages` is how
+  many pages of 100 to read at most. Returns {:ok, project} (see
+  `parse_project/1`, with `id`, and `cut` true when there were more pages),
+  or {:error, reason}.
+  """
+  def fetch_project(id, pages) do
+    call = fn cursor ->
+      vars = ["-f", "id=" <> id] ++ if(cursor, do: ["-f", "after=" <> cursor], else: [])
+      Cmd.run("gh", ["api", "graphql", "-f", "query=" <> @project_gql | vars], timeout: 30_000)
+    end
+
+    with {:ok, read} <- paged(call, &parse_project/1, :issues, max(pages, 1)) do
+      {:ok,
+       read.first
+       |> Map.delete(:next)
+       |> Map.merge(%{id: id, issues: read.items, cut: read.cut})}
     end
   end
 
@@ -497,6 +795,219 @@ defmodule Wallboard.Sources.GitHub do
           end)
 
         {:ok, %{queue: queue, prs: prs}}
+
+      {:ok, %{"errors" => [%{"message" => msg} | _]}} ->
+        {:error, "GitHub GraphQL: " <> msg}
+
+      _ ->
+        {:error, "GitHub GraphQL returned an unexpected shape"}
+    end
+  end
+
+  @doc """
+  Parses one page of a repository's milestones: `{:ok, %{milestones,
+  next}}`, where `next` is where the next page of open milestones starts
+  (nil when there is none). The first page also carries those closed in the
+  last day; older closed ones are left out.
+
+  Each milestone is `%{number, title, state, closed_at, issues,
+  issues_cut}`, with its issues as `%{number, title, state, closed_at,
+  body}` (the first 600 characters of the body), and `issues_cut` true when
+  it has more issues than one page holds.
+  """
+  def parse_milestones(text, now) do
+    with {:ok, repo} <- repository(text) do
+      open = repo["openMilestones"] || %{}
+
+      closed =
+        (get_in(repo, ["closedMilestones", "nodes"]) || [])
+        |> Enum.map(&milestone/1)
+        |> Enum.filter(&closed_since?(&1, now))
+
+      {:ok,
+       %{
+         milestones: Enum.map(open["nodes"] || [], &milestone/1) ++ closed,
+         next: next_page(open)
+       }}
+    end
+  end
+
+  @doc """
+  Parses one page of a repository's issues: `{:ok, %{issues, next, cut}}`,
+  where `next` is where the next page of open issues starts (nil when there
+  is none) and `cut` is true when the first page's list of issues closed in
+  the last day was full, so more may be missing.
+
+  Each issue is `%{number, title, state, closed_at, body, milestone,
+  labels, projects, branches, closing_prs, blocked_by, parked_reason}`:
+  `projects` is nil when the query left them out, `closing_prs` and
+  `blocked_by` hold only open ones, and `parked_reason` is the first line of
+  the newest comment of an open issue with the `parked` label. `body` is the
+  first 600 characters.
+  """
+  def parse_issues(text, now) do
+    with {:ok, repo} <- repository(text) do
+      open = repo["openIssues"] || %{}
+      closed_nodes = get_in(repo, ["closedIssues", "nodes"]) || []
+      closed = closed_nodes |> Enum.map(&issue/1) |> Enum.filter(&closed_since?(&1, now))
+
+      {:ok,
+       %{
+         issues: Enum.map(open["nodes"] || [], &issue/1) ++ closed,
+         next: next_page(open),
+         cut:
+           closed_nodes != [] and length(closed) == length(closed_nodes) and
+             length(closed_nodes) >= 100
+       }}
+    end
+  end
+
+  defp repository(text) do
+    case Jason.decode(text) do
+      {:ok, %{"data" => %{"repository" => repo}}} when is_map(repo) ->
+        {:ok, repo}
+
+      {:ok, %{"errors" => [%{"message" => msg} | _]}} ->
+        {:error, "GitHub GraphQL: " <> msg}
+
+      _ ->
+        {:error, "GitHub GraphQL returned an unexpected shape"}
+    end
+  end
+
+  defp next_page(%{"pageInfo" => %{"hasNextPage" => true, "endCursor" => c}}) when is_binary(c),
+    do: c
+
+  defp next_page(_), do: nil
+
+  # Closed in the day before `now`.
+  defp closed_since?(%{closed_at: nil}, _now), do: false
+
+  defp closed_since?(%{closed_at: at}, now),
+    do: DateTime.compare(at, DateTime.add(now, -24 * 3600, :second)) != :lt
+
+  defp milestone(m) do
+    %{
+      number: m["number"],
+      title: m["title"],
+      state: state(m["state"]),
+      closed_at: time(m["closedAt"]),
+      issues:
+        for i <- get_in(m, ["issues", "nodes"]) || [] do
+          %{
+            number: i["number"],
+            title: i["title"],
+            state: state(i["state"]),
+            closed_at: time(i["closedAt"]),
+            body: clip(i["body"])
+          }
+        end,
+      issues_cut: get_in(m, ["issues", "pageInfo", "hasNextPage"]) == true
+    }
+  end
+
+  defp issue(i) do
+    labels = for %{"name" => l} <- get_in(i, ["labels", "nodes"]) || [], do: l
+    state = state(i["state"])
+
+    parked? = state == :open and Enum.any?(labels, &(String.downcase(&1) == "parked"))
+
+    %{
+      number: i["number"],
+      title: i["title"],
+      state: state,
+      closed_at: time(i["closedAt"]),
+      body: clip(i["body"]),
+      milestone: get_in(i, ["milestone", "number"]),
+      labels: labels,
+      projects:
+        if Map.has_key?(i, "projectsV2") do
+          for p <- get_in(i, ["projectsV2", "nodes"]) || [] do
+            %{
+              id: p["id"],
+              number: p["number"],
+              title: p["title"],
+              owner: get_in(p, ["owner", "login"]),
+              closed: p["closed"] == true
+            }
+          end
+        end,
+      branches:
+        for(%{"ref" => %{"name" => b}} <- get_in(i, ["linkedBranches", "nodes"]) || [], do: b),
+      closing_prs:
+        for(
+          %{"number" => n, "state" => "OPEN"} <-
+            get_in(i, ["closedByPullRequestsReferences", "nodes"]) || [],
+          do: n
+        ),
+      blocked_by:
+        for(
+          %{"number" => n, "state" => "OPEN"} = b <- get_in(i, ["blockedBy", "nodes"]) || [],
+          do: %{repo: get_in(b, ["repository", "nameWithOwner"]), number: n}
+        ),
+      parked_reason:
+        if(parked?,
+          do: i |> get_in(["comments", "nodes"]) |> List.wrap() |> List.last() |> newest_line()
+        )
+    }
+  end
+
+  defp newest_line(%{"body" => body}) when is_binary(body) do
+    case first_line(body) do
+      "" -> nil
+      line -> line
+    end
+  end
+
+  defp newest_line(_), do: nil
+
+  defp state("OPEN"), do: :open
+  defp state(_), do: :closed
+
+  defp clip(text) when is_binary(text), do: String.slice(text, 0, @body_chars)
+  defp clip(_), do: nil
+
+  @doc """
+  Parses one page of a project's items: `{:ok, %{number, title, closed,
+  issues, next}}`, each issue `%{repo, number, title, state,
+  closed_at, milestone}` with its milestone as `%{number, title, state,
+  closed_at}` or nil. Items that are not issues (pull requests, drafts) and
+  archived items are left out.
+  """
+  def parse_project(text) do
+    case Jason.decode(text) do
+      {:ok, %{"data" => %{"node" => %{"items" => items} = p}}} when is_map(items) ->
+        issues =
+          for %{"content" => %{"__typename" => "Issue"} = c} = item <- items["nodes"] || [],
+              item["isArchived"] != true do
+            m = c["milestone"]
+
+            %{
+              repo: get_in(c, ["repository", "nameWithOwner"]),
+              number: c["number"],
+              title: c["title"],
+              state: state(c["state"]),
+              closed_at: time(c["closedAt"]),
+              milestone:
+                m &&
+                  %{
+                    number: m["number"],
+                    title: m["title"],
+                    state: state(m["state"]),
+                    closed_at: time(m["closedAt"])
+                  }
+            }
+          end
+
+        {:ok,
+         %{
+           number: p["number"],
+           title: p["title"],
+           closed: p["closed"] == true,
+           issues: issues,
+           next:
+             if(get_in(items, ["pageInfo", "hasNextPage"]), do: items["pageInfo"]["endCursor"])
+         }}
 
       {:ok, %{"errors" => [%{"message" => msg} | _]}} ->
         {:error, "GitHub GraphQL: " <> msg}
