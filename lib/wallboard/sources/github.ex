@@ -127,7 +127,7 @@ defmodule Wallboard.Sources.GitHub do
     entries =
       settings
       |> Settings.github_repos()
-      |> Task.async_stream(fn gh -> {gh.repo, fetch(gh, before[gh.repo], now)} end,
+      |> Task.async_stream(fn gh -> {gh.repo, fetch_safely(gh, before[gh.repo], now)} end,
         max_concurrency: 4,
         timeout: :infinity
       )
@@ -169,6 +169,18 @@ defmodule Wallboard.Sources.GitHub do
 
   # ---------------------------------------------------------------------------
   # Fetching
+
+  # One repository's read, in its own task. A raise, throw or exit is caught
+  # here: left to escape, it would end the task with a crash report and
+  # take the whole poll down with the error's text, which can hold what
+  # GitHub sent. It fails that repository alone, naming only its kind.
+  defp fetch_safely(gh, prev, now) do
+    fetch(gh, prev, now)
+  rescue
+    e -> {:error, "the read raised #{inspect(e.__struct__)}"}
+  catch
+    kind, _ -> {:error, "the read failed (#{kind})"}
+  end
 
   @doc """
   One repository's facts: {:ok, facts} or {:error, reason}. `gh` is that
