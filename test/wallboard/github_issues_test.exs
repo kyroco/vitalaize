@@ -104,6 +104,41 @@ defmodule Wallboard.GitHubIssuesTest do
     end
   end
 
+  describe "parse_issues/2: issues closed in the last day" do
+    # A full page of 100 closed issues, the most recently updated first:
+    # `today` of them closed in the day before @now, the rest long ago but
+    # updated since. The oldest update on the page is `last_updated`.
+    defp closed_page(today, last_updated) do
+      nodes =
+        for n <- 1..100 do
+          %{
+            "number" => n,
+            "title" => "Closed #{n}",
+            "state" => "CLOSED",
+            "closedAt" =>
+              if(n <= today, do: "2026-10-20T10:00:00Z", else: "2026-09-01T10:00:00Z"),
+            "updatedAt" => if(n == 100, do: last_updated, else: "2026-10-20T12:00:00Z")
+          }
+        end
+
+      Jason.encode!(%{"data" => %{"repository" => %{"closedIssues" => %{"nodes" => nodes}}}})
+    end
+
+    test "a full page whose oldest update is from the last day may have left closures out" do
+      # 70 closed today, and 30 closed long ago but commented on today: the
+      # 101st most recently updated could have been closed today too.
+      {:ok, read} = GitHub.parse_issues(closed_page(70, "2026-10-20T08:00:00Z"), @now)
+      assert length(read.issues) == 70
+      assert read.cut
+    end
+
+    test "a full page that reaches back past the day holds every closure of the day" do
+      {:ok, read} = GitHub.parse_issues(closed_page(70, "2026-10-18T08:00:00Z"), @now)
+      assert length(read.issues) == 70
+      refute read.cut
+    end
+  end
+
   describe "parse_issues/2: parked issues (scenario 3)" do
     test "an open parked issue holds the first line of its newest comment as the reason" do
       read = page_one()
