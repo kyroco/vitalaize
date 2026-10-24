@@ -534,8 +534,9 @@ defmodule Wallboard.GitHubIssuesTest do
   end
 
   describe "Settings page (scenario 5)" do
-    defp settings_html(missing?) do
-      settings = Settings.merge(Settings.defaults(), %{approve_devices: false})
+    defp settings_html(missing?, github \\ %{}) do
+      settings =
+        Settings.merge(Settings.defaults(), %{approve_devices: false, github: github})
 
       %{
         __changed__: nil,
@@ -570,6 +571,13 @@ defmodule Wallboard.GitHubIssuesTest do
 
     test "says nothing about it when the scope is there" do
       refute settings_html(false) =~ "read:project"
+    end
+
+    test "says how soon the board checks again, from how often it polls GitHub" do
+      # Issues are read on the first poll at least two minutes after the last.
+      assert settings_html(true) =~ "checks again every 2 minutes"
+      assert settings_html(true, %{poll_seconds: 300}) =~ "checks again every 5 minutes"
+      assert settings_html(true, %{poll_seconds: 50}) =~ "checks again every 3 minutes"
     end
   end
 
