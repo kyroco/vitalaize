@@ -413,6 +413,16 @@ defmodule Wallboard.GitHubIssuesTest do
       if File.exists?(typed), do: flunk("sent with -F: " <> File.read!(typed))
     end
 
+    test "two full reads of the same answers, two minutes apart, are not news", c do
+      first = GitHub.poll(c.settings, nil, %{}, @now)
+      {:ok, prev, _} = first
+
+      second = GitHub.poll(c.settings, prev, %{}, DateTime.add(@now, 130, :second))
+      assert "issues+projects" in asked(c.dir)
+
+      refute Wallboard.Poller.changed?(GitHub, prev, elem(second, 1))
+    end
+
     test "when issues were read less than two minutes ago, the issue keys do not count as news",
          c do
       first = facts(GitHub.poll(c.settings, nil, %{}, @now))
