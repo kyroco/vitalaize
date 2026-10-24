@@ -68,7 +68,7 @@ defmodule Wallboard.Sources.GitHub do
   """
 
   @milestone_fields """
-  number title state closedAt
+  number title state closedAt updatedAt
   issues(first: 100) { pageInfo { hasNextPage } nodes { number title state closedAt body } }
   """
 
@@ -246,8 +246,8 @@ defmodule Wallboard.Sources.GitHub do
       its projects, linked branches, closing pull requests, blockers, labels
       and, when parked, the reason (see `parse_issues/2`)
     * `milestones_cut` and `issues_cut`: true when GitHub had more open
-      ones than `issue_pages` pages hold (or, for issues, more closed in
-      the last day than one page), so some are missing
+      ones than `issue_pages` pages hold, or may have had more closed in
+      the last day than its list of those holds, so some are missing
     * `project_scope`: `:missing` when the sign-in lacks `read:project`, so
       each issue's projects are nil; otherwise `:ok`
 
@@ -777,10 +777,12 @@ defmodule Wallboard.Sources.GitHub do
   end
 
   @doc """
-  Parses one page of a repository's milestones: `{:ok, %{milestones,
-  next}}`, where `next` is where the next page of open milestones starts
+  Parses one page of a repository's milestones: `{:ok, %{milestones, next,
+  cut}}`, where `next` is where the next page of open milestones starts
   (nil when there is none). The first page also carries those closed in the
-  last day; older closed ones are left out.
+  last day; older closed ones are left out. `cut` is true when the 10 most
+  recently updated closed milestones were all updated in the last day, so
+  one closed in that day may be missing.
 
   Each milestone is `%{number, title, state, closed_at, issues,
   issues_cut}`, with its issues as `%{number, title, state, closed_at,
@@ -790,16 +792,18 @@ defmodule Wallboard.Sources.GitHub do
   def parse_milestones(text, now) do
     with {:ok, repo} <- repository(text) do
       open = repo["openMilestones"] || %{}
+      closed_nodes = get_in(repo, ["closedMilestones", "nodes"]) || []
 
       closed =
-        (get_in(repo, ["closedMilestones", "nodes"]) || [])
+        closed_nodes
         |> Enum.map(&milestone/1)
         |> Enum.filter(&closed_since?(&1, now))
 
       {:ok,
        %{
          milestones: Enum.map(open["nodes"] || [], &milestone/1) ++ closed,
-         next: next_page(open)
+         next: next_page(open),
+         cut: more_since?(closed_nodes, 10, now)
        }}
     end
   end
