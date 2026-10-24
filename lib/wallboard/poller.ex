@@ -82,7 +82,7 @@ defmodule Wallboard.Poller do
 
     task =
       Task.Supervisor.async_nolink(Wallboard.TaskSupervisor, fn ->
-        source.poll(settings, facts, memory, now)
+        checked(source, settings, facts, memory, now)
       end)
 
     Process.send_after(self(), {:timeout, task.ref}, timeout_ms(state.timeout, settings))
@@ -123,6 +123,16 @@ defmodule Wallboard.Poller do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  # Runs a source's check. A raise is caught here rather than left to crash
+  # the task, whose crash report prints the error's text, and that can hold
+  # what the check read. It becomes a failed check that names only the
+  # kind of error, logged once like any other.
+  defp checked(source, settings, facts, memory, now) do
+    source.poll(settings, facts, memory, now)
+  rescue
+    e -> {:error, "the check raised #{inspect(e.__struct__)}", memory}
+  end
 
   # Takes in a poll's result. An error here is caught rather than left to
   # crash the poller, because a crash report prints the error's text and its
