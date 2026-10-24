@@ -56,7 +56,7 @@ defmodule Wallboard.Sources.GitHub do
   @issue_fields """
   number title state closedAt updatedAt body
   milestone { number }
-  labels(first: 20) { nodes { name } }
+  labels(first: 100) { nodes { name } }
   linkedBranches(first: 10) { nodes { ref { name } } }
   closedByPullRequestsReferences(first: 10) { nodes { number state repository { nameWithOwner } } }
   blockedBy(first: 20) { nodes { number state repository { nameWithOwner } } }
@@ -823,8 +823,9 @@ defmodule Wallboard.Sources.GitHub do
   Each issue is `%{number, title, state, closed_at, body, milestone,
   labels, projects, branches, closing_prs, blocked_by, parked_reason}`:
   `projects` is nil when the query left them out, `closing_prs` and
-  `blocked_by` hold only open ones, each as `%{repo, number}`, and `parked_reason` is the first line of
-  the newest comment of an open issue with the `parked` label. `body` is the
+  `blocked_by` hold only open ones, each as `%{repo, number}`, and `parked_reason` is the first line
+  with words in the newest comment of an open issue with the `parked`
+  label. `body` is the
   first 600 characters.
   """
   def parse_issues(text, now) do
@@ -943,11 +944,12 @@ defmodule Wallboard.Sources.GitHub do
     }
   end
 
+  # The comment's first line with words in it.
   defp newest_line(%{"body" => body}) when is_binary(body) do
-    case first_line(body) do
-      "" -> nil
-      line -> line
-    end
+    body
+    |> String.split("\n")
+    |> Enum.map(&String.trim/1)
+    |> Enum.find(&(&1 != ""))
   end
 
   defp newest_line(_), do: nil
