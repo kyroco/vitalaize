@@ -366,9 +366,9 @@ defmodule WallboardWeb.SettingsLive do
             <dd>
               <p class="bad-ink detail-note">
                 The board cannot see which GitHub project an issue is in: your gh sign-in
-                lacks the read:project scope. To add it, run
+                lacks permission to read projects (the read:project scope). To add it, run
                 <code>gh auth refresh -s read:project</code>
-                on this machine. The board checks again about every {read_minutes(@settings)} minutes.
+                on this machine. The board tries again about every {read_minutes(@settings)} minutes, and this note goes away once it works.
               </p>
             </dd>
           </div>
