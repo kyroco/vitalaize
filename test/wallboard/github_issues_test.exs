@@ -398,4 +398,21 @@ defmodule Wallboard.GitHubIssuesTest do
       refute settings_html(false) =~ "read:project"
     end
   end
+
+  describe "the issue_pages setting" do
+    defp pages(value) do
+      Settings.defaults()
+      |> Settings.merge(%{github: %{issue_pages: value}})
+      |> Settings.normalize()
+      |> get_in([:github, :issue_pages])
+    end
+
+    test "a whole number of 1 or more is kept" do
+      assert pages(3) == 3
+    end
+
+    test "text, a fraction, zero or nothing reads one page, so the poll never crashes on it" do
+      for value <- ["2", 2.5, 0, -1, nil], do: assert(pages(value) == 1, inspect(value))
+    end
+  end
 end
