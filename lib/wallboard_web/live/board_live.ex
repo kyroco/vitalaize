@@ -158,13 +158,21 @@ defmodule WallboardWeb.BoardLive do
   def handle_info({:runners, states}, socket) when is_map(states),
     do: {:noreply, socket |> assign(runners: states) |> derive_github()}
 
-  def handle_info({:source, :github, facts, meta}, socket),
-    do:
-      {:noreply,
-       socket
-       |> assign(github: facts, github_meta: meta, now: now())
-       |> derive_github()
-       |> derive_run()}
+  # An error while working out what to show from the facts is caught rather
+  # than left to crash the page: a LiveView's crash report prints its state
+  # and the message, and both hold the facts, issue text included. The log
+  # says only what kind of error it was; the last good facts stay.
+  def handle_info({:source, :github, facts, meta}, socket) do
+    {:noreply,
+     socket
+     |> assign(github: facts, github_meta: meta, now: now())
+     |> derive_github()
+     |> derive_run()}
+  rescue
+    e ->
+      Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
+      {:noreply, socket}
+  end
 
   def handle_info({:source, :new_relic, facts, meta}, socket),
     do: {:noreply, assign(socket, nr: facts, nr_meta: meta)}
