@@ -5,6 +5,8 @@ defmodule Wallboard.GitHubIssuesTest do
   # asked. One at a time: the PATH is this whole test run's.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Wallboard.{Fixtures, Settings}
   alias Wallboard.Sources.GitHub
   alias WallboardWeb.SettingsLive
@@ -292,7 +294,14 @@ defmodule Wallboard.GitHubIssuesTest do
         esac
         case "$what" in
           milestones_page_2) cat "#{fixtures}/milestones_page_2.json" ;;
-          milestones) cat "#{fixtures}/milestones.json" ;;
+          milestones)
+            # An answer in a shape the board does not expect: a milestone
+            # that is a bare string, holding text from the repository.
+            if [ -f "$WALLBOARD_TEST_GH/odd_milestones" ]; then
+              echo '{"data": {"repository": {"openMilestones": {"nodes": ["PLANTED issue text"]}}}}'
+            else
+              cat "#{fixtures}/milestones.json"
+            fi ;;
           issues_page_2*) cat "#{fixtures}/issues_page_2.json" ;;
           issues_moved*) cat "#{fixtures}/issues_moved.json" ;;
           issues+projects) cat "#{fixtures}/issues.json" ;;
@@ -434,6 +443,20 @@ defmodule Wallboard.GitHubIssuesTest do
 
       assert queries =~ "labels(first: 100)"
       refute queries =~ "labels(first: 20)"
+    end
+
+    test "a raise while reading one repository fails that repository alone, and logs no fact text",
+         c do
+      File.write!(Path.join(c.dir, "odd_milestones"), "")
+
+      log =
+        capture_log(fn ->
+          assert {:error, reason, _} = GitHub.poll(c.settings, nil, %{}, @now)
+          assert reason =~ "the read raised FunctionClauseError"
+        end)
+
+      refute log =~ "PLANTED"
+      refute log =~ "terminating"
     end
 
     test "a quoted issue_pages in a repository's own entry reads one page instead of crashing",
