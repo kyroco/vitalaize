@@ -372,8 +372,11 @@ defmodule Wallboard.Sources.GitHub do
   defp issues_query(projects?, cursor) do
     fields = if projects?, do: @issue_fields <> @issue_projects, else: @issue_fields
 
+    # Newest first, by when each was made: an issue edited between two
+    # page reads keeps its place, where by update time it would jump ahead
+    # of the cursor and be in neither page.
     open = """
-    openIssues: issues(states: OPEN, first: 100#{if cursor, do: ", after: $after"}, orderBy: {field: UPDATED_AT, direction: DESC}) {
+    openIssues: issues(states: OPEN, first: 100#{if cursor, do: ", after: $after"}, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes { #{fields} }
     }
