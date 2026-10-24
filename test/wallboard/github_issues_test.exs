@@ -327,18 +327,26 @@ defmodule Wallboard.GitHubIssuesTest do
       assert issue(read, 10).projects == nil
       assert issue(read, 14).parked_reason == "Waiting on the payment provider's answer."
 
-      # Two minutes on: one call, without projects.
+      # Two minutes on, still missing: asked for with projects, then without.
       again = GitHub.fetch_issues(c.gh, read, DateTime.add(@now, 130, :second))
-      assert asked(c.dir) == ["milestones", "issues"]
+      assert asked(c.dir) == ["milestones", "issues+projects", "issues"]
       assert again.project_scope == :missing
-      assert again.project_scope_at == @now
+    end
 
-      # An hour on, projects are asked for again, and found once the scope is added.
+    test "once the scope is added, the next read finds projects, so the Settings note goes within two minutes",
+         c do
+      File.write!(Path.join(c.dir, "no_scope"), "")
+      read = GitHub.fetch_issues(c.gh, nil, @now)
+      assert read.project_scope == :missing
+
+      # The person runs gh auth refresh -s read:project, as the note says.
       File.rm!(Path.join(c.dir, "no_scope"))
-      hour = GitHub.fetch_issues(c.gh, again, DateTime.add(@now, 3601, :second))
+      asked(c.dir)
+
+      next = GitHub.fetch_issues(c.gh, read, DateTime.add(@now, 130, :second))
       assert asked(c.dir) == ["milestones", "issues+projects"]
-      assert hour.project_scope == :ok
-      assert [%{title: "Checkout"}, %{title: "Search"}] = issue(hour, 10).projects
+      assert next.project_scope == :ok
+      assert [%{title: "Checkout"}, %{title: "Search"}] = issue(next, 10).projects
     end
 
     test "a failed read keeps the last milestones and issues", c do
