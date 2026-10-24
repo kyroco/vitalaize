@@ -605,10 +605,11 @@ defmodule Wallboard.GitHubIssuesTest do
     end
 
     test "says how soon the board checks again, from how often it polls GitHub" do
-      # Issues are read on the first poll at least two minutes after the last.
-      assert settings_html(true) =~ "checks again every 2 minutes"
-      assert settings_html(true, %{poll_seconds: 300}) =~ "checks again every 5 minutes"
-      assert settings_html(true, %{poll_seconds: 50}) =~ "checks again every 3 minutes"
+      # Issues are read on the first poll at least two minutes after the
+      # last; each poll's own run time adds a little, hence "about".
+      assert settings_html(true) =~ "checks again about every 2 minutes"
+      assert settings_html(true, %{poll_seconds: 300}) =~ "checks again about every 5 minutes"
+      assert settings_html(true, %{poll_seconds: 50}) =~ "checks again about every 3 minutes"
     end
   end
 

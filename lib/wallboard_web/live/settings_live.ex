@@ -368,7 +368,7 @@ defmodule WallboardWeb.SettingsLive do
                 The board cannot see which GitHub project an issue is in: your gh sign-in
                 lacks the read:project scope. To add it, run
                 <code>gh auth refresh -s read:project</code>
-                on this machine. The board checks again every {read_minutes(@settings)} minutes.
+                on this machine. The board checks again about every {read_minutes(@settings)} minutes.
               </p>
             </dd>
           </div>

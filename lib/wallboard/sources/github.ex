@@ -226,9 +226,10 @@ defmodule Wallboard.Sources.GitHub do
   end
 
   @doc """
-  How often milestones and issues are read, in whole minutes rounded up:
-  on the first poll at least two minutes after the last read, so with
-  polls every `github.poll_seconds`.
+  About how often milestones and issues are read, in whole minutes
+  rounded up: on the first poll at least two minutes after the last read,
+  with polls every `github.poll_seconds`. Each poll's own run time adds to
+  that, so it is a floor.
   """
   def issue_read_minutes(settings) do
     seconds =
