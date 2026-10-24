@@ -360,8 +360,9 @@ defmodule WallboardWeb.SettingsLive do
             <dd>
               <p class="bad-ink detail-note">
                 The board cannot see which GitHub project an issue is in: your gh sign-in
-                lacks the read:project scope. Milestones and issues still show. To add the
-                scope, run <code>gh auth refresh -s read:project</code> on this machine.
+                lacks the read:project scope. To add it, run
+                <code>gh auth refresh -s read:project</code>
+                on this machine. The board checks again every two minutes.
               </p>
             </dd>
           </div>
