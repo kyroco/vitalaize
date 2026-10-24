@@ -96,9 +96,13 @@ defmodule WallboardWeb.SettingsLive do
     :exit, _ -> nil
   end
 
-  # True when GitHub said the `gh` sign-in lacks the read:project scope
-  # (see `Wallboard.Sources.GitHub.fetch_issues/3`).
-  defp no_project_scope? do
+  @doc """
+  True when the GitHub poller's last read found that the `gh` sign-in lacks
+  the read:project scope for a repository (see
+  `Wallboard.Sources.GitHub.fetch_issues/3`); false when it did not, or the
+  poller is not running.
+  """
+  def no_project_scope? do
     Enum.any?(
       (Poller.snapshot(:github).facts || %{})[:repos] || [],
       &match?(%{facts: %{project_scope: :missing}}, &1)

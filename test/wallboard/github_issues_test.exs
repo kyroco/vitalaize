@@ -447,6 +447,49 @@ defmodule Wallboard.GitHubIssuesTest do
     end
   end
 
+  describe "Settings page: finding the missing scope (scenario 5)" do
+    # Stands in for the :github poller: answers the snapshot with the
+    # facts it was given.
+    defmodule FakeGitHub do
+      use GenServer
+
+      def start_link(facts), do: GenServer.start_link(__MODULE__, facts, name: :github)
+
+      @impl true
+      def init(facts), do: {:ok, facts}
+
+      @impl true
+      def handle_call(:snapshot, _from, facts),
+        do:
+          {:reply, %{facts: facts, meta: %{fetched_at: nil, error: nil, interval: 30_000}}, facts}
+    end
+
+    defp repos(scopes) do
+      %{
+        repos:
+          for {scope, i} <- Enum.with_index(scopes) do
+            %{repo: "acme/repo#{i}", facts: %{project_scope: scope}, error: nil}
+          end
+      }
+    end
+
+    test "the note shows when a repository's last read found the scope missing" do
+      start_supervised!({FakeGitHub, repos([:ok, :missing])})
+      assert SettingsLive.no_project_scope?()
+    end
+
+    test "no note when every read found the scope, before the first read, or with no poller" do
+      refute SettingsLive.no_project_scope?()
+
+      start_supervised!({FakeGitHub, %{repos: [%{repo: "acme/shop", facts: nil, error: "down"}]}})
+      refute SettingsLive.no_project_scope?()
+      stop_supervised!(FakeGitHub)
+
+      start_supervised!({FakeGitHub, repos([:ok, :ok])})
+      refute SettingsLive.no_project_scope?()
+    end
+  end
+
   describe "the issue_pages setting" do
     defp pages(value) do
       Settings.defaults()
