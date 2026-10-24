@@ -1,5 +1,5 @@
 defmodule Wallboard.PollerCrashTest do
-  # A poller that crashes while it handles a poll's result must not write the
+  # A poller that fails while it takes in a poll's result must not write the
   # facts into the log: the GitHub facts hold issue text from private
   # repositories (issue #143).
   use ExUnit.Case, async: false
@@ -18,29 +18,51 @@ defmodule Wallboard.PollerCrashTest do
     def fingerprint(%{how: :key} = facts), do: Map.fetch!(facts, :not_there)
   end
 
-  defp crash_log(how) do
+  defp failing_log(how) do
     :persistent_term.put({Source, :how}, how)
 
     capture_log(fn ->
-      {:ok, pid} =
-        GenServer.start(Poller, [name: nil, source: Source, interval_ms: 10], [])
+      {:ok, pid} = GenServer.start(Poller, [name: nil, source: Source, interval_ms: 10], [])
 
-      ref = Process.monitor(pid)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
-      # The crash report is written as the process ends.
-      Process.sleep(100)
+      # Long enough for several polls, each failing the same way.
+      Process.sleep(200)
+      assert Process.alive?(pid), "the poller crashed"
+      assert %{facts: %{body: _}, meta: %{error: error}} = GenServer.call(pid, :snapshot)
+      assert error =~ "could not be read"
+      GenServer.stop(pid)
     end)
   end
 
-  test "the message being handled is not in the crash report" do
-    log = crash_log(:raise)
-    assert log =~ "fingerprint failed"
+  test "an error while taking in the facts is logged by its kind alone" do
+    log = failing_log(:raise)
+    assert log =~ "could not take in a poll result: RuntimeError"
     refute log =~ "PLANTED"
+    refute log =~ "Last message"
   end
 
   test "an error whose text holds the facts does not bring them into the log" do
-    log = crash_log(:key)
-    assert log =~ "KeyError"
+    log = failing_log(:key)
+    assert log =~ "could not take in a poll result: KeyError"
     refute log =~ "PLANTED"
+  end
+
+  test "a crash report from anywhere else holds neither the facts, the message nor the error's text" do
+    status = %{
+      state: %{
+        name: :github,
+        facts: %{body: "PLANTED"},
+        memory: "PLANTED",
+        error: nil,
+        fetched_at: nil
+      },
+      message: {make_ref(), {:ok, %{body: "PLANTED"}, nil}},
+      reason: %KeyError{key: :x, term: %{body: "PLANTED"}},
+      log: [{:in, %{body: "PLANTED"}}]
+    }
+
+    shown = Poller.format_status(status)
+    refute inspect(shown) =~ "PLANTED"
+    assert Exception.message(shown.reason) =~ "KeyError"
+    assert shown.state == %{name: :github, error: nil, fetched_at: nil}
   end
 end

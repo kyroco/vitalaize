@@ -92,30 +92,7 @@ defmodule Wallboard.Poller do
   def handle_info({ref, result}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     state = %{state | task: nil}
-
-    state =
-      case result do
-        {:ok, facts, memory} ->
-          changed? = changed?(state.source, state.facts, facts)
-
-          state = %{
-            state
-            | facts: facts,
-              memory: memory,
-              fetched_at: DateTime.utc_now(),
-              error: nil
-          }
-
-          broadcast(state, changed?)
-          state
-
-        {:error, reason, memory} ->
-          Logger.warning("#{inspect(state.name)} poll failed: #{reason}")
-          state = %{state | memory: memory || state.memory, error: reason}
-          broadcast(state, false)
-          state
-      end
-
+    state = take(state, result)
     schedule(state)
     {:noreply, state}
   end
@@ -141,10 +118,64 @@ defmodule Wallboard.Poller do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # Never print facts or memory in a crash report.
+  # Takes in a poll's result. An error here is caught rather than left to
+  # crash the poller, because a crash report prints the error's text and its
+  # stack's arguments, and both can hold the facts (a KeyError prints the
+  # whole map). The log says only what kind of error it was; the last good
+  # facts stay.
+  defp take(state, result) do
+    take!(state, result)
+  rescue
+    e ->
+      Logger.error(
+        "#{inspect(state.name)} could not take in a poll result: #{inspect(e.__struct__)}"
+      )
+
+      %{state | error: "the last check could not be read; retrying"}
+  end
+
+  defp take!(state, result) do
+    case result do
+      {:ok, facts, memory} ->
+        changed? = changed?(state.source, state.facts, facts)
+
+        state = %{
+          state
+          | facts: facts,
+            memory: memory,
+            fetched_at: DateTime.utc_now(),
+            error: nil
+        }
+
+        broadcast(state, changed?)
+        state
+
+      {:error, reason, memory} ->
+        Logger.warning("#{inspect(state.name)} poll failed: #{reason}")
+        state = %{state | memory: memory || state.memory, error: reason}
+        broadcast(state, false)
+        state
+    end
+  end
+
+  # Never print facts or memory in a crash report: not in the state, not in
+  # the message being handled (a poll's result), and not in the error's
+  # text, which can hold them (a KeyError prints the whole map).
   @impl true
-  def format_status(status),
-    do: Map.update(status, :state, nil, &Map.take(&1, [:name, :error, :fetched_at]))
+  def format_status(status) do
+    status
+    |> Map.update(:state, nil, &Map.take(&1, [:name, :error, :fetched_at]))
+    |> Map.replace(:message, :hidden)
+    |> Map.replace(:log, [])
+    |> Map.replace_lazy(:reason, &bare_reason/1)
+  end
+
+  # What kind of error it was, without its text.
+  defp bare_reason(%{__exception__: true} = e),
+    do: %RuntimeError{message: "#{inspect(e.__struct__)} (details hidden)"}
+
+  defp bare_reason(reason) when is_atom(reason), do: reason
+  defp bare_reason(_), do: :hidden
 
   defp schedule(state), do: Process.send_after(self(), :poll, state.interval)
 
