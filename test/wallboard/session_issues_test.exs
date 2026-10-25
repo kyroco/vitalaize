@@ -789,5 +789,22 @@ defmodule Wallboard.SessionIssuesTest do
       assert [%{repo: "Acme/Shop", number: 7}] = facts.milestones
       assert Wallboard.MilestoneTitles.get("acme/shop", 7) == "PLANTED milestone seven"
     end
+
+    test "lines are listed by repository name without regard to capitals (#165)" do
+      shop = session("a", issue_refs: [%{repo: "Acme/Shop", number: 1430}])
+      other = session("o", issue_refs: [%{repo: "acme/other", number: 2001}])
+      {facts, _} = SessionIssues.match([shop, other], %{}, @now)
+      assert Enum.map(facts.milestones, & &1.repo) == ["acme/other", "Acme/Shop"]
+    end
+
+    test "a line names its repository the same way whatever order its sessions come in (#166)" do
+      upper = session("a", issue_refs: [%{repo: "Acme/Shop", number: 1430}])
+      lower = session("b", issue_refs: [%{repo: "acme/shop", number: 1431}])
+
+      {one, _} = SessionIssues.match([upper, lower], %{}, @now)
+      {two, _} = SessionIssues.match([lower, upper], %{}, @now)
+      assert [%{repo: repo}] = one.milestones
+      assert [%{repo: ^repo}] = two.milestones
+    end
   end
 end

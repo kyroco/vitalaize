@@ -141,6 +141,14 @@ defmodule Wallboard.BoardMilestoneLineTest do
     assert lines(tell(view, [shop])) == ["v1.0 · 3 of 8 done"]
   end
 
+  test "lines in one repository, written with different capitals, name no repository (#164)" do
+    view = open_board()
+    one = milestone("Acme/Shop", 1, 3, 8, "v1.0")
+    two = milestone("acme/shop", 2, 1, 2, "v2.0")
+
+    assert lines(tell(view, [one, two])) == ["v1.0 · 3 of 8 done", "v2.0 · 1 of 2 done"]
+  end
+
   test "a milestone line goes as soon as the last card on it does" do
     view = open_board()
     one = milestone("acme/shop", 11, 3, 8, "Project tab: 1", ["main:a", "main:b"])
