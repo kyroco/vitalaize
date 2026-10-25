@@ -98,4 +98,22 @@ defmodule Wallboard.BoardGitHubFactsTest do
     assert log =~ "could not show a run: KeyError"
     refute log =~ "PLANTED"
   end
+
+  test "facts the board cannot read before any have worked still give the page all it draws" do
+    # As the page first loads: nothing has worked yet.
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{__changed__: %{}, github: nil, runners: %{}, open_run: nil, run_view: nil}
+    }
+
+    facts = %{repos: [%{repo: "acme/shop", facts: %{body: "PLANTED issue body"}, error: nil}]}
+
+    capture_log(fn ->
+      assert {:noreply, socket} =
+               BoardLive.handle_info({:source, :github, facts, %{error: nil}}, socket)
+
+      for key <- [:git, :git_columns, :git_quiet, :gh] do
+        if not Map.has_key?(socket.assigns, key), do: flunk("the page has no #{key} to draw")
+      end
+    end)
+  end
 end
