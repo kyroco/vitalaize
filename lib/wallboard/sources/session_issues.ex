@@ -306,7 +306,7 @@ defmodule Wallboard.Sources.SessionIssues do
       value =
         if answer,
           do: first_closed(answer["b#{i}"], repo),
-          else: last_value(reads[key]) |> then(&if(is_integer(&1), do: &1))
+          else: kept(key, reads)
 
       {key, {value, at}}
     end
