@@ -64,6 +64,8 @@ defmodule Wallboard.SessionIssuesTest do
       repos/acme/shop/issues/1418) echo '{"number": 1418, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1419) echo '{"number": 1419, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1420) echo '{"number": 1420, "pull_request": {"url": "x"}}' ;;
+      repos/acme/shop/issues/1500) echo "gh: Issue was deleted (HTTP 410)" >&2; exit 1 ;;
+      repos/acme/shop/issues/1501) echo '{"number": 9, "title": "PLANTED moved"}' ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac
     """)
@@ -304,6 +306,17 @@ defmodule Wallboard.SessionIssuesTest do
 
       {facts, _} = SessionIssues.match([s], memory, later(400))
       assert facts == %{sessions: %{}}
+    end
+
+    test "a deleted issue, or one moved to another repository, is not an issue here", c do
+      # 410 for a deleted issue; a moved one answers with its new number.
+      for n <- [1500, 1501] do
+        s = named("s#{n}", n, branch: "feature/checkout")
+        {facts, _} = SessionIssues.match([s], %{}, @now)
+        assert facts == %{sessions: %{"s#{n}" => %{repo: "acme/shop", number: 77}}}, "##{n}"
+      end
+
+      assert length(calls(c)) == 4
     end
 
     test "a read that fails keeps what was read before", c do
