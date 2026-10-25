@@ -172,7 +172,9 @@ defmodule Wallboard.Sources.SessionIssues do
     end
   end
 
-  defp repo?(repo), do: is_binary(repo) and repo =~ ~r{^[\w.-]+/[\w.-]+$}
+  # The name goes into the path of a call to GitHub, and a collector on
+  # another machine can send it.
+  defp repo?(repo), do: Wallboard.RepoPrompts.name?(repo)
 
   defp fresh?({_value, read_at}, at), do: at - read_at < @fresh_s
   defp fresh?(_, _at), do: false
