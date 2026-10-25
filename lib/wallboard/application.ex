@@ -161,7 +161,10 @@ defmodule Wallboard.Application do
       # Browsers on other devices that may open the board, and those asking.
       {Wallboard.Devices, dir: Wallboard.Devices.dir(settings)},
       # Reads finished runs' jobs for the Git tab, once for every screen.
-      Wallboard.RunJobs
+      Wallboard.RunJobs,
+      # The titles of the milestones live sessions are in, kept out of
+      # every process's state.
+      Wallboard.MilestoneTitles
     ] ++
       archive_children(settings) ++
       if(new_relic?,

@@ -244,6 +244,9 @@ button { font: inherit; }
 .cc-name { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
 .cc-value { font-size: 36px; font-weight: 700; color: var(--text); }
 
+/* How far down each milestone being worked is, one line each above the cards. */
+.milestone-line { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--text-body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* Session cards: four across, with the details from the transcripts. More than fit scroll. */
 .card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 12px; align-content: start; min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
 .card-grid .session-card { padding: 12px 14px; gap: 6px; min-width: 0; }
