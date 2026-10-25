@@ -81,7 +81,8 @@ defmodule Wallboard.SessionIssuesTest do
     if [ -f "$WALLBOARD_TEST_GH/down" ] || [ -f "$WALLBOARD_TEST_GH/rest_down" ]; then
       echo "gh: Something went wrong (HTTP 502)" >&2; exit 1
     fi
-    case "$2" in
+    # GitHub's names ignore capitals.
+    case "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" in
       repos/acme/shop/issues/1418) echo '{"number": 1418, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1419) echo '{"number": 1419, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1420) echo '{"number": 1420, "pull_request": {"url": "x"}}' ;;
@@ -738,6 +739,55 @@ defmodule Wallboard.SessionIssuesTest do
       # The same name again changes nothing.
       {again, _} = SessionIssues.match([named("a", 1430)], memory, later(242))
       assert again == renamed
+    end
+
+    # Sessions each named on an issue GitHub has not got, one call apiece.
+    defp unknown(count), do: for(i <- 1..count, do: named("x#{i}", 3000 + i))
+
+    test "a check's eight calls take in the milestones' counts", c do
+      {_, memory} = SessionIssues.match([named("a", 1430)], %{}, @now)
+      File.write!(Path.join(c.dir, "calls"), "")
+
+      # Eight new issues come before a's stale one and the counts: those
+      # wait for the next check.
+      {facts, _} = SessionIssues.match([named("a", 1430) | unknown(8)], memory, later(121))
+      assert length(calls(c)) == 8
+      assert counts_calls(c) == []
+      assert shown(facts) == [seven(3)]
+    end
+
+    test "with one call left, the milestone read longest ago is read first", c do
+      o = session("o", issue_refs: [%{repo: "acme/other", number: 2001}])
+      {_, memory} = SessionIssues.match([o], %{}, @now)
+      {_, memory} = SessionIssues.match([o, named("a", 1430)], memory, later(60))
+      {_, memory} = SessionIssues.match([o, named("a", 1430)], memory, later(130))
+      File.write!(Path.join(c.dir, "calls"), "")
+
+      # Both issues and five new ones take seven calls; acme/shop's counts
+      # (read at 60) are older than acme/other's (read at 130).
+      {_, _} = SessionIssues.match([o, named("a", 1430) | unknown(5)], memory, later(260))
+      assert length(calls(c)) == 8
+      assert [counts] = counts_calls(c)
+      assert counts =~ "name=shop"
+    end
+
+    test "a failed read of a milestone's counts waits two minutes before it is asked again", c do
+      {_, memory} = SessionIssues.match([named("a", 1430)], %{}, @now)
+      File.write!(Path.join(c.dir, "graphql_down"), "")
+
+      {_, memory} = SessionIssues.match([named("a", 1430)], memory, later(121))
+      assert length(counts_calls(c)) == 2
+
+      {facts, _} = SessionIssues.match([named("a", 1430)], memory, later(181))
+      assert length(counts_calls(c)) == 2
+      assert shown(facts) == [seven(3)]
+    end
+
+    test "a line keeps its repository's name as it was written, capitals and all" do
+      s = session("a", issue_refs: [%{repo: "Acme/Shop", number: 1430}])
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert [%{repo: "Acme/Shop", number: 7}] = facts.milestones
+      assert Wallboard.MilestoneTitles.get("acme/shop", 7) == "PLANTED milestone seven"
     end
   end
 end
