@@ -3,10 +3,12 @@ defmodule Wallboard.Sources.SessionIssues do
   Which issue each live session is on, so its card on the Agents tab can
   show it, as `#1418`. First match wins:
 
-    1. An issue number in the session's name, or else in its branch:
-       `1418-issue`, `robert/1418-short-title`. When there are two, the first
-       wins. The number must be an issue in the session's repository; when it
-       is not (a pull request, or no such number), the session is on no issue.
+    1. An issue number in the session's name, then one in its branch:
+       `1418-issue`, `robert/1418-short-title`. The first number in each
+       counts, and the first of those that is an issue in the session's
+       repository wins: a pull request or a number with no issue is passed
+       over. A name with a space in it is a title or a prompt, not a name
+       picked for the issue, so its numbers do not count.
     2. With no number, an open pull request from the session's branch that
        closes an issue in the same repository.
     3. Neither: no issue.
@@ -70,19 +72,10 @@ defmodule Wallboard.Sources.SessionIssues do
   its branch, or nil. A number stands alone when it starts the text or
   follows `/`, `-`, `_`, `#` or a space, and ends it or comes before one of
   those: `1418-issue` and `robert/1418-fix-1420` give 1418, while a short
-  id like `4d6407ac` or a version like `v0.4.2` gives nothing.
+  id like `4d6407ac` or a version like `v0.4.2` gives nothing. A name with
+  a space in it counts for nothing (see the rules above).
   """
-  def number(%{} = session) do
-    # A session with no name is named after the start of its id, which can
-    # be all digits.
-    named = session[:name]
-
-    id? =
-      is_binary(named) and is_binary(session[:session_id]) and
-        String.starts_with?(session[:session_id], named)
-
-    if(id?, do: nil, else: number(named)) || number(session[:branch])
-  end
+  def number(%{} = session), do: session |> numbers() |> List.first()
 
   def number(text) when is_binary(text) do
     case Regex.run(~r{(?:^|[/\-_# ])(\d+)(?=$|[/\-_# ])}, text) do
@@ -92,6 +85,32 @@ defmodule Wallboard.Sources.SessionIssues do
   end
 
   def number(_), do: nil
+
+  # The numbers to try, in order: the name's, then the branch's.
+  defp numbers(session) do
+    [name_number(session), number(session[:branch])]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp name_number(%{name: name} = session) when is_binary(name) do
+    # A session with no name is named after the start of its id, which can
+    # be all digits; Codex and streamed sessions are named from a title or
+    # their first prompt, which have spaces.
+    id? = is_binary(session[:session_id]) and String.starts_with?(session.session_id, name)
+    if id? or name =~ ~r/\s/, do: nil, else: number(name)
+  end
+
+  defp name_number(_), do: nil
+
+  # What to ask GitHub about a session, in order: each of its numbers, or,
+  # with no number, its branch's pull requests.
+  defp keys(s) do
+    case numbers(s) do
+      [] -> if is_binary(s[:branch]), do: [{:branch, s.repo, s.branch}], else: []
+      ns -> Enum.map(ns, &{:issue, s.repo, &1})
+    end
+  end
 
   @doc """
   The issue each session is on, from what GitHub says and what was read in
@@ -104,28 +123,48 @@ defmodule Wallboard.Sources.SessionIssues do
     at = DateTime.to_unix(now)
 
     wants =
-      for s <- sessions, is_binary(s[:session_id]), repo?(s[:repo]) do
-        case number(s) do
-          nil -> {s, if(is_binary(s[:branch]), do: {:branch, s.repo, s.branch})}
-          n -> {s, {:issue, s.repo, n}}
-        end
-      end
+      for s <- sessions,
+          is_binary(s[:session_id]),
+          repo?(s[:repo]),
+          keys = keys(s),
+          keys != [],
+          do: {s, keys}
 
-    stale =
-      wants
-      |> Enum.map(&elem(&1, 1))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
-      |> Enum.reject(fn key -> fresh?(reads[key], at) end)
-
-    reads = Map.merge(reads, read_all(stale, reads, at))
+    # A session has at most two keys, so two rounds settle every one.
+    reads = settle(wants, reads, at, 2)
 
     sessions =
-      for {s, key} <- wants, key, number = found(key, reads[key]), into: %{} do
-        {s.session_id, %{repo: s.repo, number: number}}
-      end
+      for {s, keys} <- wants,
+          number = Enum.find_value(keys, &found(&1, reads[&1])),
+          into: %{},
+          do: {s.session_id, %{repo: s.repo, number: number}}
 
-    {%{sessions: sessions}, %{reads: Map.take(reads, Enum.map(wants, &elem(&1, 1)))}}
+    {%{sessions: sessions}, %{reads: Map.take(reads, Enum.flat_map(wants, &elem(&1, 1)))}}
+  end
+
+  # Reads, round by round, the first key of each session with no fresh
+  # read, passing over keys a fresh read says are on no issue. A session
+  # whose name gives an issue never has its branch asked about.
+  defp settle(wants, reads, at, rounds) do
+    stale =
+      wants
+      |> Enum.map(fn {_s, keys} -> next_stale(keys, reads, at) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    if stale == [] or rounds == 0,
+      do: reads,
+      else: settle(wants, Map.merge(reads, read_all(stale, reads, at)), at, rounds - 1)
+  end
+
+  defp next_stale([], _reads, _at), do: nil
+
+  defp next_stale([key | rest], reads, at) do
+    cond do
+      not fresh?(reads[key], at) -> key
+      found(key, reads[key]) -> nil
+      true -> next_stale(rest, reads, at)
+    end
   end
 
   defp repo?(repo), do: is_binary(repo) and repo =~ ~r{^[\w.-]+/[\w.-]+$}
