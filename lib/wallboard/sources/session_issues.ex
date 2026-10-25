@@ -71,7 +71,8 @@ defmodule Wallboard.Sources.SessionIssues do
             Map.merge(s, %{
               repo: GitRemote.github_repo(s[:cwd]),
               branch: GitRemote.branch(s[:cwd]),
-              issue_ref: s[:issue_ref] || named[s[:session_id]][:issue]
+              issue_ref: s[:issue_ref] || named[s[:session_id]][:issue],
+              local?: true
             })
 
     local_ids = MapSet.new(local, & &1[:session_id])
@@ -135,13 +136,20 @@ defmodule Wallboard.Sources.SessionIssues do
   # read, passing over keys a fresh read says are on no issue. A session
   # whose prompt named an issue never has its branch asked about.
   defp settle(wants, reads, at, rounds, calls \\ @per_check) do
+    # This machine's own sessions first, so a collector streaming many new
+    # ones cannot keep them from being read again.
+    mine = for {%{local?: true}, keys} <- wants, key <- keys, into: MapSet.new(), do: key
+
     jobs =
       wants
       |> Enum.map(fn {_s, keys} -> next_stale(keys, reads, at) end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
       |> jobs()
-      |> Enum.sort_by(&read_at(&1, reads))
+      |> Enum.sort_by(fn job ->
+        {if(Enum.any?(job_keys(job), &MapSet.member?(mine, &1)), do: 0, else: 1),
+         read_at(job, reads)}
+      end)
       |> Enum.take(calls)
 
     if jobs == [] or rounds == 0,
