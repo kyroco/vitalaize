@@ -56,19 +56,42 @@ defmodule Wallboard.BoardMilestoneLineTest do
     view
   end
 
-  defp milestone(number, done, total, title) do
-    MilestoneTitles.put("acme/shop", number, title)
+  @now ~U[2026-10-20 15:00:00Z]
 
+  # A live card from a collector, as Wallboard.Link.Sessions gives it.
+  defp card(id) do
     %{
-      repo: "acme/shop",
-      number: number,
-      done: done,
-      total: total,
-      title_hash: :erlang.phash2(title)
+      key: "main:" <> id,
+      session_id: id,
+      name: id,
+      short_id: id,
+      account: nil,
+      folder: "/nowhere/" <> id,
+      cwd: nil,
+      repo: "shop",
+      gh_repo: "acme/shop",
+      status: :working,
+      task: "working on it",
+      why: nil,
+      since: @now,
+      updated_at: @now,
+      tool: :claude
     }
   end
 
-  defp tell(view, milestones) do
+  defp milestone(repo \\ "acme/shop", number, done, total, title, sessions \\ ["main:a"]) do
+    %{
+      repo: repo,
+      number: number,
+      done: done,
+      total: total,
+      rev: MilestoneTitles.put(repo, number, title),
+      sessions: sessions
+    }
+  end
+
+  defp tell(view, milestones, cards \\ [card("a")]) do
+    send(view.pid, {:stream, cards})
     facts = %{sessions: %{}, milestones: milestones}
     send(view.pid, {:source, :session_issues, facts, %{error: nil}})
     render(view)
@@ -103,6 +126,30 @@ defmodule Wallboard.BoardMilestoneLineTest do
            ]
 
     assert lines(tell(view, [])) == []
+  end
+
+  test "lines from more than one repository each name their repository" do
+    view = open_board()
+    shop = milestone("acme/shop", 1, 3, 8, "v1.0")
+    api = milestone("acme/api", 1, 1, 2, "v1.0")
+
+    assert lines(tell(view, [api, shop])) == [
+             "acme/api · v1.0 · 1 of 2 done",
+             "acme/shop · v1.0 · 3 of 8 done"
+           ]
+
+    assert lines(tell(view, [shop])) == ["v1.0 · 3 of 8 done"]
+  end
+
+  test "a milestone line goes as soon as the last card on it does" do
+    view = open_board()
+    one = milestone(11, 3, 8, "Project tab: 1", ["main:a", "main:b"])
+    assert lines(tell(view, [one], [card("a"), card("b")])) == ["Project tab: 1 · 3 of 8 done"]
+    assert lines(tell(view, [one], [card("b")])) == ["Project tab: 1 · 3 of 8 done"]
+
+    # The issue finder has not checked again yet, but no card is on it.
+    send(view.pid, {:stream, []})
+    assert lines(render(view)) == []
   end
 
   test "a page that crashes for another reason prints no milestone title" do
