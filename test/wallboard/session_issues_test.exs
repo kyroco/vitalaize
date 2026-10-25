@@ -374,15 +374,22 @@ defmodule Wallboard.SessionIssuesTest do
 
   describe "poll/4" do
     # Stands in for a poller this source reads: Claude, Codex or usage.
+    # Its meta can carry the error a failed check left.
     defmodule FakePoller do
       use GenServer
 
-      def child_spec({name, facts}),
-        do: %{id: name, start: {__MODULE__, :start_link, [{name, facts}]}}
+      def child_spec({name, facts}), do: child_spec({name, facts, %{}})
 
-      def start_link({name, facts}), do: GenServer.start_link(__MODULE__, facts, name: name)
-      def init(facts), do: {:ok, facts}
-      def handle_call(:snapshot, _from, facts), do: {:reply, %{facts: facts, meta: %{}}, facts}
+      def child_spec({name, facts, meta}),
+        do: %{id: name, start: {__MODULE__, :start_link, [{name, facts, meta}]}}
+
+      def start_link({name, facts, meta}),
+        do: GenServer.start_link(__MODULE__, {facts, meta}, name: name)
+
+      def init(state), do: {:ok, state}
+
+      def handle_call(:snapshot, _from, {facts, meta} = state),
+        do: {:reply, %{facts: facts, meta: meta}, state}
     end
 
     # Stands in for the sessions collectors stream from other machines.
@@ -437,14 +444,38 @@ defmodule Wallboard.SessionIssuesTest do
          {:claude, %{sessions: [%{key: "main:s1", session_id: "s1", name: "x", cwd: folder}]}}}
       )
 
-      # As after a restart: the usage reader has not finished its first read.
+      # As after a restart: the usage reader is still on its first read.
+      start_supervised!({FakePoller, {:usage, nil, %{error: nil, fetched_at: nil}}})
       assert {:ok, %{sessions: none}, _} = SessionIssues.poll(nil, nil, nil, @now)
       assert none == %{}
       assert calls(c) == []
 
       # Once it has, and their prompts named nothing, the branch counts.
+      stop_supervised!(:usage)
       start_supervised!({FakePoller, {:usage, %{sessions: %{}}}})
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
+      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
+    end
+
+    test "when the usage reader's first read fails, or it is not running, the branch's issue still shows",
+         c do
+      folder = checkout(c, "feature/checkout")
+
+      start_supervised!(
+        {FakePoller,
+         {:claude, %{sessions: [%{key: "main:s1", session_id: "s1", name: "x", cwd: folder}]}}}
+      )
+
+      # Not running at all: nothing to wait for.
+      assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
+      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
+
+      # Its first read ended in an error.
+      start_supervised!(
+        {FakePoller, {:usage, nil, %{error: "the check raised RuntimeError", fetched_at: nil}}}
+      )
+
+      assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, later(130))
       assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
     end
 
