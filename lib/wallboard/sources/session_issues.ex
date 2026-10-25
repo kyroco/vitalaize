@@ -70,7 +70,7 @@ defmodule Wallboard.Sources.SessionIssues do
     stream =
       for s <- Wallboard.Link.Sessions.cards(),
           not MapSet.member?(local_ids, s[:session_id]),
-          do: Map.merge(s, %{repo: s[:gh_repo], branch: s[:branch]})
+          do: Map.put(s, :repo, s[:gh_repo])
 
     local ++ stream
   end
