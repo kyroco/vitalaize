@@ -30,6 +30,9 @@ defmodule Wallboard.Sources.SessionIssues do
   # How long a read stands before it is asked again.
   @fresh_s 120
 
+  # How long one call to GitHub may take.
+  @read_ms 20_000
+
   # ---------------------------------------------------------------------------
   # Poller hooks (see Wallboard.Poller)
 
@@ -141,10 +144,21 @@ defmodule Wallboard.Sources.SessionIssues do
   defp read_all(keys, reads, at) do
     {issues, branches} = Enum.split_with(keys, &match?({:issue, _, _}, &1))
 
+    # Four at a time, so a board with many sessions stays inside the
+    # poller's time limit.
     issue_reads =
-      for {:issue, repo, n} = key <- issues, into: %{} do
-        {key, {issue?(repo, n, reads[key]), at}}
-      end
+      issues
+      |> Task.async_stream(
+        fn {:issue, repo, n} = key -> {key, {issue?(repo, n, reads[key]), at}} end,
+        max_concurrency: 4,
+        timeout: @read_ms + 5_000,
+        on_timeout: :kill_task
+      )
+      |> Enum.zip(issues)
+      |> Map.new(fn
+        {{:ok, read}, _key} -> read
+        {{:exit, _}, key} -> {key, {last_value(reads[key]), at}}
+      end)
 
     branch_reads =
       branches
@@ -158,7 +172,7 @@ defmodule Wallboard.Sources.SessionIssues do
   # Whether the number is an issue in the repository: GitHub's issues call
   # also answers for a pull request, which carries "pull_request".
   defp issue?(repo, n, last) do
-    case Cmd.run("gh", ["api", "repos/#{repo}/issues/#{n}"], timeout: 30_000) do
+    case Cmd.run("gh", ["api", "repos/#{repo}/issues/#{n}"], timeout: @read_ms) do
       {:ok, text} ->
         case Jason.decode(text) do
           {:ok, %{"number" => ^n} = issue} -> not Map.has_key?(issue, "pull_request")
@@ -194,7 +208,7 @@ defmodule Wallboard.Sources.SessionIssues do
 
     answer =
       with {:ok, text} <-
-             Cmd.run("gh", ["api", "graphql", "-f", "query=" <> query | vars], timeout: 30_000),
+             Cmd.run("gh", ["api", "graphql", "-f", "query=" <> query | vars], timeout: @read_ms),
            {:ok, %{"data" => %{"repository" => %{} = got}}} <- Jason.decode(text) do
         got
       else

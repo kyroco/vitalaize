@@ -94,6 +94,7 @@ defmodule WallboardWeb.BoardLive do
     builds = Poller.snapshot(:builds)
     release = Poller.snapshot(:release)
     budget = Poller.snapshot(:budget)
+    issues = Poller.snapshot(:session_issues)
 
     socket =
       socket
@@ -101,6 +102,8 @@ defmodule WallboardWeb.BoardLive do
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(stream: Wallboard.Link.Sessions.cards())
+      # The issue each session is on.
+      |> assign(session_issues: issues.facts)
       # What collectors say about the GitHub runners on their machines.
       |> assign(runners: Wallboard.Link.RunnerStates.states())
       |> assign(github: github.facts, github_meta: github.meta)
@@ -153,6 +156,11 @@ defmodule WallboardWeb.BoardLive do
   # Sessions that collectors stream from other machines.
   def handle_info({:stream, cards}, socket),
     do: {:noreply, socket |> assign(stream: cards) |> derive_sessions()}
+
+  # The issue each session is on, by session id (see
+  # Wallboard.Sources.SessionIssues).
+  def handle_info({:source, :session_issues, facts, _meta}, socket),
+    do: {:noreply, socket |> assign(session_issues: facts) |> derive_sessions()}
 
   # The GitHub runners collectors report, `%{name => state}`.
   def handle_info({:runners, states}, socket) when is_map(states),
@@ -437,14 +445,18 @@ defmodule WallboardWeb.BoardLive do
 
     sessions = Enum.map(sessions, &Map.put(&1, :long?, Claude.long_running?(&1, now, long)))
 
-    # Each card names its repository, looked up once per folder.
+    issues = (socket.assigns[:session_issues] || %{})[:sessions] || %{}
+
+    # Each card names its repository, looked up once per folder, and the
+    # issue it is on.
     {sessions, repo_of} =
       Enum.map_reduce(sessions, socket.assigns.repo_of, fn s, known ->
         cwd = s[:cwd]
         known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
         # A streamed session names its own repository: its folder is on
         # another machine.
-        {Map.put(s, :repo, s[:repo] || known[cwd]), known}
+        s = Map.merge(s, %{repo: s[:repo] || known[cwd], issue: issues[s.session_id][:number]})
+        {s, known}
       end)
 
     needs = sessions |> Enum.filter(&(&1.status == :needs)) |> Enum.sort_by(&unix(&1.since))
@@ -1649,7 +1661,8 @@ defmodule WallboardWeb.BoardLive do
 
   # One session. The first block comes from `claude agents`; the details
   # (context, cost, model, lines changed, subagents) from its transcript.
-  defp session_card(assigns) do
+  @doc false
+  def session_card(assigns) do
     ~H"""
     <div
       class={[
@@ -1673,6 +1686,7 @@ defmodule WallboardWeb.BoardLive do
         <span :if={@s.account} class="acct">{@s.account}</span>
         <span :if={@s[:started_by]} class="acct">from {@s.started_by}</span>
         <span :if={@s[:repo]} class="sc-repo" title={@s.folder}>{@s.repo}</span>
+        <span :if={@s[:issue]} class="sc-issue" title="The issue this session is on">#{@s.issue}</span>
         <span :if={!@s[:repo] && @s.folder} class="sc-folder">{@s.folder}</span>
       </div>
       <div class="sc-task">{if @s.status == :needs, do: @s.why, else: @s.task}</div>
