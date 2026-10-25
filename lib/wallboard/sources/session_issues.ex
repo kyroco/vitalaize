@@ -274,18 +274,26 @@ defmodule Wallboard.Sources.SessionIssues do
   # A pull request's branch is the session's only when it is in the
   # session's repository: GitHub matches headRefName in forks too.
   defp first_closed(%{"nodes" => prs}, repo) when is_list(prs) do
-    Enum.find_value(prs, fn
-      %{"headRepository" => %{"nameWithOwner" => ^repo}} = pr ->
+    Enum.find_value(prs, fn pr ->
+      if same_repo?(get_in(pr, ["headRepository", "nameWithOwner"]), repo) do
         (get_in(pr, ["closingIssuesReferences", "nodes"]) || [])
         |> Enum.find_value(fn
-          %{"number" => n, "repository" => %{"nameWithOwner" => ^repo}} -> n
-          _ -> nil
-        end)
+          %{"number" => n, "repository" => %{"nameWithOwner" => name}} ->
+            if same_repo?(name, repo), do: n
 
-      _ ->
-        nil
+          _ ->
+            nil
+        end)
+      end
     end)
   end
 
   defp first_closed(_, _repo), do: nil
+
+  # GitHub's names ignore capitals, and a folder's remote keeps whatever
+  # spelling it was cloned with.
+  defp same_repo?(name, repo) when is_binary(name),
+    do: String.downcase(name) == String.downcase(repo)
+
+  defp same_repo?(_name, _repo), do: false
 end
