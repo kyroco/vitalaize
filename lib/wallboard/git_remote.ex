@@ -1,18 +1,34 @@
 defmodule Wallboard.GitRemote do
   @moduledoc """
-  The GitHub repository a folder belongs to, read from its git config
-  rather than by running git, so the board can ask for every session on
-  every redraw. A git worktree's config lives in its main checkout, which
-  this follows.
+  The GitHub repository a folder belongs to, and the branch it is on, read
+  from its git files rather than by running git, so the board can ask for
+  every session on every redraw. A git worktree's config lives in its main
+  checkout, which this follows; its HEAD is its own.
   """
 
   @doc ~s(The folder's origin on GitHub as "owner/name", or nil.)
   def github_repo(nil), do: nil
 
   def github_repo(folder) do
-    with {:ok, config} <- config_path(Path.expand(folder)),
-         {:ok, text} <- File.read(config) do
+    with {:ok, _own, common} <- git_dirs(Path.expand(folder)),
+         {:ok, text} <- File.read(Path.join(common, "config")) do
       text |> origin_url() |> parse()
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The branch the folder is on, read from its HEAD, or nil when HEAD names
+  a commit (detached) or the folder is in no checkout. A worktree's HEAD
+  is in its own git folder, not the main checkout's.
+  """
+  def branch(nil), do: nil
+
+  def branch(folder) do
+    with {:ok, own, _common} <- git_dirs(Path.expand(folder)),
+         {:ok, "ref: refs/heads/" <> name} <- File.read(Path.join(own, "HEAD")) do
+      String.trim(name)
     else
       _ -> nil
     end
@@ -53,13 +69,15 @@ defmodule Wallboard.GitRemote do
   end
 
   # Walks up from the folder to the nearest .git: a folder in a checkout, or
-  # a file ("gitdir: ...") in a worktree, whose commondir leads to the config.
-  defp config_path(dir) do
+  # a file ("gitdir: ...") in a worktree. Returns the checkout's own git
+  # folder, which holds its HEAD, and the shared one its commondir leads to,
+  # which holds the config: {:ok, own, common}.
+  defp git_dirs(dir) do
     dot_git = Path.join(dir, ".git")
 
     cond do
       File.dir?(dot_git) ->
-        {:ok, Path.join(dot_git, "config")}
+        {:ok, dot_git, dot_git}
 
       File.regular?(dot_git) ->
         with {:ok, "gitdir:" <> gitdir} <- File.read(dot_git) do
@@ -71,14 +89,14 @@ defmodule Wallboard.GitRemote do
               _ -> gitdir
             end
 
-          {:ok, Path.join(common, "config")}
+          {:ok, gitdir, common}
         end
 
       Path.dirname(dir) == dir ->
         :error
 
       true ->
-        config_path(Path.dirname(dir))
+        git_dirs(Path.dirname(dir))
     end
   end
 end
