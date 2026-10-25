@@ -27,14 +27,23 @@ defmodule Wallboard.Sources.SessionIssues do
   branch come from its card, or for one on this machine from its folder
   (see `Wallboard.GitRemote`).
 
-  The facts are `%{sessions: %{card_key => %{repo, number}}}`, keyed by
-  each card's own `key`, which a streamed card's machine is part of, so
-  two machines sending the same session id never share an issue. Numbers
-  and names only, so nothing from an issue or a prompt reaches the board
-  or a log.
+  The same read of an issue gives the milestone it is in, with GitHub's
+  own counts of its open and closed issues, so the Agents tab can show how
+  far down each milestone being worked is (issue #144): one line for each
+  milestone a matched issue is in, none for a milestone no live session
+  is on.
+
+  The facts are `%{sessions: %{card_key => %{repo, number}}, milestones:
+  [%{repo, number, done, total, title_hash}]}`. Sessions are keyed by each
+  card's own `key`, which a streamed card's machine is part of, so two
+  machines sending the same session id never share an issue. Numbers and
+  names only, so nothing from an issue or a prompt reaches the board or a
+  log. A milestone's title is GitHub text: it goes only to
+  `Wallboard.MilestoneTitles`, and the facts carry its hash, so a renamed
+  milestone still counts as a change.
   """
 
-  alias Wallboard.{Cmd, GitRemote, Poller}
+  alias Wallboard.{Cmd, GitRemote, MilestoneTitles, Poller}
 
   # How long a read stands before it is asked again.
   @fresh_s 120
@@ -122,7 +131,13 @@ defmodule Wallboard.Sources.SessionIssues do
   was made.
   """
   def match(sessions, memory, now) do
-    reads = memory[:reads] || %{}
+    # Each read's milestone sits beside it as {:milestone, key} while the
+    # check runs, and in its own map between checks.
+    reads =
+      for {key, read} <- memory[:milestones] || %{},
+          into: memory[:reads] || %{},
+          do: {{:milestone, key}, read}
+
     at = DateTime.to_unix(now)
 
     wants =
@@ -136,13 +151,32 @@ defmodule Wallboard.Sources.SessionIssues do
     # rounds settle every one.
     reads = settle(wants, reads, at, 4)
 
+    picked = for {s, keys} <- wants, key = pick(keys, reads), do: {s, key}
+
     sessions =
-      for {s, keys} <- wants,
-          key = pick(keys, reads),
+      for {s, key} <- picked,
           into: %{},
           do: {s.key, %{repo: elem(key, 1), number: found(key, reads[key])}}
 
-    {%{sessions: sessions}, %{reads: Map.take(reads, Enum.flat_map(wants, &elem(&1, 1)))}}
+    keys = Enum.flat_map(wants, &elem(&1, 1))
+
+    kept = %{
+      reads: Map.take(reads, keys),
+      milestones: for(key <- keys, read = reads[{:milestone, key}], into: %{}, do: {key, read})
+    }
+
+    {%{sessions: sessions, milestones: milestones(picked, reads)}, kept}
+  end
+
+  # One for each milestone a session's issue is in. Two issues in the same
+  # milestone can be read at different times; the later read's counts win.
+  defp milestones(picked, reads) do
+    picked
+    |> Enum.map(fn {_s, key} -> reads[{:milestone, key}] end)
+    |> Enum.filter(&match?({%{}, _}, &1))
+    |> Enum.group_by(fn {m, _} -> {String.downcase(m.repo), m.number} end)
+    |> Enum.map(fn {_, read} -> read |> Enum.max_by(&elem(&1, 1)) |> elem(0) end)
+    |> Enum.sort_by(&{String.downcase(&1.repo), &1.number})
   end
 
   # The key that gives a session's issue. A named issue that is not known
@@ -255,13 +289,17 @@ defmodule Wallboard.Sources.SessionIssues do
         read
 
       {{:exit, _}, job} ->
-        for key <- job_keys(job), do: {key, {kept(key, reads), at}}
+        Enum.flat_map(job_keys(job), fn key ->
+          [{key, {kept(key, reads), at}}, {{:milestone, key}, {kept_milestone(key, reads), at}}]
+        end)
     end)
     |> Map.new()
   end
 
-  defp read_job({:issue, repo, n} = key, reads, at),
-    do: [{key, {issue?(repo, n, reads[key]), at}}]
+  defp read_job({:issue, repo, n} = key, reads, at) do
+    {issue?, milestone} = issue?(repo, n, reads[key], kept_milestone(key, reads))
+    [{key, {issue?, at}}, {{:milestone, key}, {milestone, at}}]
+  end
 
   defp read_job({:branches, repo, names}, reads, at), do: closing(repo, names, reads, at)
 
@@ -269,32 +307,76 @@ defmodule Wallboard.Sources.SessionIssues do
   defp kept({:issue, _, _} = key, reads), do: last_value(reads[key])
   defp kept(key, reads), do: found(key, reads[key])
 
+  defp kept_milestone(key, reads), do: last_value(reads[{:milestone, key}])
+
   # Whether the number is an issue in the repository: GitHub's issues call
   # also answers for a pull request, which carries "pull_request".
   # Not an issue here, too: one GitHub has deleted (410) or no such number
   # (404), and one moved to another repository, which gh follows to its
-  # new number.
-  defp issue?(repo, n, last) do
+  # new number. With it, `{issue?, milestone}`: the milestone it is in, or
+  # what was last read when the read fails.
+  defp issue?(repo, n, last, last_milestone) do
     case Cmd.run("gh", ["api", "repos/#{repo}/issues/#{n}"], timeout: @read_ms) do
       {:ok, text} ->
         case Jason.decode(text) do
-          {:ok, %{"number" => ^n} = issue} -> not Map.has_key?(issue, "pull_request")
-          {:ok, %{"number" => _moved}} -> false
-          _ -> last_value(last)
+          {:ok, %{"number" => ^n, "pull_request" => _}} -> {false, nil}
+          {:ok, %{"number" => ^n} = issue} -> {true, milestone(repo, issue["milestone"])}
+          {:ok, %{"number" => _moved}} -> {false, nil}
+          _ -> {last_value(last), last_milestone}
         end
 
       {:error, reason} ->
-        if reason =~ ~r/HTTP 4(04|10)\b/, do: false, else: last_value(last)
+        if reason =~ ~r/HTTP 4(04|10)\b/,
+          do: {false, nil},
+          else: {last_value(last), last_milestone}
     end
   end
+
+  # A milestone as GitHub's REST or GraphQL answer gives it. Its title goes
+  # only to MilestoneTitles; what is kept is its number, its counts and the
+  # title's hash.
+  defp milestone(repo, %{
+         "number" => n,
+         "title" => t,
+         "open_issues" => open,
+         "closed_issues" => closed
+       }),
+       do: shown(repo, n, t, open, closed)
+
+  defp milestone(repo, %{
+         "number" => n,
+         "title" => t,
+         "openIssueCount" => open,
+         "closedIssueCount" => closed
+       }),
+       do: shown(repo, n, t, open, closed)
+
+  defp milestone(_repo, _), do: nil
+
+  defp shown(repo, n, title, open, closed)
+       when is_integer(n) and is_binary(title) and is_integer(open) and is_integer(closed) and
+              open >= 0 and closed >= 0 do
+    MilestoneTitles.put(repo, n, title)
+
+    %{
+      repo: repo,
+      number: n,
+      done: closed,
+      total: open + closed,
+      title_hash: :erlang.phash2(title)
+    }
+  end
+
+  defp shown(_repo, _n, _title, _open, _closed), do: nil
 
   # The last answer, or nil (unknown) when there was none.
   defp last_value({value, _}), do: value
   defp last_value(_), do: nil
 
   # The first issue in the same repository that an open pull request from
-  # each branch closes: [{key, {number or nil, at}}]. One query for the
-  # repository, each branch a variable.
+  # each branch closes, and its milestone: [{key, {number or nil, at}}] and
+  # the same for {:milestone, key}. One query for the repository, each
+  # branch a variable.
   defp closing(repo, names, reads, at) do
     names = Enum.with_index(names)
     [owner, name] = String.split(repo, "/", parts: 2)
@@ -302,7 +384,7 @@ defmodule Wallboard.Sources.SessionIssues do
     query = """
     query($owner: String!, $name: String!#{Enum.map_join(names, fn {_, i} -> ", $b#{i}: String!" end)}) {
       repository(owner: $owner, name: $name) {
-        #{Enum.map_join(names, "\n", fn {_, i} -> "b#{i}: pullRequests(headRefName: $b#{i}, states: OPEN, first: 5) { nodes { headRepository { nameWithOwner } closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } } } } }" end)}
+        #{Enum.map_join(names, "\n", fn {_, i} -> "b#{i}: pullRequests(headRefName: $b#{i}, states: OPEN, first: 5) { nodes { headRepository { nameWithOwner } closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } milestone { number title openIssueCount closedIssueCount } } } } }" end)}
       }
     }
     """
@@ -320,16 +402,16 @@ defmodule Wallboard.Sources.SessionIssues do
         _ -> nil
       end
 
-    for {b, i} <- names do
+    Enum.flat_map(names, fn {b, i} ->
       key = {:branch, repo, b}
 
-      value =
+      {value, milestone} =
         if answer,
-          do: first_closed(answer["b#{i}"], repo),
-          else: kept(key, reads)
+          do: first_closed(answer["b#{i}"], repo) || {nil, nil},
+          else: {kept(key, reads), kept_milestone(key, reads)}
 
-      {key, {value, at}}
-    end
+      [{key, {value, at}}, {{:milestone, key}, {milestone, at}}]
+    end)
   end
 
   # A pull request's branch is the session's only when it is in the
@@ -339,8 +421,8 @@ defmodule Wallboard.Sources.SessionIssues do
       if same_repo?(get_in(pr, ["headRepository", "nameWithOwner"]), repo) do
         (get_in(pr, ["closingIssuesReferences", "nodes"]) || [])
         |> Enum.find_value(fn
-          %{"number" => n, "repository" => %{"nameWithOwner" => name}} ->
-            if same_repo?(name, repo), do: n
+          %{"number" => n, "repository" => %{"nameWithOwner" => name}} = issue ->
+            if same_repo?(name, repo), do: {n, milestone(repo, issue["milestone"])}
 
           _ ->
             nil

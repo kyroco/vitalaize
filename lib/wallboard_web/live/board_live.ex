@@ -483,9 +483,18 @@ defmodule WallboardWeb.BoardLive do
       working: working,
       idle: idle,
       session_count: length(sessions),
-      repo_of: repo_of
+      repo_of: repo_of,
+      # The milestones live sessions' issues are in, numbers only: each
+      # title is looked up as the line is drawn (see milestone_title/1).
+      milestones: (socket.assigns[:session_issues] || %{})[:milestones] || []
     )
   end
+
+  # A milestone's title, from Wallboard.MilestoneTitles, never from the
+  # assigns: a page's crash report prints them. One not kept is named by
+  # its number.
+  defp milestone_title(m),
+    do: Wallboard.MilestoneTitles.get(m.repo, m.number) || "Milestone #{m.number}"
 
   # "#1418" for an issue in the session's own repository, "vendor/lib#12"
   # for one in another, so the number never reads as the wrong issue.
@@ -695,6 +704,7 @@ defmodule WallboardWeb.BoardLive do
                 working={@working}
                 idle={@idle}
                 count={@session_count}
+                milestones={@milestones}
                 meta={@claude_meta}
                 details={(@usage && @usage.sessions) || %{}}
                 problems={(@claude && @claude.problems) || []}
@@ -1279,6 +1289,7 @@ defmodule WallboardWeb.BoardLive do
   attr :meta, :map, required: true
   attr :details, :map, required: true
   attr :problems, :list, required: true
+  attr :milestones, :list, default: []
   attr :tab, :atom, default: :live
   attr :archive_on?, :boolean, default: false
   attr :archive, :list, default: []
@@ -1350,6 +1361,10 @@ defmodule WallboardWeb.BoardLive do
       <div :for={p <- @problems} class="stale-note small">Could not read {p}</div>
 
       <%= if @tab == :live do %>
+        <%!-- How far down each milestone being worked is, one line each. --%>
+        <p :for={m <- @milestones} class="milestone-line">
+          {milestone_title(m)} · {m.done} of {m.total} done
+        </p>
         <%!-- Every session gets a full card, needs-you first. When there are
              more than fit, the cards scroll rather than hide. --%>
         <div class="card-grid">
