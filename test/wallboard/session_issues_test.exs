@@ -184,6 +184,13 @@ defmodule Wallboard.SessionIssuesTest do
       refute query =~ "-F"
     end
 
+    test "a pull request from a fork's branch of the same name gives no issue" do
+      # Its branch is the fork's, not the session's.
+      s = session("a", name: "forked", branch: "feature/forked")
+      assert {%{sessions: none}, _} = SessionIssues.match([s], %{}, @now)
+      assert none == %{}
+    end
+
     test "a session with no repository, or no number and no branch, asks nothing", c do
       sessions = [
         %{session_id: "x", name: "1418-issue"},
