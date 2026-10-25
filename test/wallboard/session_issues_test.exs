@@ -291,6 +291,21 @@ defmodule Wallboard.SessionIssuesTest do
       assert "api repos/acme/shop/issues/1418" in calls(c)
     end
 
+    test "a branch read before the named issue was known never stands in for it", c do
+      at = DateTime.to_unix(@now)
+      s = named("s1", 1418, branch: "feature/checkout")
+
+      # The branch was read while nothing was named yet (as after a restart).
+      reads = %{{:branch, "acme/shop", "feature/checkout"} => {77, at - 30}}
+      File.write!(Path.join(c.dir, "rest_down"), "")
+
+      {facts, memory} = SessionIssues.match([s], %{reads: reads}, @now)
+      assert facts == %{sessions: %{}}
+
+      {facts, _} = SessionIssues.match([s], memory, later(400))
+      assert facts == %{sessions: %{}}
+    end
+
     test "a read that fails keeps what was read before", c do
       sessions = [named("a", 1418), session("b", name: "checkout", branch: "feature/checkout")]
 
