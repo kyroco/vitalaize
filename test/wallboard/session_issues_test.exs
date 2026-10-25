@@ -191,6 +191,12 @@ defmodule Wallboard.SessionIssuesTest do
       assert none == %{}
     end
 
+    test "a repository written in other capitals than GitHub's still finds the closing pull request" do
+      s = session("a", name: "checkout", branch: "feature/checkout", repo: "Acme/Shop")
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert facts == %{sessions: %{"a" => %{repo: "Acme/Shop", number: 77}}}
+    end
+
     test "a session with no repository, or no number and no branch, asks nothing", c do
       sessions = [
         %{session_id: "x", name: "1418-issue"},
