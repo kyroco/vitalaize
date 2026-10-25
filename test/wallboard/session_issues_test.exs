@@ -99,34 +99,42 @@ defmodule Wallboard.SessionIssuesTest do
   defp later(s), do: DateTime.add(@now, s)
 
   describe "number/1" do
+    test "a number joined to the word issue counts, either way round" do
+      for text <- ["1418-issue", "issue-1418", "Issue-1418", "robert/issue-1418-login"] do
+        assert SessionIssues.number(%{name: text}) == 1418, text
+        assert SessionIssues.number(%{branch: text}) == 1418, text
+      end
+
+      # A title or a prompt counts too, when it holds one.
+      assert SessionIssues.number(%{name: "Work on issue-1418 today"}) == 1418
+    end
+
     test "the name first, then the branch" do
-      assert SessionIssues.number(%{name: "1418-issue", branch: "robert/99-other"}) == 1418
-      assert SessionIssues.number(%{name: "checkout", branch: "robert/1418-short-title"}) == 1418
-      assert SessionIssues.number(%{name: "#1418"}) == 1418
-      assert SessionIssues.number(%{branch: "fix_1418"}) == 1418
+      assert SessionIssues.number(%{name: "1418-issue", branch: "robert/issue-99"}) == 1418
+      assert SessionIssues.number(%{name: "checkout", branch: "robert/issue-1418-x"}) == 1418
     end
 
-    test "when there are two numbers, the first wins" do
-      assert SessionIssues.number(%{branch: "robert/1418-fix-1420"}) == 1418
-      assert SessionIssues.number(%{name: "12-then-13"}) == 12
+    test "when there are two such numbers, the first wins" do
+      assert SessionIssues.number(%{name: "1418-issue-then-issue-1420"}) == 1418
+      assert SessionIssues.number(%{name: "issue-1420-and-1418-issue"}) == 1420
     end
 
-    test "a name with spaces is a title or a prompt, not a name picked for the issue" do
-      # Codex and streamed sessions are named from their first prompt.
-      s = %{name: "fix the 3 failing tests", branch: "robert/1418-fix"}
-      assert SessionIssues.number(s) == 1418
-      assert SessionIssues.number(%{name: "Bump node to 20 and fix CI"}) == nil
-    end
-
-    test "a number inside a word, an id or a version is not an issue" do
-      for text <- ["4d6407ac", "v0.4.2", "shop2", "release-v2", "checkout", "", nil] do
+    test "a number not joined to the word issue does not count" do
+      for text <- [
+            "robert/1418-short-title",
+            "phase-2-board",
+            "2026-10-24-cleanup",
+            "#1418",
+            "fix the 3 failing tests",
+            "reissue-5",
+            "1418-issues",
+            "4d6407ac",
+            "12345678",
+            "",
+            nil
+          ] do
         assert SessionIssues.number(%{name: text, branch: text}) == nil, inspect(text)
       end
-    end
-
-    test "a name that is only the start of the session's id is passed over" do
-      s = %{session_id: "12345678-aaaa", name: "12345678", branch: "robert/1418-x"}
-      assert SessionIssues.number(s) == 1418
     end
   end
 
@@ -140,8 +148,8 @@ defmodule Wallboard.SessionIssuesTest do
 
     test "a number that is a pull request, or no issue at all, gives no issue" do
       sessions = [
-        session("pr", name: "1420-review"),
-        session("gone", branch: "robert/5555-old")
+        session("pr", name: "1420-issue"),
+        session("gone", branch: "robert/issue-5555-old")
       ]
 
       assert {%{sessions: none}, _} = SessionIssues.match(sessions, %{}, @now)
@@ -149,20 +157,20 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "a session named from its prompt takes the issue from its branch", c do
-      s = session("s1", name: "fix the 3 failing tests", branch: "robert/1418-fix")
+      s = session("s1", name: "fix the 3 failing tests", branch: "robert/issue-1418-fix")
       {facts, _} = SessionIssues.match([s], %{}, @now)
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
       assert calls(c) == ["api repos/acme/shop/issues/1418"]
     end
 
     test "a number in the name that is not an issue falls back to the branch's number" do
-      s = session("s1", name: "5555-old", branch: "robert/1418-fix")
+      s = session("s1", name: "5555-issue", branch: "robert/issue-1418-fix")
       {facts, _} = SessionIssues.match([s], %{}, @now)
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
     end
 
     test "a number in the name that is not an issue never asks for the branch's pull request" do
-      s = session("s1", name: "5555-old", branch: "feature/checkout")
+      s = session("s1", name: "5555-issue", branch: "feature/checkout")
       assert {%{sessions: none}, _} = SessionIssues.match([s], %{}, @now)
       assert none == %{}
     end
@@ -243,7 +251,7 @@ defmodule Wallboard.SessionIssuesTest do
 
     test "one check asks GitHub at most eight times, so a slow GitHub cannot run it past its limit",
          c do
-      sessions = for n <- 2001..2012, do: session("s#{n}", name: "#{n}-work")
+      sessions = for n <- 2001..2012, do: session("s#{n}", name: "#{n}-issue")
 
       {_, memory} = SessionIssues.match(sessions, %{}, @now)
       assert length(calls(c)) == 8
@@ -286,7 +294,7 @@ defmodule Wallboard.SessionIssuesTest do
       sessions =
         for {name, branch} <- [
               {"1418-issue", nil},
-              {"1420-pr", nil},
+              {"1420-issue", nil},
               {"checkout", "feature/checkout"},
               {"plain", "feature/none"}
             ],
@@ -334,7 +342,7 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "a session on this machine has its repository and branch read from its folder", c do
-      folder = checkout(c, "robert/1418-login")
+      folder = checkout(c, "robert/issue-1418-login")
 
       start_supervised!(
         {FakePoller, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}
@@ -346,7 +354,7 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "a session both on this machine and in a stream takes its issue from this machine", c do
-      folder = checkout(c, "robert/1418-login")
+      folder = checkout(c, "robert/issue-1418-login")
 
       start_supervised!(
         {FakePoller, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}
@@ -357,8 +365,18 @@ defmodule Wallboard.SessionIssuesTest do
       start_supervised!(
         {FakeStream,
          [
-           %{session_id: "s1", name: "login", gh_repo: "acme/shop", branch: "robert/1419-old"},
-           %{session_id: "s2", name: "away", gh_repo: "acme/shop", branch: "robert/1419-old"}
+           %{
+             session_id: "s1",
+             name: "login",
+             gh_repo: "acme/shop",
+             branch: "robert/issue-1419-old"
+           },
+           %{
+             session_id: "s2",
+             name: "away",
+             gh_repo: "acme/shop",
+             branch: "robert/issue-1419-old"
+           }
          ]}
       )
 
