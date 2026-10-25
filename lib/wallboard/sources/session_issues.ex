@@ -63,11 +63,14 @@ defmodule Wallboard.Sources.SessionIssues do
   # board (BoardLive.derive_sessions/1), a session shows once, and this
   # machine's own copy comes first.
   defp live_sessions do
-    # What this machine's Claude sessions' prompts named, by session id. Nil
-    # until the usage reader's first read ends, which can take minutes after
-    # a start: until then they wait, so a branch's issue never stands in.
-    usage = Poller.snapshot(:usage).facts
+    # What this machine's Claude sessions' prompts named, by session id. The
+    # usage reader's first read can take minutes after a start; while it is
+    # still on it they wait, so a branch's issue never stands in. A read
+    # that failed, or a reader that is not running, ends the wait: their
+    # branches still count.
+    %{facts: usage, meta: meta} = Poller.snapshot(:usage)
     named = (usage || %{})[:sessions] || %{}
+    reading? = is_nil(usage) and is_nil(meta[:error])
 
     local =
       for name <- [:claude, :codex],
@@ -78,7 +81,7 @@ defmodule Wallboard.Sources.SessionIssues do
               branch: GitRemote.branch(s[:cwd]),
               issue_refs:
                 s[:issue_refs] ||
-                  if(usage, do: named[s[:session_id]][:issues] || [], else: :waiting),
+                  if(reading?, do: :waiting, else: named[s[:session_id]][:issues] || []),
               local?: true
             })
 
