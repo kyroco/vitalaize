@@ -258,16 +258,20 @@ defmodule Wallboard.Sources.SessionIssues do
 
   # Whether the number is an issue in the repository: GitHub's issues call
   # also answers for a pull request, which carries "pull_request".
+  # Not an issue here, too: one GitHub has deleted (410) or no such number
+  # (404), and one moved to another repository, which gh follows to its
+  # new number.
   defp issue?(repo, n, last) do
     case Cmd.run("gh", ["api", "repos/#{repo}/issues/#{n}"], timeout: @read_ms) do
       {:ok, text} ->
         case Jason.decode(text) do
           {:ok, %{"number" => ^n} = issue} -> not Map.has_key?(issue, "pull_request")
+          {:ok, %{"number" => _moved}} -> false
           _ -> last_value(last)
         end
 
       {:error, reason} ->
-        if reason =~ "HTTP 404", do: false, else: last_value(last)
+        if reason =~ ~r/HTTP 4(04|10)/, do: false, else: last_value(last)
     end
   end
 
