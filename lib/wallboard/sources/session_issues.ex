@@ -241,7 +241,7 @@ defmodule Wallboard.Sources.SessionIssues do
     query = """
     query($owner: String!, $name: String!#{Enum.map_join(names, fn {_, i} -> ", $b#{i}: String!" end)}) {
       repository(owner: $owner, name: $name) {
-        #{Enum.map_join(names, "\n", fn {_, i} -> "b#{i}: pullRequests(headRefName: $b#{i}, states: OPEN, first: 5) { nodes { closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } } } } }" end)}
+        #{Enum.map_join(names, "\n", fn {_, i} -> "b#{i}: pullRequests(headRefName: $b#{i}, states: OPEN, first: 5) { nodes { headRepository { nameWithOwner } closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } } } } }" end)}
       }
     }
     """
@@ -271,13 +271,19 @@ defmodule Wallboard.Sources.SessionIssues do
     end
   end
 
+  # A pull request's branch is the session's only when it is in the
+  # session's repository: GitHub matches headRefName in forks too.
   defp first_closed(%{"nodes" => prs}, repo) when is_list(prs) do
-    Enum.find_value(prs, fn pr ->
-      (get_in(pr, ["closingIssuesReferences", "nodes"]) || [])
-      |> Enum.find_value(fn
-        %{"number" => n, "repository" => %{"nameWithOwner" => ^repo}} -> n
-        _ -> nil
-      end)
+    Enum.find_value(prs, fn
+      %{"headRepository" => %{"nameWithOwner" => ^repo}} = pr ->
+        (get_in(pr, ["closingIssuesReferences", "nodes"]) || [])
+        |> Enum.find_value(fn
+          %{"number" => n, "repository" => %{"nameWithOwner" => ^repo}} -> n
+          _ -> nil
+        end)
+
+      _ ->
+        nil
     end)
   end
 
