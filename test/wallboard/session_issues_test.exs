@@ -98,84 +98,66 @@ defmodule Wallboard.SessionIssuesTest do
 
   defp later(s), do: DateTime.add(@now, s)
 
-  describe "number/1" do
-    test "a number joined to the word issue counts, either way round" do
-      for text <- ["1418-issue", "issue-1418", "Issue-1418", "robert/issue-1418-login"] do
-        assert SessionIssues.number(%{name: text}) == 1418, text
-        assert SessionIssues.number(%{branch: text}) == 1418, text
-      end
-
-      # A title or a prompt counts too, when it holds one.
-      assert SessionIssues.number(%{name: "Work on issue-1418 today"}) == 1418
-    end
-
-    test "the name first, then the branch" do
-      assert SessionIssues.number(%{name: "1418-issue", branch: "robert/issue-99"}) == 1418
-      assert SessionIssues.number(%{name: "checkout", branch: "robert/issue-1418-x"}) == 1418
-    end
-
-    test "when there are two such numbers, the first wins" do
-      assert SessionIssues.number(%{name: "1418-issue-then-issue-1420"}) == 1418
-      assert SessionIssues.number(%{name: "issue-1420-and-1418-issue"}) == 1420
-    end
-
-    test "a number not joined to the word issue does not count" do
-      for text <- [
-            "robert/1418-short-title",
-            "phase-2-board",
-            "2026-10-24-cleanup",
-            "#1418",
-            "fix the 3 failing tests",
-            "reissue-5",
-            "1418-issues",
-            "4d6407ac",
-            "12345678",
-            "",
-            nil
-          ] do
-        assert SessionIssues.number(%{name: text, branch: text}) == nil, inspect(text)
-      end
-    end
-  end
+  # A session whose prompts named #n in its own repository.
+  defp named(id, n, fields \\ []), do: session(id, [issue_ref: %{repo: nil, number: n}] ++ fields)
 
   describe "match/3" do
-    test "a number that is an issue here gives that issue, numbers only", c do
-      {facts, _} = SessionIssues.match([session("s1", name: "1418-issue")], %{}, @now)
+    test "the issue a prompt named, when it is an issue here, numbers only", c do
+      {facts, _} = SessionIssues.match([named("s1", 1418)], %{}, @now)
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
       assert calls(c) == ["api repos/acme/shop/issues/1418"]
       refute inspect(facts) =~ "PLANTED"
     end
 
-    test "a number that is a pull request, or no issue at all, gives no issue" do
+    test "a linked issue is checked in the link's repository, whatever the session's" do
+      ref = %{repo: "acme/shop", number: 1418}
+
       sessions = [
-        session("pr", name: "1420-issue"),
-        session("gone", branch: "robert/issue-5555-old")
+        session("a", repo: "acme/other", issue_ref: ref),
+        %{session_id: "b", issue_ref: ref}
       ]
 
+      {facts, _} = SessionIssues.match(sessions, %{}, @now)
+
+      assert facts == %{
+               sessions: %{
+                 "a" => %{repo: "acme/shop", number: 1418},
+                 "b" => %{repo: "acme/shop", number: 1418}
+               }
+             }
+    end
+
+    test "a named number that is a pull request, or no issue at all, gives no issue" do
+      sessions = [named("pr", 1420), named("gone", 5555)]
       assert {%{sessions: none}, _} = SessionIssues.match(sessions, %{}, @now)
       assert none == %{}
     end
 
-    test "a session named from its prompt takes the issue from its branch", c do
-      s = session("s1", name: "fix the 3 failing tests", branch: "robert/issue-1418-fix")
+    test "a named number that is not an issue falls back to the branch's closing pull request" do
+      s = named("s1", 5555, branch: "feature/checkout")
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 77}}}
+    end
+
+    test "a named issue never asks about the branch", c do
+      s = named("s1", 1418, branch: "feature/checkout")
       {facts, _} = SessionIssues.match([s], %{}, @now)
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
       assert calls(c) == ["api repos/acme/shop/issues/1418"]
     end
 
-    test "a number in the name that is not an issue falls back to the branch's number" do
-      s = session("s1", name: "5555-issue", branch: "robert/issue-1418-fix")
-      {facts, _} = SessionIssues.match([s], %{}, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+    test "a name or a branch with a number in it names nothing", c do
+      sessions = [
+        session("a", name: "1418-issue", branch: "robert/issue-1418-login"),
+        session("b", name: "#1418")
+      ]
+
+      {facts, _} = SessionIssues.match(sessions, %{}, @now)
+      assert facts == %{sessions: %{}}
+      refute Enum.any?(calls(c), &(&1 =~ "issues/1418"))
     end
 
-    test "a number in the name that is not an issue never asks for the branch's pull request" do
-      s = session("s1", name: "5555-issue", branch: "feature/checkout")
-      assert {%{sessions: none}, _} = SessionIssues.match([s], %{}, @now)
-      assert none == %{}
-    end
-
-    test "with no number, an open pull request from the branch that closes an issue gives it",
+    test "with no issue named, an open pull request from the branch that closes an issue gives it",
          c do
       sessions = [
         session("a", name: "checkout", branch: "feature/checkout"),
@@ -209,9 +191,10 @@ defmodule Wallboard.SessionIssuesTest do
     test "a repository name that is not owner/name, such as dot parts or a line break, asks nothing",
          c do
       sessions = [
-        session("a", name: "1418-issue", repo: "../.."),
-        session("b", name: "1418-issue", repo: "acme/.."),
-        session("c", name: "1418-issue", repo: "acme/shop\n")
+        named("a", 1418, repo: "../.."),
+        named("b", 1418, repo: "acme/.."),
+        named("c", 1418, repo: "acme/shop\n"),
+        session("d", issue_ref: %{repo: "../..", number: 1418})
       ]
 
       assert {%{sessions: none}, _} = SessionIssues.match(sessions, %{}, @now)
@@ -219,10 +202,10 @@ defmodule Wallboard.SessionIssuesTest do
       assert calls(c) == []
     end
 
-    test "a session with no repository, or no number and no branch, asks nothing", c do
+    test "a session with no repository, or no issue named and no branch, asks nothing", c do
       sessions = [
-        %{session_id: "x", name: "1418-issue"},
-        %{session_id: "y", name: "1418-issue", repo: "not a repo"},
+        %{session_id: "x", issue_ref: %{repo: nil, number: 1418}},
+        named("y", 1418, repo: "not a repo"),
         session("z", name: "checkout")
       ]
 
@@ -232,10 +215,7 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "an issue or a branch is read at most every two minutes", c do
-      sessions = [
-        session("a", name: "1418-issue"),
-        session("b", name: "checkout", branch: "feature/checkout")
-      ]
+      sessions = [named("a", 1418), session("b", name: "checkout", branch: "feature/checkout")]
 
       {first, memory} = SessionIssues.match(sessions, %{}, @now)
       assert length(calls(c)) == 2
@@ -251,7 +231,7 @@ defmodule Wallboard.SessionIssuesTest do
 
     test "one check asks GitHub at most eight times, so a slow GitHub cannot run it past its limit",
          c do
-      sessions = for n <- 2001..2012, do: session("s#{n}", name: "#{n}-issue")
+      sessions = for n <- 2001..2012, do: named("s#{n}", n)
 
       {_, memory} = SessionIssues.match(sessions, %{}, @now)
       assert length(calls(c)) == 8
@@ -266,10 +246,7 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "a read that fails keeps what was read before", c do
-      sessions = [
-        session("a", name: "1418-issue"),
-        session("b", name: "checkout", branch: "feature/checkout")
-      ]
+      sessions = [named("a", 1418), session("b", name: "checkout", branch: "feature/checkout")]
 
       {first, memory} = SessionIssues.match(sessions, %{}, @now)
       File.write!(Path.join(c.dir, "down"), "")
@@ -283,7 +260,7 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "what is remembered is only what live sessions still point at" do
-      {_, memory} = SessionIssues.match([session("a", name: "1418-issue")], %{}, @now)
+      {_, memory} = SessionIssues.match([named("a", 1418)], %{}, @now)
       assert Map.keys(memory.reads) == [{:issue, "acme/shop", 1418}]
 
       {_, memory} = SessionIssues.match([], memory, later(10))
@@ -291,14 +268,12 @@ defmodule Wallboard.SessionIssuesTest do
     end
 
     test "no repository's whole list of issues or milestones is ever asked for", c do
-      sessions =
-        for {name, branch} <- [
-              {"1418-issue", nil},
-              {"1420-issue", nil},
-              {"checkout", "feature/checkout"},
-              {"plain", "feature/none"}
-            ],
-            do: session(name, name: name, branch: branch)
+      sessions = [
+        named("a", 1418),
+        named("b", 1420),
+        session("c", name: "checkout", branch: "feature/checkout"),
+        session("d", name: "plain", branch: "feature/none")
+      ]
 
       SessionIssues.match(sessions, %{}, @now)
       listed = Path.join(c.dir, "listed")
@@ -308,10 +283,14 @@ defmodule Wallboard.SessionIssuesTest do
   end
 
   describe "poll/4" do
-    # Stands in for the Claude poller, which holds this machine's sessions.
+    # Stands in for a poller this source reads: Claude, Codex or usage.
     defmodule FakePoller do
       use GenServer
-      def start_link(facts), do: GenServer.start_link(__MODULE__, facts, name: :claude)
+
+      def child_spec({name, facts}),
+        do: %{id: name, start: {__MODULE__, :start_link, [{name, facts}]}}
+
+      def start_link({name, facts}), do: GenServer.start_link(__MODULE__, facts, name: name)
       def init(facts), do: {:ok, facts}
       def handle_call(:snapshot, _from, facts), do: {:reply, %{facts: facts, meta: %{}}, facts}
     end
@@ -341,42 +320,52 @@ defmodule Wallboard.SessionIssuesTest do
       folder
     end
 
-    test "a session on this machine has its repository and branch read from its folder", c do
-      folder = checkout(c, "robert/issue-1418-login")
+    test "a Claude session on this machine takes its issue from what its prompts named, and its repository from its folder",
+         c do
+      folder = checkout(c, "robert/1418-login")
 
       start_supervised!(
-        {FakePoller, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}
+        {FakePoller, {:claude, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}}
+      )
+
+      start_supervised!(
+        {FakePoller, {:usage, %{sessions: %{"s1" => %{issue: %{repo: nil, number: 1418}}}}}}
       )
 
       assert {:ok, facts, memory} = SessionIssues.poll(nil, nil, nil, @now)
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
-      assert Map.keys(memory.reads) == [{:issue, "acme/shop", 1418}]
+      assert {:issue, "acme/shop", 1418} in Map.keys(memory.reads)
+    end
+
+    test "a Codex session on this machine takes its issue from its card", c do
+      folder = checkout(c, "main")
+
+      card = %{session_id: "t1", name: "fix", cwd: folder, issue_ref: %{repo: nil, number: 1419}}
+      start_supervised!({FakePoller, {:codex, %{sessions: [card]}}})
+
+      assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
+      assert facts == %{sessions: %{"t1" => %{repo: "acme/shop", number: 1419}}}
     end
 
     test "a session both on this machine and in a stream takes its issue from this machine", c do
-      folder = checkout(c, "robert/issue-1418-login")
+      folder = checkout(c, "main")
 
       start_supervised!(
-        {FakePoller, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}
+        {FakePoller, {:claude, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}}
       )
 
-      # A collector streams the same session, its branch read from the
-      # transcript, and a session of its own.
+      start_supervised!(
+        {FakePoller, {:usage, %{sessions: %{"s1" => %{issue: %{repo: nil, number: 1418}}}}}}
+      )
+
+      # A collector streams the same session, and a session of its own.
+      other = %{repo: nil, number: 1419}
+
       start_supervised!(
         {FakeStream,
          [
-           %{
-             session_id: "s1",
-             name: "login",
-             gh_repo: "acme/shop",
-             branch: "robert/issue-1419-old"
-           },
-           %{
-             session_id: "s2",
-             name: "away",
-             gh_repo: "acme/shop",
-             branch: "robert/issue-1419-old"
-           }
+           %{session_id: "s1", name: "login", gh_repo: "acme/shop", issue_ref: other},
+           %{session_id: "s2", name: "away", gh_repo: "acme/shop", issue_ref: other}
          ]}
       )
 

@@ -3,29 +3,33 @@ defmodule Wallboard.Sources.SessionIssues do
   Which issue each live session is on, so its card on the Agents tab can
   show it, as `#1418`. First match wins:
 
-    1. A number joined to the word issue, `1418-issue` or `issue-1418`, in
-       the session's name, then in its branch. A number not joined to it,
-       like `robert/1418-short-title`, `phase-2-board` or a date, does not
-       count (Robert, October 24, 2026). The first such number in each
-       counts, and the first of those that is an issue in the session's
-       repository wins: a pull request or a number with no issue is passed
-       over.
-    2. With no such number, an open pull request from the session's branch
-       that closes an issue in the same repository.
+    1. The first prompt in the session that names an issue, written the way
+       people write one: `#1418`, `issue 1418`, a link to the issue, or a
+       project-board link that opens it (see `Wallboard.IssueRef`). A link
+       names its repository; otherwise it is the session's own. A number
+       that is not an issue there (a pull request, or no such number) does
+       not count, and a later prompt naming another issue does not change it.
+    2. Else an open pull request from the session's branch, in the
+       session's own repository, that closes an issue there.
     3. Neither: no issue.
 
-  It reads only what live sessions point at, through the signed-in `gh`:
-  one REST call for each issue number, and one GraphQL call for each
-  repository with branches to look up. Each issue and each branch is read
-  at most every two minutes, and no repository's whole list of issues or
-  milestones is ever asked for.
+  Robert, October 24, 2026: "from the first prompt that names one: yes".
 
-  A session's repository and branch come from its card: a collector sends
-  both, and a session on this machine has them read from its folder (see
-  `Wallboard.GitRemote`).
+  It reads only what live sessions point at, through the signed-in `gh`:
+  one REST call for each issue, and one GraphQL call for each repository
+  with branches to look up. Each issue and each branch is read at most
+  every two minutes, and no repository's whole list of issues or milestones
+  is ever asked for.
+
+  What a prompt named comes with the session: the usage reader keeps it for
+  this machine's Claude sessions, a Codex card carries it, and a collector
+  sends it for a session on another machine. A session's repository and
+  branch come from its card, or for one on this machine from its folder
+  (see `Wallboard.GitRemote`).
 
   The facts are `%{sessions: %{session_id => %{repo, number}}}`, numbers
-  only, so nothing from an issue's text reaches the board or a log.
+  and names only, so nothing from an issue or a prompt reaches the board
+  or a log.
   """
 
   alias Wallboard.{Cmd, GitRemote, Poller}
@@ -57,13 +61,17 @@ defmodule Wallboard.Sources.SessionIssues do
   # board (BoardLive.derive_sessions/1), a session shows once, and this
   # machine's own copy comes first.
   defp live_sessions do
+    # What this machine's Claude sessions' prompts named, by session id.
+    named = (Poller.snapshot(:usage).facts || %{})[:sessions] || %{}
+
     local =
       for name <- [:claude, :codex],
           s <- (Poller.snapshot(name).facts || %{})[:sessions] || [],
           do:
             Map.merge(s, %{
               repo: GitRemote.github_repo(s[:cwd]),
-              branch: GitRemote.branch(s[:cwd])
+              branch: GitRemote.branch(s[:cwd]),
+              issue_ref: s[:issue_ref] || named[s[:session_id]][:issue]
             })
 
     local_ids = MapSet.new(local, & &1[:session_id])
@@ -79,45 +87,26 @@ defmodule Wallboard.Sources.SessionIssues do
   # ---------------------------------------------------------------------------
   # Matching
 
-  @doc """
-  The first number joined to the word issue in a session's name, or else
-  in its branch, or nil: `1418-issue`, `issue-1418` and
-  `robert/issue-1418-login` give 1418, in any capitals, while
-  `robert/1418-short-title`, `reissue-5` and `1418-issues` give nothing.
-  """
-  def number(%{} = session), do: session |> numbers() |> List.first()
-
-  def number(text) when is_binary(text) do
-    case Regex.run(~r{(?<![a-z0-9])(?:issue-(\d+)|(\d+)-issue)(?![a-z0-9])}i, text) do
-      [_, digits] -> String.to_integer(digits)
-      [_, "", digits] -> String.to_integer(digits)
-      _ -> nil
-    end
-  end
-
-  def number(_), do: nil
-
-  # The numbers to try, in order: the name's, then the branch's.
-  defp numbers(session) do
-    [number(session[:name]), number(session[:branch])]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  # What to ask GitHub about a session, in order: each of its numbers, or,
-  # with no number, its branch's pull requests.
+  # What to ask GitHub about a session, in order: the issue its prompts
+  # named, then its branch's pull requests. Only names fit to send.
   defp keys(s) do
-    case numbers(s) do
-      [] -> if is_binary(s[:branch]), do: [{:branch, s.repo, s.branch}], else: []
-      ns -> Enum.map(ns, &{:issue, s.repo, &1})
-    end
+    named =
+      case s[:issue_ref] do
+        %{number: n} = ref when is_integer(n) and n > 0 -> [{:issue, ref[:repo] || s[:repo], n}]
+        _ -> []
+      end
+
+    branch = if is_binary(s[:branch]), do: [{:branch, s[:repo], s.branch}], else: []
+
+    Enum.filter(named ++ branch, fn key -> repo?(elem(key, 1)) end)
   end
 
   @doc """
   The issue each session is on, from what GitHub says and what was read in
   the last two minutes: `{facts, memory}`. `sessions` are maps with
-  `session_id`, `name`, `repo` (`owner/name`) and `branch`; `memory` holds
-  each read and when it was made.
+  `session_id`, `issue_ref` (`%{repo, number}`, what its prompts named),
+  `repo` (`owner/name`) and `branch`; `memory` holds each read and when it
+  was made.
   """
   def match(sessions, memory, now) do
     reads = memory[:reads] || %{}
@@ -126,7 +115,6 @@ defmodule Wallboard.Sources.SessionIssues do
     wants =
       for s <- sessions,
           is_binary(s[:session_id]),
-          repo?(s[:repo]),
           keys = keys(s),
           keys != [],
           do: {s, keys}
@@ -136,16 +124,16 @@ defmodule Wallboard.Sources.SessionIssues do
 
     sessions =
       for {s, keys} <- wants,
-          number = Enum.find_value(keys, &found(&1, reads[&1])),
+          key = Enum.find(keys, &found(&1, reads[&1])),
           into: %{},
-          do: {s.session_id, %{repo: s.repo, number: number}}
+          do: {s.session_id, %{repo: elem(key, 1), number: found(key, reads[key])}}
 
     {%{sessions: sessions}, %{reads: Map.take(reads, Enum.flat_map(wants, &elem(&1, 1)))}}
   end
 
   # Reads, round by round, the first key of each session with no fresh
   # read, passing over keys a fresh read says are on no issue. A session
-  # whose name gives an issue never has its branch asked about.
+  # whose prompt named an issue never has its branch asked about.
   defp settle(wants, reads, at, rounds, calls \\ @per_check) do
     jobs =
       wants
