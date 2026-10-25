@@ -103,10 +103,9 @@ defmodule Wallboard.Poller do
     {:noreply, state}
   end
 
+  # An exit's value can hold what the check read, so only its kind is logged.
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %Task{ref: ref}} = state) do
-    Logger.warning(
-      "#{inspect(state.name)} poll crashed: #{Exception.format_exit(reason) |> String.slice(0, 300)}"
-    )
+    Logger.warning("#{inspect(state.name)} poll crashed (#{exit_kind(reason)})")
 
     state = %{state | task: nil, error: "the last check crashed; retrying"}
     broadcast(state, false)
@@ -157,7 +156,9 @@ defmodule Wallboard.Poller do
         "The #{label(state.name)} check could not use its new result: #{inspect(e.__struct__)}"
       )
 
-      %{state | error: "the last check could not be read; retrying"}
+      state = %{state | error: "the last check could not be read; retrying"}
+      broadcast(state, false)
+      state
   end
 
   defp take!(state, result) do
@@ -214,6 +215,15 @@ defmodule Wallboard.Poller do
 
   # Every poll sends the small "how old is this" update; the facts go out
   # only when they changed.
+  # :killed for :killed, :read for {:read, ...}, else "exit".
+  defp exit_kind(reason) when is_atom(reason), do: inspect(reason)
+
+  defp exit_kind(reason)
+       when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0)),
+       do: inspect(elem(reason, 0))
+
+  defp exit_kind(_reason), do: "exit"
+
   defp broadcast(state, changed?) do
     message =
       if changed?,
