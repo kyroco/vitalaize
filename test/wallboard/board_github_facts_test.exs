@@ -1,8 +1,8 @@
 defmodule Wallboard.BoardGitHubFactsTest do
   # The board page must not crash while it works out what to show from the
   # GitHub facts: a LiveView's crash report prints its whole state and the
-  # message it was handling, and the GitHub facts hold issue text from
-  # private repositories (issue #143).
+  # message it was handling, and the facts hold text from private
+  # repositories (issue #143).
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
@@ -36,71 +36,6 @@ defmodule Wallboard.BoardGitHubFactsTest do
 
     assert log =~ "KeyError"
     refute log =~ "PLANTED"
-  end
-
-  # Facts with issue text, for a repository the board does not draw, so
-  # only what the page keeps of them is tested.
-  @with_text %{
-    repos: [
-      %{
-        repo: "acme/other",
-        error: nil,
-        facts: %{
-          issues: [
-            %{
-              number: 1,
-              title: "PLANTED title",
-              body: "PLANTED body",
-              parked_reason: "PLANTED reason"
-            }
-          ],
-          milestones: [
-            %{
-              number: 2,
-              title: "PLANTED milestone title",
-              issues: [%{number: 1, title: "PLANTED title", body: "PLANTED body"}]
-            }
-          ]
-        }
-      }
-    ]
-  }
-
-  defmodule FakeGitHub do
-    use GenServer
-
-    def start_link(facts), do: GenServer.start_link(__MODULE__, facts, name: :github)
-
-    @impl true
-    def init(facts), do: {:ok, facts}
-
-    @impl true
-    def handle_call(:snapshot, _from, facts),
-      do: {:reply, %{facts: facts, meta: %{fetched_at: nil, error: nil, interval: 30_000}}, facts}
-  end
-
-  test "the board keeps no issue titles, bodies or comment lines from the facts it is sent" do
-    socket = %Phoenix.LiveView.Socket{
-      assigns: %{__changed__: %{}, github: nil, runners: %{}, open_run: nil, run_view: nil}
-    }
-
-    {:noreply, socket} = BoardLive.handle_info({:source, :github, @with_text, %{}}, socket)
-
-    refute inspect(socket.assigns) =~ "PLANTED"
-    # Numbers stay, so a later screen can match issues and milestones.
-    [%{facts: kept}] = socket.assigns.github.repos
-    assert [%{number: 1}] = kept.issues
-    assert [%{number: 2, issues: [%{number: 1}]}] = kept.milestones
-  end
-
-  test "a board opened afresh keeps no issue titles, bodies or comment lines either" do
-    start_supervised!({FakeGitHub, @with_text})
-
-    {:ok, socket} =
-      BoardLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}})
-
-    refute inspect(socket.assigns) =~ "PLANTED"
-    assert [%{facts: %{issues: [%{number: 1}]}}] = socket.assigns.github.repos
   end
 
   test "every path that works out the GitHub view logs no fact text, and falls back to the last good facts" do

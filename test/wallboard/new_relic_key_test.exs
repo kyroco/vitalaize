@@ -244,8 +244,7 @@ defmodule Wallboard.NewRelicKeyTest do
           values: Settings.shown(Settings.get()),
           machines: [],
           devices: [],
-          ignored_repos: [],
-          no_project_scope?: false
+          ignored_repos: []
         }
         |> SettingsLive.render()
         |> Phoenix.HTML.Safe.to_iodata()

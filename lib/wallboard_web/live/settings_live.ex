@@ -61,7 +61,6 @@ defmodule WallboardWeb.SettingsLive do
       linked: linked(settings),
       linked_readable?: not Link.hub?(settings) or Link.Machines.readable?(settings),
       ignored_repos: Wallboard.RepoPrompts.ignored(),
-      no_project_scope?: no_project_scope?(),
       devices: Wallboard.Devices.list(),
       release?: System.get_env("RELEASE_ROOT") != nil
     )
@@ -95,25 +94,6 @@ defmodule WallboardWeb.SettingsLive do
   catch
     :exit, _ -> nil
   end
-
-  @doc """
-  True when the GitHub poller's last read found that the `gh` sign-in lacks
-  the read:project scope for a repository (see
-  `Wallboard.Sources.GitHub.fetch_issues/3`); false when it did not, or the
-  poller is not running.
-  """
-  def no_project_scope? do
-    Enum.any?(
-      (Poller.snapshot(:github).facts || %{})[:repos] || [],
-      &match?(%{facts: %{project_scope: :missing}}, &1)
-    )
-  rescue
-    _ -> false
-  catch
-    :exit, _ -> false
-  end
-
-  defdelegate read_minutes(settings), to: Wallboard.Sources.GitHub, as: :issue_read_minutes
 
   defp local_sessions do
     for name <- [:claude, :codex], reduce: 0 do
@@ -358,17 +338,6 @@ defmodule WallboardWeb.SettingsLive do
               </div>
               <p class="detail-note">
                 You chose Ignore for these in the mailbox, so work in them never asks to be tracked.
-              </p>
-            </dd>
-          </div>
-          <div :if={section == "GitHub" and @no_project_scope?} class="settings-value">
-            <dt>GitHub projects</dt>
-            <dd>
-              <p class="bad-ink detail-note">
-                The board cannot see which GitHub project an issue is in: your gh sign-in
-                lacks permission to read projects (the read:project scope). To add it, run
-                <code>gh auth refresh -s read:project</code>
-                on this machine. The board tries again about every {read_minutes(@settings)} minutes, and this note goes away once it works.
               </p>
             </dd>
           </div>

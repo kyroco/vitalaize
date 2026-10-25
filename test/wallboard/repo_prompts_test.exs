@@ -502,7 +502,6 @@ defmodule Wallboard.RepoPromptsTest do
           settings: shown,
           values: SettingsLive.values(shown),
           ignored_repos: [],
-          no_project_scope?: false,
           notice: nil
         }
       }
@@ -578,7 +577,6 @@ defmodule Wallboard.RepoPromptsTest do
             allowed?: true,
             who: %{local?: true},
             ignored_repos: RepoPrompts.ignored(),
-            no_project_scope?: false,
             notice: nil
           }
         }
@@ -620,8 +618,7 @@ defmodule Wallboard.RepoPromptsTest do
             errors: %{},
             machines: [],
             devices: [],
-            ignored_repos: RepoPrompts.ignored(),
-            no_project_scope?: false
+            ignored_repos: RepoPrompts.ignored()
           })
         )
 

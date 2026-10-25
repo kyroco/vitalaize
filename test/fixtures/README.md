@@ -54,15 +54,6 @@ wait to run, on self-hosted runners in the group "Default"; no real
 self-hosted job was at hand to copy, so that group name is GitHub's default
 for a new runner, not a capture.
 
-`github/milestones.json`, `github/milestones_page_2.json`,
-`github/issues.json`, `github/issues_no_projects.json`,
-`github/issues_page_2.json` and `github/project.json` are not captures.
-They are written by hand, with made-up milestones, issues and projects, in
-the shape `gh api graphql` answered on 2026-10-24 for the milestone, issue
-and project queries in `Wallboard.Sources.GitHub`. `issues_no_projects.json`
-is `issues.json` as the query without projects (no `read:project` scope)
-answers.
-
 The `collector/` files are not captures. They are written by hand in the
 shape Claude Code 2.1.284 and codex-cli 0.155.1 write their session files,
 with made-up content, for the tests of what a collector may send to the hub

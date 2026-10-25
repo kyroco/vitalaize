@@ -141,11 +141,6 @@
     branch: "main",
     poll_seconds: 30,
     deploy_poll_seconds: 120,
-    # How many pages to read from each repository on each read, no more
-    # often than every two minutes. A page holds 100 open issues or 50 open
-    # milestones. Each page is one more request to GitHub, and a read with
-    # more than one page of issues makes one more request.
-    issue_pages: 1,
     # The workflow file that gates merges, and the check name on pull requests.
     gate_workflow: "ci.yml",
     gate_check: "ci",
