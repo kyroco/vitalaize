@@ -152,7 +152,7 @@ defmodule Wallboard.Sources.Usage do
           :binary.match(line, ~s("type":"user")) != :nomatch ->
         case Jason.decode(line) do
           {:ok, %{} = entry} ->
-            text = Wallboard.Archive.Transcript.prompt(entry)
+            text = Wallboard.Archive.Transcript.issue_text(entry)
             %{state | issues: Wallboard.IssueRef.keep(state.issues, text)}
 
           _ ->

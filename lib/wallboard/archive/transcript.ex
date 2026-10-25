@@ -243,6 +243,24 @@ defmodule Wallboard.Archive.Transcript do
     end
   end
 
+  @doc """
+  The text of a user line that can name an issue: what the person typed, or
+  the arguments of a slash command they typed, which Claude Code writes in
+  tags (`/work-on #3586` keeps `#3586` in `<command-args>`). Nil otherwise.
+  """
+  def issue_text(%{} = e), do: prompt(e) || command_args(e)
+
+  defp command_args(%{"message" => %{"content" => text}} = e) when is_binary(text) do
+    with true <- !(e["isMeta"] || e["isCompactSummary"] || e["isSidechain"]),
+         [_, args] <- Regex.run(~r{<command-args>(.*?)</command-args>}s, text) do
+      args
+    else
+      _ -> nil
+    end
+  end
+
+  defp command_args(_), do: nil
+
   # A user line is either a prompt or the results of tool calls.
   defp user(e, t) do
     msg = e["message"] || %{}
@@ -261,6 +279,9 @@ defmodule Wallboard.Archive.Transcript do
             first_prompt: t.first_prompt || clip(text),
             issues: Wallboard.IssueRef.keep(t.issues, text)
         }
+
+      args = command_args(e) ->
+        %{t | issues: Wallboard.IssueRef.keep(t.issues, args)}
 
       true ->
         t
