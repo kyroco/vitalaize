@@ -35,6 +35,12 @@ defmodule Wallboard.Sources.SessionIssues do
   # How long one call to GitHub may take.
   @read_ms 20_000
 
+  # At most this many calls to GitHub in one check, four at a time. With
+  # each call allowed @read_ms, a check ends inside the poller's two
+  # minutes even when GitHub is slow, so what it read is kept. What is left
+  # waits for the next check, oldest read first.
+  @per_check 8
+
   # ---------------------------------------------------------------------------
   # Poller hooks (see Wallboard.Poller)
 
@@ -150,17 +156,52 @@ defmodule Wallboard.Sources.SessionIssues do
   # Reads, round by round, the first key of each session with no fresh
   # read, passing over keys a fresh read says are on no issue. A session
   # whose name gives an issue never has its branch asked about.
-  defp settle(wants, reads, at, rounds) do
-    stale =
+  defp settle(wants, reads, at, rounds, calls \\ @per_check) do
+    jobs =
       wants
       |> Enum.map(fn {_s, keys} -> next_stale(keys, reads, at) end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
+      |> jobs()
+      |> Enum.sort_by(&read_at(&1, reads))
+      |> Enum.take(calls)
 
-    if stale == [] or rounds == 0,
+    if jobs == [] or rounds == 0,
       do: reads,
-      else: settle(wants, Map.merge(reads, read_all(stale, reads, at)), at, rounds - 1)
+      else:
+        settle(
+          wants,
+          Map.merge(reads, read_all(jobs, reads, at)),
+          at,
+          rounds - 1,
+          calls - length(jobs)
+        )
   end
+
+  # One call to GitHub for each issue, and one for each repository's
+  # branches together.
+  defp jobs(keys) do
+    {issues, branches} = Enum.split_with(keys, &match?({:issue, _, _}, &1))
+
+    issues ++
+      (branches
+       |> Enum.group_by(fn {:branch, repo, _} -> repo end, fn {:branch, _, b} -> b end)
+       |> Enum.map(fn {repo, names} -> {:branches, repo, names} end))
+  end
+
+  # When a call's answer was last read, or 0 when never.
+  defp read_at({:branches, repo, names}, reads),
+    do: names |> Enum.map(&read_at({:branch, repo, &1}, reads)) |> Enum.min()
+
+  defp read_at(key, reads) do
+    case reads[key] do
+      {_, at} -> at
+      _ -> 0
+    end
+  end
+
+  defp job_keys({:branches, repo, names}), do: Enum.map(names, &{:branch, repo, &1})
+  defp job_keys(key), do: [key]
 
   defp next_stale([], _reads, _at), do: nil
 
@@ -184,36 +225,34 @@ defmodule Wallboard.Sources.SessionIssues do
   defp found({:branch, _repo, _}, {n, _}) when is_integer(n), do: n
   defp found(_key, _read), do: nil
 
-  # Reads every stale key: each issue on its own, each repository's
-  # branches together. A read that fails keeps what was read before, and
-  # waits the usual two minutes before it is asked again.
-  defp read_all(keys, reads, at) do
-    {issues, branches} = Enum.split_with(keys, &match?({:issue, _, _}, &1))
+  # Makes each call, four at a time. A read that fails keeps what was read
+  # before, and waits the usual two minutes before it is asked again.
+  defp read_all(jobs, reads, at) do
+    jobs
+    |> Task.async_stream(&read_job(&1, reads, at),
+      max_concurrency: 4,
+      timeout: @read_ms + 5_000,
+      on_timeout: :kill_task
+    )
+    |> Enum.zip(jobs)
+    |> Enum.flat_map(fn
+      {{:ok, read}, _job} ->
+        read
 
-    # Four at a time, so a board with many sessions stays inside the
-    # poller's time limit.
-    issue_reads =
-      issues
-      |> Task.async_stream(
-        fn {:issue, repo, n} = key -> {key, {issue?(repo, n, reads[key]), at}} end,
-        max_concurrency: 4,
-        timeout: @read_ms + 5_000,
-        on_timeout: :kill_task
-      )
-      |> Enum.zip(issues)
-      |> Map.new(fn
-        {{:ok, read}, _key} -> read
-        {{:exit, _}, key} -> {key, {last_value(reads[key]), at}}
-      end)
-
-    branch_reads =
-      branches
-      |> Enum.group_by(fn {:branch, repo, _} -> repo end, fn {:branch, _, b} -> b end)
-      |> Enum.flat_map(fn {repo, names} -> closing(repo, names, reads, at) end)
-      |> Map.new()
-
-    Map.merge(issue_reads, branch_reads)
+      {{:exit, _}, job} ->
+        for key <- job_keys(job), do: {key, {kept(key, reads), at}}
+    end)
+    |> Map.new()
   end
+
+  defp read_job({:issue, repo, n} = key, reads, at),
+    do: [{key, {issue?(repo, n, reads[key]), at}}]
+
+  defp read_job({:branches, repo, names}, reads, at), do: closing(repo, names, reads, at)
+
+  # What a read that failed keeps: the last answer.
+  defp kept({:issue, _, _} = key, reads), do: last_value(reads[key])
+  defp kept(key, reads), do: found(key, reads[key])
 
   # Whether the number is an issue in the repository: GitHub's issues call
   # also answers for a pull request, which carries "pull_request".
