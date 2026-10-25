@@ -19,6 +19,13 @@ defmodule Wallboard.PollerCrashTest do
       # A throw, or an exit like a timed-out call, carrying what it read.
       if facts.how == :poll_throws, do: throw({:read, facts})
       if facts.how == :poll_exits, do: exit({:timeout, {GenServer, :call, [:store, facts]}})
+
+      # A check whose task is ended from outside, which no catch can stop.
+      if facts.how == :poll_waits do
+        send(:persistent_term.get({__MODULE__, :test}), {:checking, self()})
+        Process.sleep(:infinity)
+      end
+
       {:ok, facts, "PLANTED memory"}
     end
 
@@ -47,6 +54,31 @@ defmodule Wallboard.PollerCrashTest do
     assert log =~ "could not use its new result: RuntimeError"
     refute log =~ "PLANTED"
     refute log =~ "Last message"
+  end
+
+  test "an open board hears that the last check could not be read, without a reload" do
+    Phoenix.PubSub.subscribe(Wallboard.PubSub, Poller.topic())
+    _ = failing_log(:raise)
+
+    assert_received {:source_meta, nil, %{error: "the last check could not be read; retrying"}}
+  end
+
+  test "a check's task that goes down is logged by its kind alone, not its exit's text" do
+    :persistent_term.put({Source, :how}, :poll_waits)
+    :persistent_term.put({Source, :test}, self())
+
+    log =
+      capture_log(fn ->
+        {:ok, pid} = GenServer.start(Poller, [name: nil, source: Source, interval_ms: 1_000], [])
+        assert_receive {:checking, task}, 1_000
+        Process.exit(task, {:read, %{body: "PLANTED issue body"}})
+        Process.sleep(100)
+        assert Process.alive?(pid)
+        GenServer.stop(pid)
+      end)
+
+    assert log =~ "poll crashed"
+    refute log =~ "PLANTED"
   end
 
   test "an error whose text holds the facts does not bring them into the log" do
