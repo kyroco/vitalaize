@@ -27,20 +27,23 @@ defmodule Wallboard.Sources.SessionIssues do
   branch come from its card, or for one on this machine from its folder
   (see `Wallboard.GitRemote`).
 
-  The same read of an issue gives the milestone it is in, with GitHub's
-  own counts of its open and closed issues, so the Agents tab can show how
-  far down each milestone being worked is (issue #144): one line for each
-  milestone a matched issue is in, none for a milestone no live session
-  is on.
+  The same read of an issue gives the number of the milestone it is in,
+  so the Agents tab can show how far down each milestone being worked is
+  (issue #144): one line for each milestone a matched issue is in, none
+  for a milestone no live session is on. Each such milestone's own counts
+  of its issues, done and in all, are read once for the milestone, at most
+  every two minutes, as GitHub's totals: never its list of issues. Pull
+  requests in a milestone are not its issues, and do not count.
 
   The facts are `%{sessions: %{card_key => %{repo, number}}, milestones:
-  [%{repo, number, done, total, title_hash}]}`. Sessions are keyed by each
-  card's own `key`, which a streamed card's machine is part of, so two
-  machines sending the same session id never share an issue. Numbers and
-  names only, so nothing from an issue or a prompt reaches the board or a
-  log. A milestone's title is GitHub text: it goes only to
-  `Wallboard.MilestoneTitles`, and the facts carry its hash, so a renamed
-  milestone still counts as a change.
+  [%{repo, number, done, total, rev, sessions}]}`. Sessions are keyed by
+  each card's own `key`, which a streamed card's machine is part of, so
+  two machines sending the same session id never share an issue; a
+  milestone lists the card keys on it. Numbers and names only, so nothing
+  from an issue or a prompt reaches the board or a log. A milestone's
+  title is GitHub text: it goes only to `Wallboard.MilestoneTitles`, and
+  the facts carry its revision there, so a renamed milestone still counts
+  as a change.
   """
 
   alias Wallboard.{Cmd, GitRemote, MilestoneTitles, Poller}
@@ -131,11 +134,12 @@ defmodule Wallboard.Sources.SessionIssues do
   was made.
   """
   def match(sessions, memory, now) do
-    # Each read's milestone sits beside it as {:milestone, key} while the
-    # check runs, and in its own map between checks.
+    # The milestone each read gives sits beside it as {:milestone, key},
+    # and each milestone's counts as {:counts, repo, number}, while the
+    # check runs; between checks, each in its own map.
     reads =
       for {key, read} <- memory[:milestones] || %{},
-          into: memory[:reads] || %{},
+          into: Map.merge(memory[:reads] || %{}, memory[:counts] || %{}),
           do: {{:milestone, key}, read}
 
     at = DateTime.to_unix(now)
@@ -149,9 +153,19 @@ defmodule Wallboard.Sources.SessionIssues do
 
     # A session has at most four keys (three named, one branch), so four
     # rounds settle every one.
-    reads = settle(wants, reads, at, 4)
+    {reads, calls} = settle(wants, reads, at, 4)
 
     picked = for {s, keys} <- wants, key = pick(keys, reads), do: {s, key}
+
+    # Each session's milestone, as {counts key, card key}.
+    on =
+      for {s, key} <- picked,
+          {n, _} <- [reads[{:milestone, key}]],
+          is_integer(n),
+          do: {{:counts, String.downcase(elem(key, 1)), n}, s.key}
+
+    counts = on |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    reads = read_counts(counts, reads, at, calls)
 
     sessions =
       for {s, key} <- picked,
@@ -162,21 +176,37 @@ defmodule Wallboard.Sources.SessionIssues do
 
     kept = %{
       reads: Map.take(reads, keys),
-      milestones: for(key <- keys, read = reads[{:milestone, key}], into: %{}, do: {key, read})
+      milestones: for(key <- keys, read = reads[{:milestone, key}], into: %{}, do: {key, read}),
+      counts: Map.take(reads, counts)
     }
 
-    {%{sessions: sessions, milestones: milestones(picked, reads)}, kept}
+    {%{sessions: sessions, milestones: milestones(on, reads)}, kept}
   end
 
-  # One for each milestone a session's issue is in. Two issues in the same
-  # milestone can be read at different times; the later read's counts win.
-  defp milestones(picked, reads) do
-    picked
-    |> Enum.map(fn {_s, key} -> reads[{:milestone, key}] end)
-    |> Enum.filter(&match?({%{}, _}, &1))
-    |> Enum.group_by(fn {m, _} -> {String.downcase(m.repo), m.number} end)
-    |> Enum.map(fn {_, read} -> read |> Enum.max_by(&elem(&1, 1)) |> elem(0) end)
-    |> Enum.sort_by(&{String.downcase(&1.repo), &1.number})
+  # One for each milestone a session's issue is in whose counts are known,
+  # with the cards on it.
+  defp milestones(on, reads) do
+    on
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.flat_map(fn {{:counts, repo, n} = key, cards} ->
+      case reads[key] do
+        {%{} = c, _} ->
+          [
+            %{
+              repo: repo,
+              number: n,
+              done: c.done,
+              total: c.total,
+              rev: c.rev,
+              sessions: Enum.sort(cards)
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
+    |> Enum.sort_by(&{&1.repo, &1.number})
   end
 
   # The key that gives a session's issue. A named issue that is not known
@@ -213,7 +243,7 @@ defmodule Wallboard.Sources.SessionIssues do
       |> Enum.take(calls)
 
     if jobs == [] or rounds == 0,
-      do: reads,
+      do: {reads, calls},
       else:
         settle(
           wants,
@@ -276,6 +306,8 @@ defmodule Wallboard.Sources.SessionIssues do
 
   # Makes each call, four at a time. A read that fails keeps what was read
   # before, and waits the usual two minutes before it is asked again.
+  # Nothing compares when two reads were made, so a kept answer standing
+  # at the new time can never outrank a newer one.
   defp read_all(jobs, reads, at) do
     jobs
     |> Task.async_stream(&read_job(&1, reads, at),
@@ -289,94 +321,125 @@ defmodule Wallboard.Sources.SessionIssues do
         read
 
       {{:exit, _}, job} ->
-        Enum.flat_map(job_keys(job), fn key ->
-          [{key, {kept(key, reads), at}}, {{:milestone, key}, {kept_milestone(key, reads), at}}]
-        end)
+        failed(kept_keys(job), reads, at)
     end)
     |> Map.new()
   end
 
   defp read_job({:issue, repo, n} = key, reads, at) do
-    {issue?, milestone} = issue?(repo, n, reads[key], kept_milestone(key, reads))
-    [{key, {issue?, at}}, {{:milestone, key}, {milestone, at}}]
+    case issue?(repo, n) do
+      {issue?, milestone} -> [{key, {issue?, at}}, {{:milestone, key}, {milestone, at}}]
+      :failed -> failed(kept_keys(key), reads, at)
+    end
   end
 
   defp read_job({:branches, repo, names}, reads, at), do: closing(repo, names, reads, at)
+  defp read_job({:counts, repo, numbers}, reads, at), do: counts(repo, numbers, reads, at)
 
-  # What a read that failed keeps: the last answer.
-  defp kept({:issue, _, _} = key, reads), do: last_value(reads[key])
-  defp kept(key, reads), do: found(key, reads[key])
+  # Every answer a call gives, the milestone beside each read included.
+  defp kept_keys({:counts, repo, numbers}), do: Enum.map(numbers, &{:counts, repo, &1})
+  defp kept_keys(job), do: for(key <- job_keys(job), k <- [key, {:milestone, key}], do: k)
 
-  defp kept_milestone(key, reads), do: last_value(reads[{:milestone, key}])
+  # What a call that failed keeps: the last answer, standing until the
+  # usual two minutes have passed.
+  defp failed(keys, reads, at), do: for(key <- keys, do: {key, {kept(key, reads), at}})
+
+  defp kept({:branch, _, _} = key, reads), do: found(key, reads[key])
+  defp kept(key, reads), do: last_value(reads[key])
 
   # Whether the number is an issue in the repository: GitHub's issues call
   # also answers for a pull request, which carries "pull_request".
   # Not an issue here, too: one GitHub has deleted (410) or no such number
   # (404), and one moved to another repository, which gh follows to its
-  # new number. With it, `{issue?, milestone}`: the milestone it is in, or
-  # what was last read when the read fails.
-  defp issue?(repo, n, last, last_milestone) do
+  # new number. With it, `{issue?, milestone}`: the number of the
+  # milestone it is in, or nil. `:failed` when GitHub could not say.
+  defp issue?(repo, n) do
     case Cmd.run("gh", ["api", "repos/#{repo}/issues/#{n}"], timeout: @read_ms) do
       {:ok, text} ->
         case Jason.decode(text) do
           {:ok, %{"number" => ^n, "pull_request" => _}} -> {false, nil}
-          {:ok, %{"number" => ^n} = issue} -> {true, milestone(repo, issue["milestone"])}
+          {:ok, %{"number" => ^n} = issue} -> {true, milestone(issue["milestone"])}
           {:ok, %{"number" => _moved}} -> {false, nil}
-          _ -> {last_value(last), last_milestone}
+          _ -> :failed
         end
 
       {:error, reason} ->
-        if reason =~ ~r/HTTP 4(04|10)\b/,
-          do: {false, nil},
-          else: {last_value(last), last_milestone}
+        if reason =~ ~r/HTTP 4(04|10)\b/, do: {false, nil}, else: :failed
     end
   end
 
-  # A milestone as GitHub's REST or GraphQL answer gives it. Its title goes
-  # only to MilestoneTitles; what is kept is its number, its counts and the
-  # title's hash.
-  defp milestone(repo, %{
-         "number" => n,
-         "title" => t,
-         "open_issues" => open,
-         "closed_issues" => closed
-       }),
-       do: shown(repo, n, t, open, closed)
+  # The milestone's number, from an issue as GitHub's REST or GraphQL
+  # answer gives it. Its counts there are not used: REST's take in the
+  # milestone's pull requests.
+  defp milestone(%{"number" => n}) when is_integer(n) and n > 0, do: n
+  defp milestone(_), do: nil
 
-  defp milestone(repo, %{
-         "number" => n,
-         "title" => t,
-         "openIssueCount" => open,
-         "closedIssueCount" => closed
-       }),
-       do: shown(repo, n, t, open, closed)
+  # Reads, oldest first, the counts of each milestone with no fresh read,
+  # one call for each repository's milestones together, within what is
+  # left of the check's calls.
+  defp read_counts(keys, reads, at, calls) do
+    jobs =
+      keys
+      |> Enum.reject(&fresh?(reads[&1], at))
+      |> Enum.group_by(fn {:counts, repo, _} -> repo end, fn {:counts, _, n} -> n end)
+      |> Enum.map(fn {repo, numbers} -> {:counts, repo, numbers} end)
+      |> Enum.sort_by(fn job ->
+        job |> kept_keys() |> Enum.map(&read_at(&1, reads)) |> Enum.min()
+      end)
+      |> Enum.take(max(calls, 0))
 
-  defp milestone(_repo, _), do: nil
-
-  defp shown(repo, n, title, open, closed)
-       when is_integer(n) and is_binary(title) and is_integer(open) and is_integer(closed) and
-              open >= 0 and closed >= 0 do
-    MilestoneTitles.put(repo, n, title)
-
-    %{
-      repo: repo,
-      number: n,
-      done: closed,
-      total: open + closed,
-      title_hash: :erlang.phash2(title)
-    }
+    if jobs == [], do: reads, else: Map.merge(reads, read_all(jobs, reads, at))
   end
 
-  defp shown(_repo, _n, _title, _open, _closed), do: nil
+  # Each milestone's own counts of its issues, done and in all, and its
+  # title, which goes only to MilestoneTitles: [{{:counts, repo, n},
+  # {%{done, total, rev} or nil, at}}]. GitHub's totals only, never a list
+  # of issues. One query for the repository, each milestone a variable.
+  defp counts(repo, numbers, reads, at) do
+    numbers = Enum.with_index(numbers)
+    [owner, name] = String.split(repo, "/", parts: 2)
+
+    query = """
+    query($owner: String!, $name: String!#{Enum.map_join(numbers, fn {_, i} -> ", $m#{i}: Int!" end)}) {
+      repository(owner: $owner, name: $name) {
+        #{Enum.map_join(numbers, "\n", fn {_, i} -> "m#{i}: milestone(number: $m#{i}) { title closed: issues(states: CLOSED) { totalCount } all: issues { totalCount } }" end)}
+      }
+    }
+    """
+
+    vars =
+      ["-f", "owner=" <> owner, "-f", "name=" <> name] ++
+        Enum.flat_map(numbers, fn {n, i} -> ["-F", "m#{i}=#{n}"] end)
+
+    with {:ok, text} <-
+           Cmd.run("gh", ["api", "graphql", "-f", "query=" <> query | vars], timeout: @read_ms),
+         {:ok, %{"data" => %{"repository" => %{} = got}}} <- Jason.decode(text) do
+      for {n, i} <- numbers, do: {{:counts, repo, n}, {issue_counts(repo, n, got["m#{i}"]), at}}
+    else
+      _ -> failed(kept_keys({:counts, repo, Enum.map(numbers, &elem(&1, 0))}), reads, at)
+    end
+  end
+
+  defp issue_counts(repo, n, %{
+         "title" => title,
+         "closed" => %{"totalCount" => done},
+         "all" => %{"totalCount" => total}
+       })
+       when is_binary(title) and is_integer(done) and is_integer(total) and done >= 0 and
+              total >= done,
+       do: %{done: done, total: total, rev: MilestoneTitles.put(repo, n, title)}
+
+  # No such milestone now, or an answer not of that shape.
+  defp issue_counts(_repo, _n, _), do: nil
 
   # The last answer, or nil (unknown) when there was none.
   defp last_value({value, _}), do: value
   defp last_value(_), do: nil
 
   # The first issue in the same repository that an open pull request from
-  # each branch closes, and its milestone: [{key, {number or nil, at}}] and
-  # the same for {:milestone, key}. One query for the repository, each
-  # branch a variable.
+  # each branch closes, and the number of its milestone: [{key, {number or
+  # nil, at}}] and the same for {:milestone, key}. One query for the
+  # repository, each branch a variable.
   defp closing(repo, names, reads, at) do
     names = Enum.with_index(names)
     [owner, name] = String.split(repo, "/", parts: 2)
@@ -384,7 +447,7 @@ defmodule Wallboard.Sources.SessionIssues do
     query = """
     query($owner: String!, $name: String!#{Enum.map_join(names, fn {_, i} -> ", $b#{i}: String!" end)}) {
       repository(owner: $owner, name: $name) {
-        #{Enum.map_join(names, "\n", fn {_, i} -> "b#{i}: pullRequests(headRefName: $b#{i}, states: OPEN, first: 5) { nodes { headRepository { nameWithOwner } closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } milestone { number title openIssueCount closedIssueCount } } } } }" end)}
+        #{Enum.map_join(names, "\n", fn {_, i} -> "b#{i}: pullRequests(headRefName: $b#{i}, states: OPEN, first: 5) { nodes { headRepository { nameWithOwner } closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } milestone { number } } } } }" end)}
       }
     }
     """
@@ -405,12 +468,12 @@ defmodule Wallboard.Sources.SessionIssues do
     Enum.flat_map(names, fn {b, i} ->
       key = {:branch, repo, b}
 
-      {value, milestone} =
-        if answer,
-          do: first_closed(answer["b#{i}"], repo) || {nil, nil},
-          else: {kept(key, reads), kept_milestone(key, reads)}
-
-      [{key, {value, at}}, {{:milestone, key}, {milestone, at}}]
+      if answer do
+        {value, milestone} = first_closed(answer["b#{i}"], repo) || {nil, nil}
+        [{key, {value, at}}, {{:milestone, key}, {milestone, at}}]
+      else
+        failed(kept_keys(key), reads, at)
+      end
     end)
   end
 
@@ -422,7 +485,7 @@ defmodule Wallboard.Sources.SessionIssues do
         (get_in(pr, ["closingIssuesReferences", "nodes"]) || [])
         |> Enum.find_value(fn
           %{"number" => n, "repository" => %{"nameWithOwner" => name}} = issue ->
-            if same_repo?(name, repo), do: {n, milestone(repo, issue["milestone"])}
+            if same_repo?(name, repo), do: {n, milestone(issue["milestone"])}
 
           _ ->
             nil

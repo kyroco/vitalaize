@@ -143,7 +143,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
 
   test "a milestone line goes as soon as the last card on it does" do
     view = open_board()
-    one = milestone(11, 3, 8, "Project tab: 1", ["main:a", "main:b"])
+    one = milestone("acme/shop", 11, 3, 8, "Project tab: 1", ["main:a", "main:b"])
     assert lines(tell(view, [one], [card("a"), card("b")])) == ["Project tab: 1 · 3 of 8 done"]
     assert lines(tell(view, [one], [card("b")])) == ["Project tab: 1 · 3 of 8 done"]
 

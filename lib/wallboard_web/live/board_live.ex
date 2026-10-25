@@ -484,10 +484,20 @@ defmodule WallboardWeb.BoardLive do
       idle: idle,
       session_count: length(sessions),
       repo_of: repo_of,
-      # The milestones live sessions' issues are in, numbers only: each
-      # title is looked up as the line is drawn (see milestone_title/1).
-      milestones: (socket.assigns[:session_issues] || %{})[:milestones] || []
+      milestones: live_milestones(socket.assigns[:session_issues], sessions)
     )
+  end
+
+  # The milestones live sessions' issues are in, numbers only: each title
+  # is looked up as the line is drawn (see milestone_title/1). A milestone
+  # goes as soon as no card on the board is on it, without waiting for the
+  # issue finder's next check.
+  defp live_milestones(facts, sessions) do
+    live = MapSet.new(sessions, & &1[:key])
+
+    for m <- (facts || %{})[:milestones] || [],
+        Enum.any?(m.sessions, &MapSet.member?(live, &1)),
+        do: m
   end
 
   # A milestone's title, from Wallboard.MilestoneTitles, never from the
@@ -495,6 +505,11 @@ defmodule WallboardWeb.BoardLive do
   # its number.
   defp milestone_title(m),
     do: Wallboard.MilestoneTitles.get(m.repo, m.number) || "Milestone #{m.number}"
+
+  # Lines from more than one repository each name theirs, so two
+  # milestones of the same name never read alike.
+  defp milestone_repos?(milestones),
+    do: milestones |> Enum.uniq_by(& &1.repo) |> length() > 1
 
   # "#1418" for an issue in the session's own repository, "vendor/lib#12"
   # for one in another, so the number never reads as the wrong issue.
@@ -1363,7 +1378,7 @@ defmodule WallboardWeb.BoardLive do
       <%= if @tab == :live do %>
         <%!-- How far down each milestone being worked is, one line each. --%>
         <p :for={m <- @milestones} class="milestone-line">
-          {milestone_title(m)} · {m.done} of {m.total} done
+          {if milestone_repos?(@milestones), do: "#{m.repo} · "}{milestone_title(m)} · {m.done} of {m.total} done
         </p>
         <%!-- Every session gets a full card, needs-you first. When there are
              more than fit, the cards scroll rather than hide. --%>
