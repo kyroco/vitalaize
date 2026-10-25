@@ -493,13 +493,22 @@ defmodule WallboardWeb.BoardLive do
   # only what kind of error it was, and the facts go back to the last ones
   # that worked, so the next tick does not fail on the same ones. Before
   # any have worked, that is none, which the page draws as not read yet.
+  # When those cannot be drawn either, the page draws no repositories.
   defp derive_github(socket) do
     show_github(socket, socket.assigns.github)
   rescue
     e ->
       Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
       good = socket.assigns[:github_good]
-      socket |> assign(github: good) |> show_github(good)
+      socket = assign(socket, github: good)
+
+      try do
+        show_github(socket, good)
+      rescue
+        e ->
+          Logger.error("The board could not draw its last GitHub facts: #{inspect(e.__struct__)}")
+          assign(socket, git: [], git_columns: [], git_quiet: [], gh: nil)
+      end
   end
 
   defp show_github(socket, facts) do
