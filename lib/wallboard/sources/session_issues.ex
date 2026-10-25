@@ -46,7 +46,9 @@ defmodule Wallboard.Sources.SessionIssues do
   def fingerprint(facts), do: facts
 
   # Every live session the board shows: this machine's Claude and Codex
-  # sessions, and those a collector streams from another machine.
+  # sessions, and those a collector streams from another machine. As on the
+  # board (BoardLive.derive_sessions/1), a session shows once, and this
+  # machine's own copy comes first.
   defp live_sessions do
     local =
       for name <- [:claude, :codex],
@@ -57,8 +59,11 @@ defmodule Wallboard.Sources.SessionIssues do
               branch: GitRemote.branch(s[:cwd])
             })
 
+    local_ids = MapSet.new(local, & &1[:session_id])
+
     stream =
       for s <- Wallboard.Link.Sessions.cards(),
+          not MapSet.member?(local_ids, s[:session_id]),
           do: Map.merge(s, %{repo: s[:gh_repo], branch: s[:branch]})
 
     local ++ stream
