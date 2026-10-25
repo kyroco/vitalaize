@@ -452,15 +452,21 @@ defmodule WallboardWeb.BoardLive do
     {sessions, repo_of} =
       Enum.map_reduce(sessions, socket.assigns.repo_of, fn s, known ->
         cwd = s[:cwd]
-        known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
-        # A streamed session names its own repository: its folder is on
-        # another machine.
+
+        known =
+          if Map.has_key?(known, cwd),
+            do: known,
+            else: Map.put(known, cwd, Wallboard.GitRemote.github_repo(cwd))
+
         # Keyed by the card's own key: a streamed one names its machine.
         found = issues[s[:key]] || %{}
 
+        # A streamed session names its own repository: its folder is on
+        # another machine.
         s =
           Map.merge(s, %{
-            repo: s[:repo] || known[cwd],
+            repo: s[:repo] || short_repo(known[cwd]),
+            gh_repo: s[:gh_repo] || known[cwd],
             issue: found[:number],
             issue_repo: found[:repo]
           })
@@ -483,22 +489,20 @@ defmodule WallboardWeb.BoardLive do
 
   # "#1418" for an issue in the session's own repository, "vendor/lib#12"
   # for one in another, so the number never reads as the wrong issue.
+  # The whole owner/name is compared, without regard to capitals: a fork's
+  # upstream has the fork's name.
   defp issue_label(%{issue: n} = s) do
-    own = s[:repo] && String.downcase(s.repo)
     repo = s[:issue_repo]
+    own = s[:gh_repo]
 
-    if is_nil(repo) or repo |> String.split("/") |> List.last() |> String.downcase() == own,
+    if is_nil(repo) or (is_binary(own) and String.downcase(repo) == String.downcase(own)),
       do: "##{n}",
       else: "#{repo}##{n}"
   end
 
-  # "api" for a folder in acme/api, or nil outside a GitHub checkout.
-  defp repo_of(cwd) do
-    case Wallboard.GitRemote.github_repo(cwd) do
-      nil -> nil
-      repo -> repo |> String.split("/") |> List.last()
-    end
-  end
+  # "api" for acme/api.
+  defp short_repo(nil), do: nil
+  defp short_repo(repo), do: repo |> String.split("/") |> List.last()
 
   # Every repository, the ones with a column on the Git tab and the quiet
   # rest, and the first one's summary, which the Dev and Prod tiles read.
