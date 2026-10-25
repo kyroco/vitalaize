@@ -71,7 +71,7 @@ defmodule Wallboard.Sources.SessionIssues do
             Map.merge(s, %{
               repo: GitRemote.github_repo(s[:cwd]),
               branch: GitRemote.branch(s[:cwd]),
-              issue_ref: s[:issue_ref] || named[s[:session_id]][:issue],
+              issue_refs: s[:issue_refs] || named[s[:session_id]][:issues] || [],
               local?: true
             })
 
@@ -88,14 +88,14 @@ defmodule Wallboard.Sources.SessionIssues do
   # ---------------------------------------------------------------------------
   # Matching
 
-  # What to ask GitHub about a session, in order: the issue its prompts
+  # What to ask GitHub about a session, in order: the issues its prompts
   # named, then its branch's pull requests. Only names fit to send.
   defp keys(s) do
     named =
-      case s[:issue_ref] do
-        %{number: n} = ref when is_integer(n) and n > 0 -> [{:issue, ref[:repo] || s[:repo], n}]
-        _ -> []
-      end
+      for %{number: n} = ref <- List.wrap(s[:issue_refs]),
+          is_integer(n),
+          n > 0,
+          do: {:issue, ref[:repo] || s[:repo], n}
 
     branch = if is_binary(s[:branch]), do: [{:branch, s[:repo], s.branch}], else: []
 
@@ -105,7 +105,7 @@ defmodule Wallboard.Sources.SessionIssues do
   @doc """
   The issue each session is on, from what GitHub says and what was read in
   the last two minutes: `{facts, memory}`. `sessions` are maps with
-  `session_id`, `issue_ref` (`%{repo, number}`, what its prompts named),
+  `session_id`, `issue_refs` (`[%{repo, number}]`, what its prompts named),
   `repo` (`owner/name`) and `branch`; `memory` holds each read and when it
   was made.
   """
@@ -120,8 +120,9 @@ defmodule Wallboard.Sources.SessionIssues do
           keys != [],
           do: {s, keys}
 
-    # A session has at most two keys, so two rounds settle every one.
-    reads = settle(wants, reads, at, 2)
+    # A session has at most four keys (three named, one branch), so four
+    # rounds settle every one.
+    reads = settle(wants, reads, at, 4)
 
     sessions =
       for {s, keys} <- wants,

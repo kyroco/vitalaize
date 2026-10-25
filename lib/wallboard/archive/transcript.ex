@@ -37,9 +37,9 @@ defmodule Wallboard.Archive.Transcript do
       titles: %{},
       first_prompt: nil,
       last_prompt: nil,
-      # The issue the first prompt that names one names, as
-      # %{repo, number} (see Wallboard.IssueRef): no prompt text.
-      issue: nil,
+      # The first issues prompts name, as %{repo, number}, in order (see
+      # Wallboard.IssueRef): no prompt text.
+      issues: [],
       requests: %{},
       # The id of the request the latest reply line added or changed.
       last_request: nil,
@@ -259,7 +259,7 @@ defmodule Wallboard.Archive.Transcript do
           t
           | prompts: t.prompts + 1,
             first_prompt: t.first_prompt || clip(text),
-            issue: t.issue || Wallboard.IssueRef.find(text)
+            issues: Wallboard.IssueRef.keep(t.issues, text)
         }
 
       true ->

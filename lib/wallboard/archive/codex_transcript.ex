@@ -404,7 +404,7 @@ defmodule Wallboard.Archive.CodexTranscript do
       | prompts: t.prompts + 1,
         first_prompt: t.first_prompt || clip(text),
         last_prompt: clip(text),
-        issue: t.issue || Wallboard.IssueRef.find(text)
+        issues: Wallboard.IssueRef.keep(t.issues, text)
     }
   end
 

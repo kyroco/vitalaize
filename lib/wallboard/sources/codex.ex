@@ -528,8 +528,8 @@ defmodule Wallboard.Sources.Codex do
       started_by: started_by(t.originator),
       status: status,
       task: short_prompt(t.last_prompt) || t.cwd,
-      # The issue the first prompt that names one names (Wallboard.IssueRef).
-      issue_ref: t[:issue],
+      # The first issues the prompts name, in order (Wallboard.IssueRef).
+      issue_refs: t[:issues] || [],
       why: why,
       waiting_kind: waiting_kind,
       waiting_tool: waiting_tool,

@@ -180,7 +180,7 @@ defmodule Wallboard.Collector.Filter do
     :effort,
     :version,
     :entrypoint,
-    :issue
+    :issues
   ]
 
   @doc """
@@ -500,11 +500,9 @@ defmodule Wallboard.Collector.Filter do
 
   defp summary(t, s) do
     {repo, s} = repo(t.cwd, s)
-    {issue_repo, issue_number} = issue(t[:issue])
 
     body = %Proto.Summary{
-      issue_repo: issue_repo,
-      issue_number: issue_number,
+      issues: Enum.flat_map(t[:issues] || [], &issue/1),
       title: text(t.titles[:custom] || t.titles[:agent] || s.ctx[:title] || t.titles[:ai]),
       first_prompt: text(t.first_prompt),
       last_prompt: text(t.last_prompt),
@@ -521,15 +519,16 @@ defmodule Wallboard.Collector.Filter do
     {body, s}
   end
 
-  # The issue a prompt named, as numbers and a name only (Wallboard.IssueRef):
-  # a linked repository that is not a GitHub name is sent as no issue.
-  defp issue(%{repo: nil, number: n}) when is_integer(n) and n > 0, do: {"", n}
+  # An issue a prompt named, as a number and a name only (Wallboard.IssueRef):
+  # one linked in a repository that is not a GitHub name is left out.
+  defp issue(%{repo: nil, number: n}) when is_integer(n) and n > 0,
+    do: [%Proto.IssueRef{repo: "", number: n}]
 
   defp issue(%{repo: repo, number: n}) when is_integer(n) and n > 0 do
-    if Wallboard.RepoPrompts.name?(repo), do: {repo, n}, else: {"", 0}
+    if Wallboard.RepoPrompts.name?(repo), do: [%Proto.IssueRef{repo: repo, number: n}], else: []
   end
 
-  defp issue(_), do: {"", 0}
+  defp issue(_), do: []
 
   # Asked again only when the folder changes: it reads the folder's git
   # config. Only for a whole path, so a made-up folder never points it at

@@ -258,7 +258,7 @@ defmodule Wallboard.Link.Session do
         repo: sum.repo |> blank() |> repo_name(),
         gh_repo: blank(sum.repo),
         branch: blank(sum.branch),
-        issue_ref: issue_ref(sum),
+        issue_refs: issue_refs(sum),
         status: status,
         task: short(sum.last_prompt) || blank(sum.folder),
         why: if(status == :needs, do: why(s.status)),
@@ -497,17 +497,27 @@ defmodule Wallboard.Link.Session do
 
   defp why(%{why: why}), do: Map.get(@waiting_words, why, "Waiting on you")
 
-  # The issue the session's prompts named, as its collector sent it: a
+  # The issues the session's prompts named, as its collector sent them: a
   # repository only when the prompt linked one (see Wallboard.IssueRef).
-  defp issue_ref(%{issue_number: n, issue_repo: repo}) when n in 1..999_999_999 do
-    cond do
-      repo in [nil, ""] -> %{repo: nil, number: n}
-      Wallboard.RepoPrompts.name?(repo) -> %{repo: repo, number: n}
-      true -> nil
-    end
+  # What is not an issue reference is left out, and only the first three
+  # count.
+  defp issue_refs(%{issues: refs}) when is_list(refs) do
+    refs
+    |> Enum.flat_map(fn
+      %Proto.IssueRef{repo: repo, number: n} when n in 1..999_999_999 ->
+        cond do
+          repo in [nil, ""] -> [%{repo: nil, number: n}]
+          Wallboard.RepoPrompts.name?(repo) -> [%{repo: repo, number: n}]
+          true -> []
+        end
+
+      _ ->
+        []
+    end)
+    |> Enum.take(3)
   end
 
-  defp issue_ref(_), do: nil
+  defp issue_refs(_), do: []
 
   defp repo_name(nil), do: nil
   defp repo_name(repo), do: repo |> String.split("/") |> List.last()

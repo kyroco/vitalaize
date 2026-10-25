@@ -88,8 +88,8 @@ defmodule Wallboard.Sources.Usage do
       first_at: nil,
       last_at: nil,
       ended: false,
-      # The issue the first prompt that names one names (Wallboard.IssueRef).
-      issue: nil
+      # The first issues prompts name, in order (Wallboard.IssueRef).
+      issues: []
     }
   end
 
@@ -129,7 +129,8 @@ defmodule Wallboard.Sources.Usage do
   end
 
   # Only lines that can matter are decoded: model replies with usage, tool
-  # results that carry a patch, and prompts until one names an issue. The
+  # results that carry a patch, and prompts until the first few issues are
+  # named. The
   # rest (often large) are skipped.
   defp parse_line(line, state) do
     cond do
@@ -146,11 +147,13 @@ defmodule Wallboard.Sources.Usage do
           _ -> state
         end
 
-      # Prompts only until one names an issue.
-      state.issue == nil and :binary.match(line, ~s("type":"user")) != :nomatch ->
+      # Prompts only until the first few issues are named.
+      not Wallboard.IssueRef.full?(state.issues) and
+          :binary.match(line, ~s("type":"user")) != :nomatch ->
         case Jason.decode(line) do
           {:ok, %{} = entry} ->
-            %{state | issue: Wallboard.IssueRef.find(Wallboard.Archive.Transcript.prompt(entry))}
+            text = Wallboard.Archive.Transcript.prompt(entry)
+            %{state | issues: Wallboard.IssueRef.keep(state.issues, text)}
 
           _ ->
             state
@@ -277,7 +280,7 @@ defmodule Wallboard.Sources.Usage do
          context: main.last && main.last.context,
          context_pct: main.last && window && round(main.last.context * 100 / window),
          added: Enum.sum(Enum.map(group, & &1.added)),
-         issue: main[:issue],
+         issues: main[:issues] || [],
          removed: Enum.sum(Enum.map(group, & &1.removed)),
          subagents:
            subs
