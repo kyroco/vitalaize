@@ -280,6 +280,17 @@ defmodule Wallboard.SessionIssuesTest do
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
     end
 
+    test "this machine's sessions are read before streamed ones when more calls are due than one check makes",
+         c do
+      at = DateTime.to_unix(@now)
+      mine = named("mine", 1418, local?: true)
+      streamed = for n <- 2001..2010, do: named("s#{n}", n)
+      reads = %{{:issue, "acme/shop", 1418} => {true, at - 130}}
+
+      SessionIssues.match(streamed ++ [mine], %{reads: reads}, @now)
+      assert "api repos/acme/shop/issues/1418" in calls(c)
+    end
+
     test "a read that fails keeps what was read before", c do
       sessions = [named("a", 1418), session("b", name: "checkout", branch: "feature/checkout")]
 
