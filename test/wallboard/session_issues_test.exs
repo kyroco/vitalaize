@@ -57,7 +57,7 @@ defmodule Wallboard.SessionIssuesTest do
       echo "{\\"data\\": {\\"repository\\": {$out}}}"
       exit 0
     fi
-    if [ -f "$WALLBOARD_TEST_GH/down" ]; then
+    if [ -f "$WALLBOARD_TEST_GH/down" ] || [ -f "$WALLBOARD_TEST_GH/rest_down" ]; then
       echo "gh: Something went wrong (HTTP 502)" >&2; exit 1
     fi
     case "$2" in
@@ -263,6 +263,21 @@ defmodule Wallboard.SessionIssuesTest do
             do: String.to_integer(n)
 
       assert Enum.sort(asked) == Enum.to_list(2005..2012)
+    end
+
+    test "a first read of a named issue that fails leaves the session waiting, not on its branch's issue",
+         c do
+      s = named("s1", 1418, branch: "feature/checkout")
+      File.write!(Path.join(c.dir, "rest_down"), "")
+
+      {facts, memory} = SessionIssues.match([s], %{}, @now)
+      assert facts == %{sessions: %{}}
+      refute Enum.any?(calls(c), &(&1 =~ "graphql"))
+
+      # Two minutes on, GitHub answers again.
+      File.rm!(Path.join(c.dir, "rest_down"))
+      {facts, _} = SessionIssues.match([s], memory, later(130))
+      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
     end
 
     test "a read that fails keeps what was read before", c do
