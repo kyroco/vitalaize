@@ -70,4 +70,20 @@ defmodule Wallboard.BoardSessionIssuesTest do
 
     refute none =~ "sc-issue"
   end
+
+  test "an issue in another repository than the session's names its repository" do
+    socket = socket([session("aaaa1111", "login")])
+    facts = %{sessions: %{"aaaa1111" => %{repo: "vendor/lib", number: 12}}}
+
+    {:noreply, socket} =
+      BoardLive.handle_info({:source, :session_issues, facts, %{error: nil}}, socket)
+
+    [card] = socket.assigns.working
+    html = render_component(&BoardLive.session_card/1, s: card)
+    assert html =~ ~r{class="sc-issue"[^>]*>\s*vendor/lib#12\s*<}
+
+    # The session's own repository, in any capitals, is left out.
+    own = Map.merge(session("b", "notes"), %{issue: 7, issue_repo: "Acme/SHOP"})
+    assert render_component(&BoardLive.session_card/1, s: own) =~ ~r{>\s*#7\s*<}
+  end
 end
