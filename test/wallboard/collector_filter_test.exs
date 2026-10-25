@@ -518,17 +518,22 @@ defmodule Wallboard.CollectorFilterTest do
           &(line.(&1) <> "\n")
         )
 
-      assert %Proto.Summary{issue_repo: "acme/shop", issue_number: 1418} =
+      assert %Proto.Summary{
+               issues: [
+                 %Proto.IssueRef{repo: "acme/shop", number: 1418},
+                 %Proto.IssueRef{repo: "", number: 1300}
+               ]
+             } =
                last(events(claude_ctx(), linked), :summary)
 
       bare = line.("work on #77") <> "\n"
 
-      assert %Proto.Summary{issue_repo: "", issue_number: 77} =
+      assert %Proto.Summary{issues: [%Proto.IssueRef{repo: "", number: 77}]} =
                last(events(claude_ctx(), bare), :summary)
 
       none = line.("hey") <> "\n"
 
-      assert %Proto.Summary{issue_repo: "", issue_number: 0} =
+      assert %Proto.Summary{issues: []} =
                last(events(claude_ctx(), none), :summary)
     end
 
@@ -539,7 +544,7 @@ defmodule Wallboard.CollectorFilterTest do
           message: %{role: "user", content: "https://github.com/../x/issues/5"}
         })
 
-      assert %Proto.Summary{issue_repo: "", issue_number: 0} =
+      assert %Proto.Summary{issues: []} =
                last(events(claude_ctx(), line <> "\n"), :summary)
     end
 

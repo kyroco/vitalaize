@@ -101,7 +101,8 @@ defmodule Wallboard.SessionIssuesTest do
   defp later(s), do: DateTime.add(@now, s)
 
   # A session whose prompts named #n in its own repository.
-  defp named(id, n, fields \\ []), do: session(id, [issue_ref: %{repo: nil, number: n}] ++ fields)
+  defp named(id, n, fields \\ []),
+    do: session(id, [issue_refs: [%{repo: nil, number: n}]] ++ fields)
 
   describe "match/3" do
     test "the issue a prompt named, when it is an issue here, numbers only", c do
@@ -115,8 +116,8 @@ defmodule Wallboard.SessionIssuesTest do
       ref = %{repo: "acme/shop", number: 1418}
 
       sessions = [
-        session("a", repo: "acme/other", issue_ref: ref),
-        %{session_id: "b", issue_ref: ref}
+        session("a", repo: "acme/other", issue_refs: [ref]),
+        %{session_id: "b", issue_refs: [ref]}
       ]
 
       {facts, _} = SessionIssues.match(sessions, %{}, @now)
@@ -196,7 +197,7 @@ defmodule Wallboard.SessionIssuesTest do
         named("a", 1418, repo: "../.."),
         named("b", 1418, repo: "acme/.."),
         named("c", 1418, repo: "acme/shop\n"),
-        session("d", issue_ref: %{repo: "../..", number: 1418})
+        session("d", issue_refs: [%{repo: "../..", number: 1418}])
       ]
 
       assert {%{sessions: none}, _} = SessionIssues.match(sessions, %{}, @now)
@@ -206,7 +207,7 @@ defmodule Wallboard.SessionIssuesTest do
 
     test "a session with no repository, or no issue named and no branch, asks nothing", c do
       sessions = [
-        %{session_id: "x", issue_ref: %{repo: nil, number: 1418}},
+        %{session_id: "x", issue_refs: [%{repo: nil, number: 1418}]},
         named("y", 1418, repo: "not a repo"),
         session("z", name: "checkout")
       ]
@@ -319,6 +320,20 @@ defmodule Wallboard.SessionIssuesTest do
       assert length(calls(c)) == 4
     end
 
+    test "the first of the named numbers that is an issue here wins", c do
+      refs = [
+        %{repo: nil, number: 333_333},
+        %{repo: nil, number: 1418},
+        %{repo: nil, number: 1419}
+      ]
+
+      s = session("s1", issue_refs: refs)
+
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      refute Enum.any?(calls(c), &(&1 =~ "issues/1419"))
+    end
+
     test "a read that fails keeps what was read before", c do
       sessions = [named("a", 1418), session("b", name: "checkout", branch: "feature/checkout")]
 
@@ -403,7 +418,7 @@ defmodule Wallboard.SessionIssuesTest do
       )
 
       start_supervised!(
-        {FakePoller, {:usage, %{sessions: %{"s1" => %{issue: %{repo: nil, number: 1418}}}}}}
+        {FakePoller, {:usage, %{sessions: %{"s1" => %{issues: [%{repo: nil, number: 1418}]}}}}}
       )
 
       assert {:ok, facts, memory} = SessionIssues.poll(nil, nil, nil, @now)
@@ -414,7 +429,13 @@ defmodule Wallboard.SessionIssuesTest do
     test "a Codex session on this machine takes its issue from its card", c do
       folder = checkout(c, "main")
 
-      card = %{session_id: "t1", name: "fix", cwd: folder, issue_ref: %{repo: nil, number: 1419}}
+      card = %{
+        session_id: "t1",
+        name: "fix",
+        cwd: folder,
+        issue_refs: [%{repo: nil, number: 1419}]
+      }
+
       start_supervised!({FakePoller, {:codex, %{sessions: [card]}}})
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
@@ -429,7 +450,7 @@ defmodule Wallboard.SessionIssuesTest do
       )
 
       start_supervised!(
-        {FakePoller, {:usage, %{sessions: %{"s1" => %{issue: %{repo: nil, number: 1418}}}}}}
+        {FakePoller, {:usage, %{sessions: %{"s1" => %{issues: [%{repo: nil, number: 1418}]}}}}}
       )
 
       # A collector streams the same session, and a session of its own.
@@ -438,8 +459,8 @@ defmodule Wallboard.SessionIssuesTest do
       start_supervised!(
         {FakeStream,
          [
-           %{session_id: "s1", name: "login", gh_repo: "acme/shop", issue_ref: other},
-           %{session_id: "s2", name: "away", gh_repo: "acme/shop", issue_ref: other}
+           %{session_id: "s1", name: "login", gh_repo: "acme/shop", issue_refs: [other]},
+           %{session_id: "s2", name: "away", gh_repo: "acme/shop", issue_refs: [other]}
          ]}
       )
 

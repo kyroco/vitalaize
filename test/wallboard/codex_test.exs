@@ -301,10 +301,10 @@ defmodule Wallboard.CodexTest do
 
     test "the card carries the issue the session's prompts named" do
       t = Map.merge(running_tally(), %{mtime: at(40), path: "p"})
-      assert Codex.card(t, [], "Fix it", at(45)).issue_ref == nil
+      assert Codex.card(t, [], "Fix it", at(45)).issue_refs == []
 
-      named = Map.put(t, :issue, %{repo: nil, number: 1418})
-      assert Codex.card(named, [], "Fix it", at(45)).issue_ref == %{repo: nil, number: 1418}
+      named = Map.put(t, :issues, [%{repo: nil, number: 1418}])
+      assert Codex.card(named, [], "Fix it", at(45)).issue_refs == [%{repo: nil, number: 1418}]
     end
 
     test "the card shows needs you, why, and since when" do

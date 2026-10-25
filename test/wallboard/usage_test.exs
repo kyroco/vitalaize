@@ -19,20 +19,20 @@ defmodule Wallboard.Sources.UsageTest do
     chunk = Enum.map_join(["hey", "work on #1418", "then #1300"], "\n", prompt)
 
     s = Usage.parse_lines(Usage.empty_stats(), chunk)
-    assert s.issue == %{repo: nil, number: 1418}
+    assert s.issues == [%{repo: nil, number: 1418}, %{repo: nil, number: 1300}]
 
     # Read in two pieces: a later prompt does not replace it.
     later = Usage.parse_lines(Usage.parse_lines(Usage.empty_stats(), prompt.("#7")), chunk)
-    assert later.issue == %{repo: nil, number: 7}
+    assert Enum.map(later.issues, & &1.number) == [7, 1418, 1300]
 
     file =
       Map.merge(s, %{kind: :main, session_id: "s1", meta: nil, mtime: System.os_time(:second)})
 
     facts = Usage.summarize(%{"s1.jsonl" => file}, Settings.defaults(), DateTime.utc_now())
-    assert facts.sessions["s1"].issue == %{repo: nil, number: 1418}
+    assert facts.sessions["s1"].issues == s.issues
 
     # The real transcript names none.
-    assert stats().issue == nil
+    assert stats().issues == []
   end
 
   test "a reply split over several lines is counted once, by request id" do

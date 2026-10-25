@@ -37,6 +37,18 @@ defmodule Wallboard.IssueRefTest do
              %{repo: "acme/shop", number: 9}
   end
 
+  test "every reference in a prompt, in order, and never number 0" do
+    assert IssueRef.find_all("color #333333, then work on #1418 and issue 1419") == [
+             %{repo: nil, number: 333_333},
+             %{repo: nil, number: 1418},
+             %{repo: nil, number: 1419}
+           ]
+
+    assert IssueRef.find_all("#000 and issue 0") == []
+    assert IssueRef.find("#000 then #12") == %{repo: nil, number: 12}
+    assert IssueRef.find_all(nil) == []
+  end
+
   test "a number that is not written as an issue names none" do
     for text <- [
           "fix the 3 failing tests",

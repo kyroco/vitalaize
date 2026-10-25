@@ -37,17 +37,24 @@ defmodule Wallboard.IssuePromptTest do
   for {reader, read} <- [{"Claude", :claude}, {"Codex", :codex}] do
     test "#{reader}: the first prompt that names an issue sets it, and a later one does not replace it" do
       t = unquote(read)(["hey", "look around first", "now work on #1418", "then #1300"])
-      assert t.issue == %{repo: nil, number: 1418}
+
+      # Both are kept, in order: the first that is an issue wins.
+      assert t.issues == [%{repo: nil, number: 1418}, %{repo: nil, number: 1300}]
       assert t.prompts == 4
     end
 
     test "#{reader}: a link names its repository" do
       t = unquote(read)(["https://github.com/acme/shop/issues/7 please"])
-      assert t.issue == %{repo: "acme/shop", number: 7}
+      assert t.issues == [%{repo: "acme/shop", number: 7}]
     end
 
     test "#{reader}: prompts that name no issue leave it empty" do
-      assert unquote(read)(["hey", "fix the 3 failing tests"]).issue == nil
+      assert unquote(read)(["hey", "fix the 3 failing tests"]).issues == []
+    end
+
+    test "#{reader}: at most three are kept, the first three named" do
+      t = unquote(read)(["#1 #2", "#3 #4", "#1"])
+      assert Enum.map(t.issues, & &1.number) == [1, 2, 3]
     end
   end
 
@@ -62,6 +69,6 @@ defmodule Wallboard.IssuePromptTest do
       ]
       |> Enum.map_join("\n", &Jason.encode!/1)
 
-    assert Transcript.read_lines(lines).issue == nil
+    assert Transcript.read_lines(lines).issues == []
   end
 end

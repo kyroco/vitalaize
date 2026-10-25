@@ -143,11 +143,11 @@ defmodule Wallboard.LinkSessionTest do
       Session.card(fold(events ++ [status(:working, at: @now)]), true, prices())
     end
 
-    assert read.(["hey", "https://github.com/acme/shop/issues/7"]).issue_ref ==
-             %{repo: "acme/shop", number: 7}
+    assert read.(["hey", "https://github.com/acme/shop/issues/7"]).issue_refs ==
+             [%{repo: "acme/shop", number: 7}]
 
-    assert read.(["work on #1418"]).issue_ref == %{repo: nil, number: 1418}
-    assert read.(["hey"]).issue_ref == nil
+    assert read.(["work on #1418"]).issue_refs == [%{repo: nil, number: 1418}]
+    assert read.(["hey"]).issue_refs == []
   end
 
   test "the card says why it waits: the question, the tool's name, or the kind of wait" do
