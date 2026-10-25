@@ -3,14 +3,15 @@ defmodule Wallboard.Sources.SessionIssues do
   Which issue each live session is on, so its card on the Agents tab can
   show it, as `#1418`. First match wins:
 
-    1. An issue number in the session's name, then one in its branch:
-       `1418-issue`, `robert/1418-short-title`. The first number in each
+    1. A number joined to the word issue, `1418-issue` or `issue-1418`, in
+       the session's name, then in its branch. A number not joined to it,
+       like `robert/1418-short-title`, `phase-2-board` or a date, does not
+       count (Robert, October 24, 2026). The first such number in each
        counts, and the first of those that is an issue in the session's
        repository wins: a pull request or a number with no issue is passed
-       over. A name with a space in it is a title or a prompt, not a name
-       picked for the issue, so its numbers do not count.
-    2. With no number, an open pull request from the session's branch that
-       closes an issue in the same repository.
+       over.
+    2. With no such number, an open pull request from the session's branch
+       that closes an issue in the same repository.
     3. Neither: no issue.
 
   It reads only what live sessions point at, through the signed-in `gh`:
@@ -79,18 +80,17 @@ defmodule Wallboard.Sources.SessionIssues do
   # Matching
 
   @doc """
-  The first issue number standing alone in a session's name, or else in
-  its branch, or nil. A number stands alone when it starts the text or
-  follows `/`, `-`, `_`, `#` or a space, and ends it or comes before one of
-  those: `1418-issue` and `robert/1418-fix-1420` give 1418, while a short
-  id like `4d6407ac` or a version like `v0.4.2` gives nothing. A name with
-  a space in it counts for nothing (see the rules above).
+  The first number joined to the word issue in a session's name, or else
+  in its branch, or nil: `1418-issue`, `issue-1418` and
+  `robert/issue-1418-login` give 1418, in any capitals, while
+  `robert/1418-short-title`, `reissue-5` and `1418-issues` give nothing.
   """
   def number(%{} = session), do: session |> numbers() |> List.first()
 
   def number(text) when is_binary(text) do
-    case Regex.run(~r{(?:^|[/\-_# ])(\d+)(?=$|[/\-_# ])}, text) do
+    case Regex.run(~r{(?<![a-z0-9])(?:issue-(\d+)|(\d+)-issue)(?![a-z0-9])}i, text) do
       [_, digits] -> String.to_integer(digits)
+      [_, "", digits] -> String.to_integer(digits)
       _ -> nil
     end
   end
@@ -99,20 +99,10 @@ defmodule Wallboard.Sources.SessionIssues do
 
   # The numbers to try, in order: the name's, then the branch's.
   defp numbers(session) do
-    [name_number(session), number(session[:branch])]
+    [number(session[:name]), number(session[:branch])]
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
-
-  defp name_number(%{name: name} = session) when is_binary(name) do
-    # A session with no name is named after the start of its id, which can
-    # be all digits; Codex and streamed sessions are named from a title or
-    # their first prompt, which have spaces.
-    id? = is_binary(session[:session_id]) and String.starts_with?(session.session_id, name)
-    if id? or name =~ ~r/\s/, do: nil, else: number(name)
-  end
-
-  defp name_number(_), do: nil
 
   # What to ask GitHub about a session, in order: each of its numbers, or,
   # with no number, its branch's pull requests.
