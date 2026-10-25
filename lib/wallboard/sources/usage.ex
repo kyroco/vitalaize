@@ -80,7 +80,17 @@ defmodule Wallboard.Sources.Usage do
 
   @doc "The part of a file's state that parsing lines builds up."
   def empty_stats do
-    %{requests: %{}, added: 0, removed: 0, last: nil, first_at: nil, last_at: nil, ended: false}
+    %{
+      requests: %{},
+      added: 0,
+      removed: 0,
+      last: nil,
+      first_at: nil,
+      last_at: nil,
+      ended: false,
+      # The issue the first prompt that names one names (Wallboard.IssueRef).
+      issue: nil
+    }
   end
 
   # Reads from where we stopped to the last complete line.
@@ -118,8 +128,9 @@ defmodule Wallboard.Sources.Usage do
     |> Enum.reduce(state, &parse_line/2)
   end
 
-  # Only lines that can matter are decoded: model replies with usage, and
-  # tool results that carry a patch. The rest (often large) are skipped.
+  # Only lines that can matter are decoded: model replies with usage, tool
+  # results that carry a patch, and prompts until one names an issue. The
+  # rest (often large) are skipped.
   defp parse_line(line, state) do
     cond do
       :binary.match(line, ~s("type":"assistant")) != :nomatch and
@@ -133,6 +144,16 @@ defmodule Wallboard.Sources.Usage do
         case Jason.decode(line) do
           {:ok, entry} -> add_patch(state, entry)
           _ -> state
+        end
+
+      # Prompts only until one names an issue.
+      state.issue == nil and :binary.match(line, ~s("type":"user")) != :nomatch ->
+        case Jason.decode(line) do
+          {:ok, %{} = entry} ->
+            %{state | issue: Wallboard.IssueRef.find(Wallboard.Archive.Transcript.prompt(entry))}
+
+          _ ->
+            state
         end
 
       true ->
@@ -256,6 +277,7 @@ defmodule Wallboard.Sources.Usage do
          context: main.last && main.last.context,
          context_pct: main.last && window && round(main.last.context * 100 / window),
          added: Enum.sum(Enum.map(group, & &1.added)),
+         issue: main[:issue],
          removed: Enum.sum(Enum.map(group, & &1.removed)),
          subagents:
            subs

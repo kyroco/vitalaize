@@ -229,6 +229,20 @@ defmodule Wallboard.Archive.Transcript do
 
   defp tool_call(_, t), do: t
 
+  @doc """
+  What the person typed in a user line, or nil for the results of tool
+  calls and for lines the app writes on its own.
+  """
+  def prompt(%{} = e) do
+    msg = if is_map(e["message"]), do: e["message"], else: %{}
+
+    cond do
+      Enum.any?(blocks(msg), &(&1["type"] == "tool_result")) -> nil
+      e["isMeta"] || e["isCompactSummary"] || e["isSidechain"] -> nil
+      true -> prompt_text(msg["content"])
+    end
+  end
+
   # A user line is either a prompt or the results of tool calls.
   defp user(e, t) do
     msg = e["message"] || %{}
@@ -240,10 +254,7 @@ defmodule Wallboard.Archive.Transcript do
       results != [] ->
         Enum.reduce(results, t, &tool_result/2)
 
-      e["isMeta"] || e["isCompactSummary"] || e["isSidechain"] ->
-        t
-
-      text = prompt_text(msg["content"]) ->
+      text = prompt(e) ->
         %{
           t
           | prompts: t.prompts + 1,
