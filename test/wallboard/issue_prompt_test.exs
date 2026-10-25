@@ -58,6 +58,24 @@ defmodule Wallboard.IssuePromptTest do
     end
   end
 
+  # How Claude Code writes `/work-on #3586 dispatched` typed as a command.
+  @command "<command-message>work-on</command-message>\n<command-name>/work-on</command-name>\n<command-args>#3586 dispatched</command-args>"
+
+  test "a slash command's arguments name an issue, read by the transcript and usage readers" do
+    line = Jason.encode!(%{type: "user", message: %{role: "user", content: @command}})
+
+    assert Transcript.read_lines(line <> "\n" <> claude_line("then #12")).issues == [
+             %{repo: nil, number: 3586},
+             %{repo: nil, number: 12}
+           ]
+
+    usage = Wallboard.Sources.Usage.parse_lines(Wallboard.Sources.Usage.empty_stats(), line)
+    assert usage.issues == [%{repo: nil, number: 3586}]
+  end
+
+  defp claude_line(text),
+    do: Jason.encode!(%{type: "user", message: %{role: "user", content: text}})
+
   test "a Claude tool result or a line the app writes is not a prompt" do
     lines =
       [
