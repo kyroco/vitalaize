@@ -245,6 +245,26 @@ defmodule Wallboard.SessionIssuesTest do
       assert length(calls(c)) == 12
     end
 
+    test "when more calls are due than one check makes, the ones read longest ago go first", c do
+      sessions = for n <- 2001..2012, do: named("s#{n}", n)
+      at = DateTime.to_unix(@now)
+
+      # Every read is stale; 2012 was read longest ago.
+      reads =
+        Map.new(2001..2012, fn n ->
+          {{:issue, "acme/shop", n}, {false, at - 200 - (n - 2001) * 10}}
+        end)
+
+      SessionIssues.match(sessions, %{reads: reads}, @now)
+
+      asked =
+        for line <- calls(c),
+            [_, n] <- [Regex.run(~r{issues/(\d+)}, line)],
+            do: String.to_integer(n)
+
+      assert Enum.sort(asked) == Enum.to_list(2005..2012)
+    end
+
     test "a read that fails keeps what was read before", c do
       sessions = [named("a", 1418), session("b", name: "checkout", branch: "feature/checkout")]
 
