@@ -183,10 +183,13 @@ defmodule Wallboard.Sources.SessionIssues do
 
   defp next_stale([], _reads, _at), do: nil
 
+  # An issue read that failed with nothing read before is unknown, not "no
+  # issue": the session waits for it rather than taking its branch's.
   defp next_stale([key | rest], reads, at) do
     cond do
       not fresh?(reads[key], at) -> key
       found(key, reads[key]) -> nil
+      match?({:issue, _, _}, key) and match?({nil, _}, reads[key]) -> nil
       true -> next_stale(rest, reads, at)
     end
   end
@@ -247,8 +250,9 @@ defmodule Wallboard.Sources.SessionIssues do
     end
   end
 
+  # The last answer, or nil (unknown) when there was none.
   defp last_value({value, _}), do: value
-  defp last_value(_), do: false
+  defp last_value(_), do: nil
 
   # The first issue in the same repository that an open pull request from
   # each branch closes: [{key, {number or nil, at}}]. One query for the
