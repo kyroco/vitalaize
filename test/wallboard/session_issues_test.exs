@@ -197,6 +197,19 @@ defmodule Wallboard.SessionIssuesTest do
       assert facts == %{sessions: %{"a" => %{repo: "Acme/Shop", number: 77}}}
     end
 
+    test "a repository name that is not owner/name, such as dot parts or a line break, asks nothing",
+         c do
+      sessions = [
+        session("a", name: "1418-issue", repo: "../.."),
+        session("b", name: "1418-issue", repo: "acme/.."),
+        session("c", name: "1418-issue", repo: "acme/shop\n")
+      ]
+
+      assert {%{sessions: none}, _} = SessionIssues.match(sessions, %{}, @now)
+      assert none == %{}
+      assert calls(c) == []
+    end
+
     test "a session with no repository, or no number and no branch, asks nothing", c do
       sessions = [
         %{session_id: "x", name: "1418-issue"},
