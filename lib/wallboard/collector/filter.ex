@@ -179,7 +179,8 @@ defmodule Wallboard.Collector.Filter do
     :model,
     :effort,
     :version,
-    :entrypoint
+    :entrypoint,
+    :issue
   ]
 
   @doc """
@@ -499,8 +500,11 @@ defmodule Wallboard.Collector.Filter do
 
   defp summary(t, s) do
     {repo, s} = repo(t.cwd, s)
+    {issue_repo, issue_number} = issue(t[:issue])
 
     body = %Proto.Summary{
+      issue_repo: issue_repo,
+      issue_number: issue_number,
       title: text(t.titles[:custom] || t.titles[:agent] || s.ctx[:title] || t.titles[:ai]),
       first_prompt: text(t.first_prompt),
       last_prompt: text(t.last_prompt),
@@ -516,6 +520,16 @@ defmodule Wallboard.Collector.Filter do
 
     {body, s}
   end
+
+  # The issue a prompt named, as numbers and a name only (Wallboard.IssueRef):
+  # a linked repository that is not a GitHub name is sent as no issue.
+  defp issue(%{repo: nil, number: n}) when is_integer(n) and n > 0, do: {"", n}
+
+  defp issue(%{repo: repo, number: n}) when is_integer(n) and n > 0 do
+    if Wallboard.RepoPrompts.name?(repo), do: {repo, n}, else: {"", 0}
+  end
+
+  defp issue(_), do: {"", 0}
 
   # Asked again only when the folder changes: it reads the folder's git
   # config. Only for a whole path, so a made-up folder never points it at

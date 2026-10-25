@@ -219,6 +219,8 @@ defmodule Wallboard.Collector.Proto.Summary do
   field(:effort, 9, type: :string)
   field(:version, 10, type: :string)
   field(:entrypoint, 11, type: :string)
+  field(:issue_repo, 12, type: :string, json_name: "issueRepo")
+  field(:issue_number, 13, type: :uint64, json_name: "issueNumber")
 end
 
 defmodule Wallboard.Collector.Proto.PullRequest do

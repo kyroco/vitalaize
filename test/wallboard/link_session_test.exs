@@ -120,6 +120,36 @@ defmodule Wallboard.LinkSessionTest do
     assert %{gh_repo: nil, branch: nil} = bare
   end
 
+  test "the card carries the issue the session's prompts named, as a repository and a number" do
+    text = fn prompts ->
+      Enum.map_join(
+        prompts,
+        &(Jason.encode!(%{type: "user", message: %{role: "user", content: &1}}) <> "\n")
+      )
+    end
+
+    read = fn prompts ->
+      {events, _} =
+        %{
+          tool: :claude,
+          session_id: @id,
+          account: "main",
+          prices: prices(),
+          file: @id <> ".jsonl"
+        }
+        |> Filter.new()
+        |> Filter.read(text.(prompts))
+
+      Session.card(fold(events ++ [status(:working, at: @now)]), true, prices())
+    end
+
+    assert read.(["hey", "https://github.com/acme/shop/issues/7"]).issue_ref ==
+             %{repo: "acme/shop", number: 7}
+
+    assert read.(["work on #1418"]).issue_ref == %{repo: nil, number: 1418}
+    assert read.(["hey"]).issue_ref == nil
+  end
+
   test "the card says why it waits: the question, the tool's name, or the kind of wait" do
     why = fn opts ->
       Session.card(fold(main() ++ [status(:needs, [at: @now] ++ opts)]), true, prices()).why

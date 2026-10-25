@@ -161,6 +161,11 @@ message Summary {
   // The Claude Code or Codex version, and what started the session.
   string version = 10;
   string entrypoint = 11;
+  // The issue the first prompt that names one names: its repository as
+  // owner/name when the prompt linked it (else empty, for the session's
+  // own), and its number (0 for none). Never the prompt's text.
+  string issue_repo = 12;
+  uint64 issue_number = 13;
 }
 
 // A pull request on github.com. Its number and repo are read from the link.
