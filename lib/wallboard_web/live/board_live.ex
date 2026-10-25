@@ -455,7 +455,15 @@ defmodule WallboardWeb.BoardLive do
         known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
         # A streamed session names its own repository: its folder is on
         # another machine.
-        s = Map.merge(s, %{repo: s[:repo] || known[cwd], issue: issues[s.session_id][:number]})
+        found = issues[s.session_id] || %{}
+
+        s =
+          Map.merge(s, %{
+            repo: s[:repo] || known[cwd],
+            issue: found[:number],
+            issue_repo: found[:repo]
+          })
+
         {s, known}
       end)
 
@@ -470,6 +478,17 @@ defmodule WallboardWeb.BoardLive do
       session_count: length(sessions),
       repo_of: repo_of
     )
+  end
+
+  # "#1418" for an issue in the session's own repository, "vendor/lib#12"
+  # for one in another, so the number never reads as the wrong issue.
+  defp issue_label(%{issue: n} = s) do
+    own = s[:repo] && String.downcase(s.repo)
+    repo = s[:issue_repo]
+
+    if is_nil(repo) or repo |> String.split("/") |> List.last() |> String.downcase() == own,
+      do: "##{n}",
+      else: "#{repo}##{n}"
   end
 
   # "api" for a folder in acme/api, or nil outside a GitHub checkout.
@@ -1701,7 +1720,7 @@ defmodule WallboardWeb.BoardLive do
         <span :if={@s.account} class="acct">{@s.account}</span>
         <span :if={@s[:started_by]} class="acct">from {@s.started_by}</span>
         <span :if={@s[:repo]} class="sc-repo" title={@s.folder}>{@s.repo}</span>
-        <span :if={@s[:issue]} class="sc-issue" title="The issue this session is on">#{@s.issue}</span>
+        <span :if={@s[:issue]} class="sc-issue" title="The issue this session is on">{issue_label(@s)}</span>
         <span :if={!@s[:repo] && @s.folder} class="sc-folder">{@s.folder}</span>
       </div>
       <div class="sc-task">{if @s.status == :needs, do: @s.why, else: @s.task}</div>
