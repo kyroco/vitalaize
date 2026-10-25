@@ -42,6 +42,7 @@ defmodule Wallboard.SessionIssuesTest do
                 feature/checkout) refs='{"number": 77, "repository": {"nameWithOwner": "acme/shop"}}' ;;
                 feature/elsewhere) refs='{"number": 5, "repository": {"nameWithOwner": "acme/other"}}' ;;
                 feature/forked) head="someone/shop"; refs='{"number": 77, "repository": {"nameWithOwner": "acme/shop"}}' ;;
+                feature/milestoned) refs='{"number": 1432, "repository": {"nameWithOwner": "acme/shop"}, "milestone": {"number": 8, "title": "PLANTED milestone eight", "openIssueCount": 1, "closedIssueCount": 1}}' ;;
                 *) refs="" ;;
               esac
               if [ -n "$refs" ]; then
@@ -64,6 +65,13 @@ defmodule Wallboard.SessionIssuesTest do
       repos/acme/shop/issues/1418) echo '{"number": 1418, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1419) echo '{"number": 1419, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1420) echo '{"number": 1420, "pull_request": {"url": "x"}}' ;;
+      repos/acme/shop/issues/1430|repos/acme/shop/issues/1431)
+        # Milestone 7 has 8 issues, 3 closed, or what the file "closed7"
+        # says, so a test can close one.
+        closed=$(cat "$WALLBOARD_TEST_GH/closed7" 2>/dev/null || echo 3)
+        n="${2##*/}"
+        echo '{"number": '"$n"', "title": "PLANTED issue text", "milestone": {"number": 7, "title": "PLANTED milestone seven", "open_issues": '"$((8 - closed))"', "closed_issues": '"$closed"'}}' ;;
+      repos/acme/shop/issues/1432) echo '{"number": 1432, "title": "PLANTED issue text", "milestone": {"number": 8, "title": "PLANTED milestone eight", "open_issues": 1, "closed_issues": 1}}' ;;
       repos/acme/shop/issues/1500) echo "gh: Issue was deleted (HTTP 410)" >&2; exit 1 ;;
       repos/acme/shop/issues/1501) echo '{"number": 9, "title": "PLANTED moved"}' ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -108,7 +116,7 @@ defmodule Wallboard.SessionIssuesTest do
   describe "match/3" do
     test "the issue a prompt named, when it is an issue here, numbers only", c do
       {facts, _} = SessionIssues.match([named("s1", 1418)], %{}, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 1418}}
       assert calls(c) == ["api repos/acme/shop/issues/1418"]
       refute inspect(facts) =~ "PLANTED"
     end
@@ -123,11 +131,9 @@ defmodule Wallboard.SessionIssuesTest do
 
       {facts, _} = SessionIssues.match(sessions, %{}, @now)
 
-      assert facts == %{
-               sessions: %{
-                 "a" => %{repo: "acme/shop", number: 1418},
-                 "b" => %{repo: "acme/shop", number: 1418}
-               }
+      assert facts.sessions == %{
+               "a" => %{repo: "acme/shop", number: 1418},
+               "b" => %{repo: "acme/shop", number: 1418}
              }
     end
 
@@ -140,13 +146,13 @@ defmodule Wallboard.SessionIssuesTest do
     test "a named number that is not an issue falls back to the branch's closing pull request" do
       s = named("s1", 5555, branch: "feature/checkout")
       {facts, _} = SessionIssues.match([s], %{}, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 77}}}
+      assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 77}}
     end
 
     test "a named issue never asks about the branch", c do
       s = named("s1", 1418, branch: "feature/checkout")
       {facts, _} = SessionIssues.match([s], %{}, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 1418}}
       assert calls(c) == ["api repos/acme/shop/issues/1418"]
     end
 
@@ -157,7 +163,7 @@ defmodule Wallboard.SessionIssuesTest do
       ]
 
       {facts, _} = SessionIssues.match(sessions, %{}, @now)
-      assert facts == %{sessions: %{}}
+      assert facts.sessions == %{}
       refute Enum.any?(calls(c), &(&1 =~ "issues/1418"))
     end
 
@@ -170,7 +176,7 @@ defmodule Wallboard.SessionIssuesTest do
       ]
 
       {facts, _} = SessionIssues.match(sessions, %{}, @now)
-      assert facts == %{sessions: %{"a" => %{repo: "acme/shop", number: 77}}}
+      assert facts.sessions == %{"a" => %{repo: "acme/shop", number: 77}}
 
       # One query for the repository, each branch sent as text.
       assert [query] = calls(c)
@@ -189,7 +195,7 @@ defmodule Wallboard.SessionIssuesTest do
     test "a repository written in other capitals than GitHub's still finds the closing pull request" do
       s = session("a", name: "checkout", branch: "feature/checkout", repo: "Acme/Shop")
       {facts, _} = SessionIssues.match([s], %{}, @now)
-      assert facts == %{sessions: %{"a" => %{repo: "Acme/Shop", number: 77}}}
+      assert facts.sessions == %{"a" => %{repo: "Acme/Shop", number: 77}}
     end
 
     test "a repository name that is not owner/name, such as dot parts or a line break, asks nothing",
@@ -275,13 +281,13 @@ defmodule Wallboard.SessionIssuesTest do
       File.write!(Path.join(c.dir, "rest_down"), "")
 
       {facts, memory} = SessionIssues.match([s], %{}, @now)
-      assert facts == %{sessions: %{}}
+      assert facts.sessions == %{}
       refute Enum.any?(calls(c), &(&1 =~ "graphql"))
 
       # Two minutes on, GitHub answers again.
       File.rm!(Path.join(c.dir, "rest_down"))
       {facts, _} = SessionIssues.match([s], memory, later(130))
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 1418}}
     end
 
     test "this machine's sessions are read before streamed ones when more calls are due than one check makes",
@@ -304,10 +310,10 @@ defmodule Wallboard.SessionIssuesTest do
       File.write!(Path.join(c.dir, "rest_down"), "")
 
       {facts, memory} = SessionIssues.match([s], %{reads: reads}, @now)
-      assert facts == %{sessions: %{}}
+      assert facts.sessions == %{}
 
       {facts, _} = SessionIssues.match([s], memory, later(400))
-      assert facts == %{sessions: %{}}
+      assert facts.sessions == %{}
     end
 
     test "a deleted issue, or one moved to another repository, is not an issue here", c do
@@ -315,7 +321,7 @@ defmodule Wallboard.SessionIssuesTest do
       for n <- [1500, 1501] do
         s = named("s#{n}", n, branch: "feature/checkout")
         {facts, _} = SessionIssues.match([s], %{}, @now)
-        assert facts == %{sessions: %{"s#{n}" => %{repo: "acme/shop", number: 77}}}, "##{n}"
+        assert facts.sessions == %{"s#{n}" => %{repo: "acme/shop", number: 77}}, "##{n}"
       end
 
       assert length(calls(c)) == 4
@@ -331,7 +337,7 @@ defmodule Wallboard.SessionIssuesTest do
       s = session("s1", issue_refs: refs)
 
       {facts, _} = SessionIssues.match([s], %{}, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 1418}}
       refute Enum.any?(calls(c), &(&1 =~ "issues/1419"))
     end
 
@@ -431,7 +437,7 @@ defmodule Wallboard.SessionIssuesTest do
       )
 
       assert {:ok, facts, memory} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 1418}}}
+      assert facts.sessions == %{"main:s1" => %{repo: "acme/shop", number: 1418}}
       assert {:issue, "acme/shop", 1418} in Map.keys(memory.reads)
     end
 
@@ -454,7 +460,7 @@ defmodule Wallboard.SessionIssuesTest do
       stop_supervised!(:usage)
       start_supervised!({FakePoller, {:usage, %{sessions: %{}}}})
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
+      assert facts.sessions == %{"main:s1" => %{repo: "acme/shop", number: 77}}
     end
 
     test "when the usage reader's first read fails, or it is not running, the branch's issue still shows",
@@ -468,7 +474,7 @@ defmodule Wallboard.SessionIssuesTest do
 
       # Not running at all: nothing to wait for.
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
+      assert facts.sessions == %{"main:s1" => %{repo: "acme/shop", number: 77}}
 
       # Its first read ended in an error.
       start_supervised!(
@@ -476,7 +482,7 @@ defmodule Wallboard.SessionIssuesTest do
       )
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, later(130))
-      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
+      assert facts.sessions == %{"main:s1" => %{repo: "acme/shop", number: 77}}
     end
 
     test "a Codex session on this machine takes its issue from its card", c do
@@ -493,7 +499,7 @@ defmodule Wallboard.SessionIssuesTest do
       start_supervised!({FakePoller, {:codex, %{sessions: [card]}}})
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"codex:t1" => %{repo: "acme/shop", number: 1419}}}
+      assert facts.sessions == %{"codex:t1" => %{repo: "acme/shop", number: 1419}}
     end
 
     test "a session both on this machine and in a stream takes its issue from this machine", c do
@@ -533,11 +539,9 @@ defmodule Wallboard.SessionIssuesTest do
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
 
-      assert facts == %{
-               sessions: %{
-                 "main:s1" => %{repo: "acme/shop", number: 1418},
-                 "stream:papa:s2" => %{repo: "acme/shop", number: 1419}
-               }
+      assert facts.sessions == %{
+               "main:s1" => %{repo: "acme/shop", number: 1418},
+               "stream:papa:s2" => %{repo: "acme/shop", number: 1419}
              }
     end
 
@@ -564,11 +568,9 @@ defmodule Wallboard.SessionIssuesTest do
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
 
-      assert facts == %{
-               sessions: %{
-                 "stream:papa:s1" => %{repo: "acme/shop", number: 1418},
-                 "stream:mama:s1" => %{repo: "acme/shop", number: 1419}
-               }
+      assert facts.sessions == %{
+               "stream:papa:s1" => %{repo: "acme/shop", number: 1418},
+               "stream:mama:s1" => %{repo: "acme/shop", number: 1419}
              }
     end
 
@@ -576,6 +578,85 @@ defmodule Wallboard.SessionIssuesTest do
       assert {:ok, %{sessions: none}, _} = SessionIssues.poll(nil, nil, %{}, @now)
       assert none == %{}
       assert calls(c) == []
+    end
+  end
+
+  describe "milestones (issue #144)" do
+    setup do
+      unless Process.whereis(Wallboard.MilestoneTitles),
+        do: start_supervised!(Wallboard.MilestoneTitles)
+
+      :ok
+    end
+
+    defp seven(done),
+      do: %{
+        repo: "acme/shop",
+        number: 7,
+        done: done,
+        total: 8,
+        title_hash: :erlang.phash2("PLANTED milestone seven")
+      }
+
+    test "a session's issue in a milestone gives one line's numbers, from the same read", c do
+      {facts, memory} = SessionIssues.match([named("s1", 1430)], %{}, @now)
+
+      assert facts.milestones == [seven(3)]
+      assert calls(c) == ["api repos/acme/shop/issues/1430"]
+
+      # The title is kept apart, never in the facts or the memory.
+      assert Wallboard.MilestoneTitles.get("acme/shop", 7) == "PLANTED milestone seven"
+      refute inspect(facts) =~ "PLANTED"
+      refute inspect(memory) =~ "PLANTED"
+    end
+
+    test "sessions in two milestones give two lines; two in one milestone give one" do
+      {facts, _} = SessionIssues.match([named("a", 1430), named("b", 1432)], %{}, @now)
+      assert Enum.map(facts.milestones, &{&1.number, &1.done, &1.total}) == [{7, 3, 8}, {8, 1, 2}]
+
+      {facts, _} = SessionIssues.match([named("a", 1430), named("b", 1431)], %{}, @now)
+      assert facts.milestones == [seven(3)]
+    end
+
+    test "an issue in no milestone, or no session on an issue, gives no line" do
+      {facts, _} = SessionIssues.match([named("a", 1418)], %{}, @now)
+      assert facts.sessions != %{}
+      assert facts.milestones == []
+
+      {facts, _} = SessionIssues.match([session("b", branch: "feature/nothing")], %{}, @now)
+      assert facts == %{sessions: %{}, milestones: []}
+    end
+
+    test "an issue that closes in a shown milestone counts within two minutes", c do
+      {_, memory} = SessionIssues.match([named("a", 1430)], %{}, @now)
+      File.write!(Path.join(c.dir, "closed7"), "4")
+
+      # Still fresh: not asked again.
+      {facts, memory} = SessionIssues.match([named("a", 1430)], memory, later(60))
+      assert facts.milestones == [seven(3)]
+
+      {facts, _} = SessionIssues.match([named("a", 1430)], memory, later(121))
+      assert facts.milestones == [seven(4)]
+    end
+
+    test "a branch's closing pull request gives its issue's milestone" do
+      s = session("a", branch: "feature/milestoned")
+      {facts, memory} = SessionIssues.match([s], %{}, @now)
+
+      assert [%{number: 8, done: 1, total: 2}] = facts.milestones
+      assert Wallboard.MilestoneTitles.get("acme/shop", 8) == "PLANTED milestone eight"
+      refute inspect(facts) =~ "PLANTED"
+      refute inspect(memory) =~ "PLANTED"
+    end
+
+    test "a read that fails keeps the milestone's last counts", c do
+      sessions = [named("a", 1430), session("b", branch: "feature/milestoned")]
+      {first, memory} = SessionIssues.match(sessions, %{}, @now)
+      assert length(first.milestones) == 2
+
+      File.write!(Path.join(c.dir, "down"), "")
+      {down, _} = SessionIssues.match(sessions, memory, later(130))
+      assert down.milestones == first.milestones
     end
   end
 end
