@@ -106,6 +106,20 @@ defmodule Wallboard.LinkSessionTest do
     assert %{status: :working, name: "d299768e", machine: "papa", stale: false} = card
   end
 
+  test "the card carries the session's whole repository and branch, so its issue can be found" do
+    events =
+      events("collector/claude_session.jsonl", %{
+        file: @id <> ".jsonl",
+        repo: fn _ -> "acme/shop" end
+      })
+
+    card = Session.card(fold(events ++ [status(:working, at: @now)]), true, prices())
+    assert %{repo: "shop", gh_repo: "acme/shop", branch: "fix/login-loop"} = card
+
+    bare = Session.card(fold([status(:working, at: @now)]), true, prices())
+    assert %{gh_repo: nil, branch: nil} = bare
+  end
+
   test "the card says why it waits: the question, the tool's name, or the kind of wait" do
     why = fn opts ->
       Session.card(fold(main() ++ [status(:needs, [at: @now] ++ opts)]), true, prices()).why

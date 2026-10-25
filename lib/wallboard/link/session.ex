@@ -256,6 +256,8 @@ defmodule Wallboard.Link.Session do
         kind: "remote",
         folder: folder(sum.folder),
         repo: sum.repo |> blank() |> repo_name(),
+        gh_repo: blank(sum.repo),
+        branch: blank(sum.branch),
         status: status,
         task: short(sum.last_prompt) || blank(sum.folder),
         why: if(status == :needs, do: why(s.status)),
