@@ -12,6 +12,7 @@ defmodule Wallboard.BoardSessionIssuesTest do
 
   defp session(id, name) do
     %{
+      key: "main:" <> id,
       session_id: id,
       name: name,
       short_id: String.slice(id, 0, 8),
@@ -44,7 +45,7 @@ defmodule Wallboard.BoardSessionIssuesTest do
 
   test "the finder's answer puts the issue on its session, and only on that one" do
     socket = socket([session("aaaa1111", "login"), session("bbbb2222", "notes")])
-    facts = %{sessions: %{"aaaa1111" => %{repo: "acme/shop", number: 1418}}}
+    facts = %{sessions: %{"main:aaaa1111" => %{repo: "acme/shop", number: 1418}}}
 
     assert {:noreply, socket} =
              BoardLive.handle_info({:source, :session_issues, facts, %{error: nil}}, socket)
@@ -73,7 +74,7 @@ defmodule Wallboard.BoardSessionIssuesTest do
 
   test "an issue in another repository than the session's names its repository" do
     socket = socket([session("aaaa1111", "login")])
-    facts = %{sessions: %{"aaaa1111" => %{repo: "vendor/lib", number: 12}}}
+    facts = %{sessions: %{"main:aaaa1111" => %{repo: "vendor/lib", number: 12}}}
 
     {:noreply, socket} =
       BoardLive.handle_info({:source, :session_issues, facts, %{error: nil}}, socket)

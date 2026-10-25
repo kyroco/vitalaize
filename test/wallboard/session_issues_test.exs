@@ -96,7 +96,8 @@ defmodule Wallboard.SessionIssuesTest do
     end
   end
 
-  defp session(id, fields), do: Map.merge(%{session_id: id, repo: "acme/shop"}, Map.new(fields))
+  defp session(id, fields),
+    do: Map.merge(%{key: id, session_id: id, repo: "acme/shop"}, Map.new(fields))
 
   defp later(s), do: DateTime.add(@now, s)
 
@@ -117,7 +118,7 @@ defmodule Wallboard.SessionIssuesTest do
 
       sessions = [
         session("a", repo: "acme/other", issue_refs: [ref]),
-        %{session_id: "b", issue_refs: [ref]}
+        %{key: "b", session_id: "b", issue_refs: [ref]}
       ]
 
       {facts, _} = SessionIssues.match(sessions, %{}, @now)
@@ -207,7 +208,7 @@ defmodule Wallboard.SessionIssuesTest do
 
     test "a session with no repository, or no issue named and no branch, asks nothing", c do
       sessions = [
-        %{session_id: "x", issue_refs: [%{repo: nil, number: 1418}]},
+        %{key: "x", session_id: "x", issue_refs: [%{repo: nil, number: 1418}]},
         named("y", 1418, repo: "not a repo"),
         session("z", name: "checkout")
       ]
@@ -414,7 +415,8 @@ defmodule Wallboard.SessionIssuesTest do
       folder = checkout(c, "robert/1418-login")
 
       start_supervised!(
-        {FakePoller, {:claude, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}}
+        {FakePoller,
+         {:claude, %{sessions: [%{key: "main:s1", session_id: "s1", name: "login", cwd: folder}]}}}
       )
 
       start_supervised!(
@@ -422,7 +424,7 @@ defmodule Wallboard.SessionIssuesTest do
       )
 
       assert {:ok, facts, memory} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 1418}}}
       assert {:issue, "acme/shop", 1418} in Map.keys(memory.reads)
     end
 
@@ -431,7 +433,8 @@ defmodule Wallboard.SessionIssuesTest do
       folder = checkout(c, "feature/checkout")
 
       start_supervised!(
-        {FakePoller, {:claude, %{sessions: [%{session_id: "s1", name: "x", cwd: folder}]}}}
+        {FakePoller,
+         {:claude, %{sessions: [%{key: "main:s1", session_id: "s1", name: "x", cwd: folder}]}}}
       )
 
       # As after a restart: the usage reader has not finished its first read.
@@ -442,7 +445,7 @@ defmodule Wallboard.SessionIssuesTest do
       # Once it has, and their prompts named nothing, the branch counts.
       start_supervised!({FakePoller, {:usage, %{sessions: %{}}}})
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 77}}}
+      assert facts == %{sessions: %{"main:s1" => %{repo: "acme/shop", number: 77}}}
     end
 
     test "a Codex session on this machine takes its issue from its card", c do
@@ -458,14 +461,15 @@ defmodule Wallboard.SessionIssuesTest do
       start_supervised!({FakePoller, {:codex, %{sessions: [card]}}})
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
-      assert facts == %{sessions: %{"t1" => %{repo: "acme/shop", number: 1419}}}
+      assert facts == %{sessions: %{"codex:t1" => %{repo: "acme/shop", number: 1419}}}
     end
 
     test "a session both on this machine and in a stream takes its issue from this machine", c do
       folder = checkout(c, "main")
 
       start_supervised!(
-        {FakePoller, {:claude, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}}
+        {FakePoller,
+         {:claude, %{sessions: [%{key: "main:s1", session_id: "s1", name: "login", cwd: folder}]}}}
       )
 
       start_supervised!(
@@ -478,8 +482,20 @@ defmodule Wallboard.SessionIssuesTest do
       start_supervised!(
         {FakeStream,
          [
-           %{session_id: "s1", name: "login", gh_repo: "acme/shop", issue_refs: [other]},
-           %{session_id: "s2", name: "away", gh_repo: "acme/shop", issue_refs: [other]}
+           %{
+             key: "stream:papa:s1",
+             session_id: "s1",
+             name: "login",
+             gh_repo: "acme/shop",
+             issue_refs: [other]
+           },
+           %{
+             key: "stream:papa:s2",
+             session_id: "s2",
+             name: "away",
+             gh_repo: "acme/shop",
+             issue_refs: [other]
+           }
          ]}
       )
 
@@ -487,8 +503,39 @@ defmodule Wallboard.SessionIssuesTest do
 
       assert facts == %{
                sessions: %{
-                 "s1" => %{repo: "acme/shop", number: 1418},
-                 "s2" => %{repo: "acme/shop", number: 1419}
+                 "main:s1" => %{repo: "acme/shop", number: 1418},
+                 "stream:papa:s2" => %{repo: "acme/shop", number: 1419}
+               }
+             }
+    end
+
+    test "two machines streaming the same session id each keep their own card's issue" do
+      start_supervised!({FakePoller, {:usage, %{sessions: %{}}}})
+
+      start_supervised!(
+        {FakeStream,
+         [
+           %{
+             key: "stream:papa:s1",
+             session_id: "s1",
+             gh_repo: "acme/shop",
+             issue_refs: [%{repo: nil, number: 1418}]
+           },
+           %{
+             key: "stream:mama:s1",
+             session_id: "s1",
+             gh_repo: "acme/shop",
+             issue_refs: [%{repo: nil, number: 1419}]
+           }
+         ]}
+      )
+
+      assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
+
+      assert facts == %{
+               sessions: %{
+                 "stream:papa:s1" => %{repo: "acme/shop", number: 1418},
+                 "stream:mama:s1" => %{repo: "acme/shop", number: 1419}
                }
              }
     end
