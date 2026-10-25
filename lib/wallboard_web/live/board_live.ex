@@ -522,7 +522,7 @@ defmodule WallboardWeb.BoardLive do
     show_github(socket, socket.assigns.github)
   rescue
     e ->
-      Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
+      Logger.error("The board could not use the new GitHub data: #{inspect(e.__struct__)}")
       good = socket.assigns[:github_good]
       socket = assign(socket, github: good)
 
@@ -530,7 +530,10 @@ defmodule WallboardWeb.BoardLive do
         show_github(socket, good)
       rescue
         e ->
-          Logger.error("The board could not draw its last GitHub facts: #{inspect(e.__struct__)}")
+          Logger.error(
+            "The board could not show its last good GitHub data: #{inspect(e.__struct__)}"
+          )
+
           assign(socket, git: [], git_columns: [], git_quiet: [], gh: nil)
       end
   end
@@ -572,7 +575,7 @@ defmodule WallboardWeb.BoardLive do
     end
   rescue
     e ->
-      Logger.error("The board could not show a run: #{inspect(e.__struct__)}")
+      Logger.error("The board could not show one GitHub Actions run: #{inspect(e.__struct__)}")
       assign(socket, open_run: nil, run_view: nil)
   end
 

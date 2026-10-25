@@ -29,6 +29,8 @@ defmodule Wallboard.Sources.GitHub do
   """
 
   alias Wallboard.{Cmd, Runners, Settings, Store}
+
+  require Logger
   alias Wallboard.Archive.GitHubCollector
 
   # How long to wait before asking again for runners GitHub refused to list.
@@ -104,13 +106,18 @@ defmodule Wallboard.Sources.GitHub do
   # One repository's read, in its own task. A raise, throw or exit is caught
   # here: left to escape, it would end the task with a crash report and
   # take the whole poll down with the error's text, which can hold what
-  # GitHub sent. It fails that repository alone, naming only its kind.
+  # GitHub sent. It fails that repository alone, in plain words for the
+  # panel; the log names only the error's kind.
   defp fetch_safely(gh, prev, now) do
     fetch(gh, prev, now)
   rescue
-    e -> {:error, "the read raised #{inspect(e.__struct__)}"}
+    e ->
+      Logger.error("A GitHub read hit an error: #{inspect(e.__struct__)}")
+      {:error, "the read hit an error"}
   catch
-    kind, _ -> {:error, "the read failed (#{kind})"}
+    kind, _ ->
+      Logger.error("A GitHub read stopped early (#{kind})")
+      {:error, "the read stopped early"}
   end
 
   @doc """

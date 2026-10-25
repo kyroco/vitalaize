@@ -80,7 +80,7 @@ defmodule Wallboard.GitHubSafetyTest do
     log =
       capture_log(fn ->
         assert {:error, reason, _} = GitHub.poll(c.settings, nil, %{}, @now)
-        assert reason =~ "the read raised FunctionClauseError"
+        assert reason == "the read hit an error"
       end)
 
     refute log =~ "PLANTED"

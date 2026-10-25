@@ -76,13 +76,13 @@ defmodule Wallboard.Poller do
 
   @impl true
   def handle_info(:poll, %{task: nil} = state) do
-    %{source: source, facts: facts, memory: memory} = state
+    %{name: name, source: source, facts: facts, memory: memory} = state
     settings = Wallboard.Settings.get()
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     task =
       Task.Supervisor.async_nolink(Wallboard.TaskSupervisor, fn ->
-        checked(source, settings, facts, memory, now)
+        checked(name, source, settings, facts, memory, now)
       end)
 
     Process.send_after(self(), {:timeout, task.ref}, timeout_ms(state.timeout, settings))
@@ -127,15 +127,22 @@ defmodule Wallboard.Poller do
   # Runs a source's check. A raise, throw or exit is caught here rather than
   # left to crash the task, whose crash report prints the error's text or
   # value, and that can hold what the check read (a timed-out call carries
-  # its arguments). It becomes a failed check that names only the kind,
-  # logged once like any other.
-  defp checked(source, settings, facts, memory, now) do
+  # its arguments). It becomes a failed check in plain words for the panel;
+  # the log names only the error's kind.
+  defp checked(name, source, settings, facts, memory, now) do
     source.poll(settings, facts, memory, now)
   rescue
-    e -> {:error, "the check raised #{inspect(e.__struct__)}", memory}
+    e ->
+      Logger.error("The #{label(name)} check hit an error: #{inspect(e.__struct__)}")
+      {:error, "the check hit an error", memory}
   catch
-    kind, _ -> {:error, "the check failed (#{kind})", memory}
+    kind, _ ->
+      Logger.error("The #{label(name)} check stopped early (#{kind})")
+      {:error, "the check stopped early", memory}
   end
+
+  # "session issues" for :session_issues.
+  defp label(name), do: name |> to_string() |> String.replace("_", " ")
 
   # Takes in a poll's result. An error here is caught rather than left to
   # crash the poller, because a crash report prints the error's text and its
@@ -147,7 +154,7 @@ defmodule Wallboard.Poller do
   rescue
     e ->
       Logger.error(
-        "#{inspect(state.name)} could not take in a poll result: #{inspect(e.__struct__)}"
+        "The #{label(state.name)} check could not use its new result: #{inspect(e.__struct__)}"
       )
 
       %{state | error: "the last check could not be read; retrying"}

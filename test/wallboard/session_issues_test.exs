@@ -472,7 +472,7 @@ defmodule Wallboard.SessionIssuesTest do
 
       # Its first read ended in an error.
       start_supervised!(
-        {FakePoller, {:usage, nil, %{error: "the check raised RuntimeError", fetched_at: nil}}}
+        {FakePoller, {:usage, nil, %{error: "the check hit an error", fetched_at: nil}}}
       )
 
       assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, later(130))

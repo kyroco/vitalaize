@@ -95,7 +95,7 @@ defmodule Wallboard.BoardGitHubFactsTest do
         assert socket.assigns.run_view == nil
       end)
 
-    assert log =~ "could not show a run: KeyError"
+    assert log =~ "could not show one GitHub Actions run: KeyError"
     refute log =~ "PLANTED"
   end
 

@@ -44,14 +44,14 @@ defmodule Wallboard.PollerCrashTest do
 
   test "an error while taking in the facts is logged by its kind alone" do
     log = failing_log(:raise)
-    assert log =~ "could not take in a poll result: RuntimeError"
+    assert log =~ "could not use its new result: RuntimeError"
     refute log =~ "PLANTED"
     refute log =~ "Last message"
   end
 
   test "an error whose text holds the facts does not bring them into the log" do
     log = failing_log(:key)
-    assert log =~ "could not take in a poll result: KeyError"
+    assert log =~ "could not use its new result: KeyError"
     refute log =~ "PLANTED"
   end
 
@@ -111,7 +111,8 @@ defmodule Wallboard.PollerCrashTest do
         end)
 
       refute log =~ "PLANTED"
-      assert [_] = Regex.scan(~r/the check failed/, log)
+      # Its kind once, for whoever reads the log; the panel gets plain words.
+      assert [_] = Regex.scan(~r/check stopped early \((throw|exit)\)/, log)
       refute log =~ "terminating"
     end
   end
