@@ -19,9 +19,10 @@ defmodule Wallboard.SessionIssuesTest do
     # repository, and one from a fork's feature/forked closes issue 77.
     File.write!(Path.join(dir, "gh"), """
     #!/bin/sh
-    # One line for each call, the query's line breaks and all.
-    printf '%s' "$*" | tr '\\n' ' ' >> "$WALLBOARD_TEST_GH/calls"
-    echo >> "$WALLBOARD_TEST_GH/calls"
+    # One line for each call, the query's line breaks and all, written at
+    # once: calls run four at a time.
+    line=$(printf '%s' "$*" | tr '\\n' ' ')
+    echo "$line" >> "$WALLBOARD_TEST_GH/calls"
     if [ "$2" = "graphql" ]; then
       case "$*" in
         *"issues("*|*"milestones("*) echo "$*" >> "$WALLBOARD_TEST_GH/listed" ;;
@@ -238,6 +239,22 @@ defmodule Wallboard.SessionIssuesTest do
       {third, _} = SessionIssues.match(sessions, memory, later(130))
       assert third == first
       assert length(calls(c)) == 4
+    end
+
+    test "one check asks GitHub at most eight times, so a slow GitHub cannot run it past its limit",
+         c do
+      sessions = for n <- 2001..2012, do: session("s#{n}", name: "#{n}-work")
+
+      {_, memory} = SessionIssues.match(sessions, %{}, @now)
+      assert length(calls(c)) == 8
+
+      # The next check asks about the rest, and then nothing is left.
+      {_, memory} = SessionIssues.match(sessions, memory, later(5))
+      assert length(calls(c)) == 12
+      assert map_size(memory.reads) == 12
+
+      {_, _} = SessionIssues.match(sessions, memory, later(10))
+      assert length(calls(c)) == 12
     end
 
     test "a read that fails keeps what was read before", c do
