@@ -13,9 +13,10 @@ defmodule Wallboard.SessionIssuesTest do
     dir = Fixtures.tmp_path("wallboard-session-issues")
     File.mkdir_p!(dir)
 
-    # acme/shop has issue 1418 and pull request 1420; anything else is not
-    # found. An open pull request from feature/checkout closes issue 77, and
-    # one from feature/elsewhere closes an issue in another repository.
+    # acme/shop has issues 1418 and 1419 and pull request 1420; anything
+    # else is not found. An open pull request from feature/checkout closes
+    # issue 77, one from feature/elsewhere closes an issue in another
+    # repository, and one from a fork's feature/forked closes issue 77.
     File.write!(Path.join(dir, "gh"), """
     #!/bin/sh
     # One line for each call, the query's line breaks and all.
@@ -35,13 +36,15 @@ defmodule Wallboard.SessionIssuesTest do
           case "$a" in
             b[0-9]*=*)
               key="${a%%=*}"; branch="${a#*=}"
+              head="acme/shop"
               case "$branch" in
                 feature/checkout) refs='{"number": 77, "repository": {"nameWithOwner": "acme/shop"}}' ;;
                 feature/elsewhere) refs='{"number": 5, "repository": {"nameWithOwner": "acme/other"}}' ;;
+                feature/forked) head="someone/shop"; refs='{"number": 77, "repository": {"nameWithOwner": "acme/shop"}}' ;;
                 *) refs="" ;;
               esac
               if [ -n "$refs" ]; then
-                prs='[{"closingIssuesReferences": {"nodes": ['"$refs"']}}]'
+                prs='[{"headRepository": {"nameWithOwner": "'"$head"'"}, "closingIssuesReferences": {"nodes": ['"$refs"']}}]'
               else
                 prs='[]'
               fi
@@ -58,6 +61,7 @@ defmodule Wallboard.SessionIssuesTest do
     fi
     case "$2" in
       repos/acme/shop/issues/1418) echo '{"number": 1418, "title": "PLANTED issue text"}' ;;
+      repos/acme/shop/issues/1419) echo '{"number": 1419, "title": "PLANTED issue text"}' ;;
       repos/acme/shop/issues/1420) echo '{"number": 1420, "pull_request": {"url": "x"}}' ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac
@@ -97,13 +101,20 @@ defmodule Wallboard.SessionIssuesTest do
     test "the name first, then the branch" do
       assert SessionIssues.number(%{name: "1418-issue", branch: "robert/99-other"}) == 1418
       assert SessionIssues.number(%{name: "checkout", branch: "robert/1418-short-title"}) == 1418
-      assert SessionIssues.number(%{name: "#1418 login"}) == 1418
+      assert SessionIssues.number(%{name: "#1418"}) == 1418
       assert SessionIssues.number(%{branch: "fix_1418"}) == 1418
     end
 
     test "when there are two numbers, the first wins" do
       assert SessionIssues.number(%{branch: "robert/1418-fix-1420"}) == 1418
-      assert SessionIssues.number(%{name: "work 12 then 13"}) == 12
+      assert SessionIssues.number(%{name: "12-then-13"}) == 12
+    end
+
+    test "a name with spaces is a title or a prompt, not a name picked for the issue" do
+      # Codex and streamed sessions are named from their first prompt.
+      s = %{name: "fix the 3 failing tests", branch: "robert/1418-fix"}
+      assert SessionIssues.number(s) == 1418
+      assert SessionIssues.number(%{name: "Bump node to 20 and fix CI"}) == nil
     end
 
     test "a number inside a word, an id or a version is not an issue" do
@@ -136,7 +147,20 @@ defmodule Wallboard.SessionIssuesTest do
       assert none == %{}
     end
 
-    test "a number in the name that is not an issue does not fall back to the branch" do
+    test "a session named from its prompt takes the issue from its branch", c do
+      s = session("s1", name: "fix the 3 failing tests", branch: "robert/1418-fix")
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+      assert calls(c) == ["api repos/acme/shop/issues/1418"]
+    end
+
+    test "a number in the name that is not an issue falls back to the branch's number" do
+      s = session("s1", name: "5555-old", branch: "robert/1418-fix")
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
+    end
+
+    test "a number in the name that is not an issue never asks for the branch's pull request" do
       s = session("s1", name: "5555-old", branch: "feature/checkout")
       assert {%{sessions: none}, _} = SessionIssues.match([s], %{}, @now)
       assert none == %{}
