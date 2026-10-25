@@ -426,6 +426,25 @@ defmodule Wallboard.SessionIssuesTest do
       assert {:issue, "acme/shop", 1418} in Map.keys(memory.reads)
     end
 
+    test "until the usage reader has read this machine's Claude sessions, they wait rather than take their branch's issue",
+         c do
+      folder = checkout(c, "feature/checkout")
+
+      start_supervised!(
+        {FakePoller, {:claude, %{sessions: [%{session_id: "s1", name: "x", cwd: folder}]}}}
+      )
+
+      # As after a restart: the usage reader has not finished its first read.
+      assert {:ok, %{sessions: none}, _} = SessionIssues.poll(nil, nil, nil, @now)
+      assert none == %{}
+      assert calls(c) == []
+
+      # Once it has, and their prompts named nothing, the branch counts.
+      start_supervised!({FakePoller, {:usage, %{sessions: %{}}}})
+      assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
+      assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 77}}}
+    end
+
     test "a Codex session on this machine takes its issue from its card", c do
       folder = checkout(c, "main")
 
