@@ -125,11 +125,24 @@ defmodule Wallboard.Sources.SessionIssues do
 
     sessions =
       for {s, keys} <- wants,
-          key = Enum.find(keys, &found(&1, reads[&1])),
+          key = pick(keys, reads),
           into: %{},
           do: {s.session_id, %{repo: elem(key, 1), number: found(key, reads[key])}}
 
     {%{sessions: sessions}, %{reads: Map.take(reads, Enum.flat_map(wants, &elem(&1, 1)))}}
+  end
+
+  # The key that gives a session's issue. A named issue that is not known
+  # yet, because its read failed or has not been made, stops the walk, so
+  # an earlier read of the branch never stands in for it.
+  defp pick([], _reads), do: nil
+
+  defp pick([key | rest], reads) do
+    cond do
+      found(key, reads[key]) -> key
+      match?({:issue, _, _}, key) and not match?({false, _}, reads[key]) -> nil
+      true -> pick(rest, reads)
+    end
   end
 
   # Reads, round by round, the first key of each session with no fresh
