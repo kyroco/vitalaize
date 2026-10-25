@@ -271,7 +271,7 @@ defmodule Wallboard.Sources.SessionIssues do
         end
 
       {:error, reason} ->
-        if reason =~ ~r/HTTP 4(04|10)/, do: false, else: last_value(last)
+        if reason =~ ~r/HTTP 4(04|10)\b/, do: false, else: last_value(last)
     end
   end
 
