@@ -61,8 +61,11 @@ defmodule Wallboard.Sources.SessionIssues do
   # board (BoardLive.derive_sessions/1), a session shows once, and this
   # machine's own copy comes first.
   defp live_sessions do
-    # What this machine's Claude sessions' prompts named, by session id.
-    named = (Poller.snapshot(:usage).facts || %{})[:sessions] || %{}
+    # What this machine's Claude sessions' prompts named, by session id. Nil
+    # until the usage reader's first read ends, which can take minutes after
+    # a start: until then they wait, so a branch's issue never stands in.
+    usage = Poller.snapshot(:usage).facts
+    named = (usage || %{})[:sessions] || %{}
 
     local =
       for name <- [:claude, :codex],
@@ -71,7 +74,9 @@ defmodule Wallboard.Sources.SessionIssues do
             Map.merge(s, %{
               repo: GitRemote.github_repo(s[:cwd]),
               branch: GitRemote.branch(s[:cwd]),
-              issue_refs: s[:issue_refs] || named[s[:session_id]][:issues] || [],
+              issue_refs:
+                s[:issue_refs] ||
+                  if(usage, do: named[s[:session_id]][:issues] || [], else: :waiting),
               local?: true
             })
 
@@ -90,6 +95,8 @@ defmodule Wallboard.Sources.SessionIssues do
 
   # What to ask GitHub about a session, in order: the issues its prompts
   # named, then its branch's pull requests. Only names fit to send.
+  defp keys(%{issue_refs: :waiting}), do: []
+
   defp keys(s) do
     named =
       for %{number: n} = ref <- List.wrap(s[:issue_refs]),
