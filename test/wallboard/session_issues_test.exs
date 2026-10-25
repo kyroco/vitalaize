@@ -265,7 +265,19 @@ defmodule Wallboard.SessionIssuesTest do
       def handle_call(:snapshot, _from, facts), do: {:reply, %{facts: facts, meta: %{}}, facts}
     end
 
-    test "a session on this machine has its repository and branch read from its folder", c do
+    # Stands in for the sessions collectors stream from other machines.
+    defmodule FakeStream do
+      use GenServer
+
+      def start_link(cards),
+        do: GenServer.start_link(__MODULE__, cards, name: Wallboard.Link.Sessions)
+
+      def init(cards), do: {:ok, cards}
+      def handle_call(:cards, _from, cards), do: {:reply, cards, cards}
+    end
+
+    # A checkout of acme/shop on the given branch.
+    defp checkout(c, branch) do
       folder = Path.join(c.dir, "checkout")
       File.mkdir_p!(Path.join([folder, ".git"]))
 
@@ -274,7 +286,12 @@ defmodule Wallboard.SessionIssuesTest do
       \turl = git@github.com:acme/shop.git
       """)
 
-      File.write!(Path.join([folder, ".git", "HEAD"]), "ref: refs/heads/robert/1418-login\n")
+      File.write!(Path.join([folder, ".git", "HEAD"]), "ref: refs/heads/#{branch}\n")
+      folder
+    end
+
+    test "a session on this machine has its repository and branch read from its folder", c do
+      folder = checkout(c, "robert/1418-login")
 
       start_supervised!(
         {FakePoller, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}
@@ -283,6 +300,33 @@ defmodule Wallboard.SessionIssuesTest do
       assert {:ok, facts, memory} = SessionIssues.poll(nil, nil, nil, @now)
       assert facts == %{sessions: %{"s1" => %{repo: "acme/shop", number: 1418}}}
       assert Map.keys(memory.reads) == [{:issue, "acme/shop", 1418}]
+    end
+
+    test "a session both on this machine and in a stream takes its issue from this machine", c do
+      folder = checkout(c, "robert/1418-login")
+
+      start_supervised!(
+        {FakePoller, %{sessions: [%{session_id: "s1", name: "login", cwd: folder}]}}
+      )
+
+      # A collector streams the same session, its branch read from the
+      # transcript, and a session of its own.
+      start_supervised!(
+        {FakeStream,
+         [
+           %{session_id: "s1", name: "login", gh_repo: "acme/shop", branch: "robert/1419-old"},
+           %{session_id: "s2", name: "away", gh_repo: "acme/shop", branch: "robert/1419-old"}
+         ]}
+      )
+
+      assert {:ok, facts, _} = SessionIssues.poll(nil, nil, nil, @now)
+
+      assert facts == %{
+               sessions: %{
+                 "s1" => %{repo: "acme/shop", number: 1418},
+                 "s2" => %{repo: "acme/shop", number: 1419}
+               }
+             }
     end
 
     test "with no pollers running it finds nothing and asks nothing", c do
