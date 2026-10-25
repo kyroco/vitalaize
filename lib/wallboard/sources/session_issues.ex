@@ -27,7 +27,9 @@ defmodule Wallboard.Sources.SessionIssues do
   branch come from its card, or for one on this machine from its folder
   (see `Wallboard.GitRemote`).
 
-  The facts are `%{sessions: %{session_id => %{repo, number}}}`, numbers
+  The facts are `%{sessions: %{card_key => %{repo, number}}}`, keyed by
+  each card's own `key`, which a streamed card's machine is part of, so
+  two machines sending the same session id never share an issue. Numbers
   and names only, so nothing from an issue or a prompt reaches the board
   or a log.
   """
@@ -112,7 +114,7 @@ defmodule Wallboard.Sources.SessionIssues do
   @doc """
   The issue each session is on, from what GitHub says and what was read in
   the last two minutes: `{facts, memory}`. `sessions` are maps with
-  `session_id`, `issue_refs` (`[%{repo, number}]`, what its prompts named),
+  `key` (the card's), `issue_refs` (`[%{repo, number}]`, what its prompts named),
   `repo` (`owner/name`) and `branch`; `memory` holds each read and when it
   was made.
   """
@@ -122,7 +124,7 @@ defmodule Wallboard.Sources.SessionIssues do
 
     wants =
       for s <- sessions,
-          is_binary(s[:session_id]),
+          is_binary(s[:key]),
           keys = keys(s),
           keys != [],
           do: {s, keys}
@@ -135,7 +137,7 @@ defmodule Wallboard.Sources.SessionIssues do
       for {s, keys} <- wants,
           key = pick(keys, reads),
           into: %{},
-          do: {s.session_id, %{repo: elem(key, 1), number: found(key, reads[key])}}
+          do: {s.key, %{repo: elem(key, 1), number: found(key, reads[key])}}
 
     {%{sessions: sessions}, %{reads: Map.take(reads, Enum.flat_map(wants, &elem(&1, 1)))}}
   end

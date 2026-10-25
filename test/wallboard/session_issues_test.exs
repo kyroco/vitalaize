@@ -452,6 +452,7 @@ defmodule Wallboard.SessionIssuesTest do
       folder = checkout(c, "main")
 
       card = %{
+        key: "codex:t1",
         session_id: "t1",
         name: "fix",
         cwd: folder,

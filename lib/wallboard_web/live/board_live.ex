@@ -455,7 +455,8 @@ defmodule WallboardWeb.BoardLive do
         known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
         # A streamed session names its own repository: its folder is on
         # another machine.
-        found = issues[s.session_id] || %{}
+        # Keyed by the card's own key: a streamed one names its machine.
+        found = issues[s[:key]] || %{}
 
         s =
           Map.merge(s, %{
