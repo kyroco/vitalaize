@@ -99,6 +99,33 @@ defmodule Wallboard.BoardGitHubFactsTest do
     refute log =~ "PLANTED"
   end
 
+  test "when the last good facts cannot be drawn either, the page draws nothing and logs only the error's kind" do
+    bad = %{repos: [%{repo: "acme/shop", facts: %{body: "PLANTED issue body"}, error: nil}]}
+
+    # As if the facts that once worked no longer draw, under new settings.
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        github: nil,
+        github_good: bad,
+        runners: %{},
+        open_run: nil,
+        run_view: nil
+      }
+    }
+
+    log =
+      capture_log(fn ->
+        assert {:noreply, socket} =
+                 BoardLive.handle_info({:source, :github, bad, %{error: nil}}, socket)
+
+        assert %{git: [], git_columns: [], git_quiet: [], gh: nil} = socket.assigns
+      end)
+
+    assert log =~ "KeyError"
+    refute log =~ "PLANTED"
+  end
+
   test "facts the board cannot read before any have worked still give the page all it draws" do
     # As the page first loads: nothing has worked yet.
     socket = %Phoenix.LiveView.Socket{
