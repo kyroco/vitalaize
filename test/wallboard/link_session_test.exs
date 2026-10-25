@@ -150,6 +150,35 @@ defmodule Wallboard.LinkSessionTest do
     assert read.(["hey"]).issue_refs == []
   end
 
+  test "the hub keeps only issue references fit to send, whatever a collector sends" do
+    refs = [
+      %Proto.IssueRef{repo: "../..", number: 5},
+      %Proto.IssueRef{repo: "acme/shop\n", number: 6},
+      %Proto.IssueRef{repo: "", number: 1_000_000_000},
+      %Proto.IssueRef{repo: "", number: 0},
+      %Proto.IssueRef{repo: "acme/shop", number: 7},
+      %Proto.IssueRef{repo: "", number: 8},
+      %Proto.IssueRef{repo: "", number: 9},
+      %Proto.IssueRef{repo: "", number: 10}
+    ]
+
+    summary = %Proto.Event{
+      session_id: @id,
+      file: @id <> ".jsonl",
+      position: 1,
+      at: DateTime.to_unix(@now),
+      items: [%Proto.Item{body: {:summary, %Proto.Summary{issues: refs}}}]
+    }
+
+    card = Session.card(fold([summary, status(:working, at: @now)]), true, prices())
+
+    assert card.issue_refs == [
+             %{repo: "acme/shop", number: 7},
+             %{repo: nil, number: 8},
+             %{repo: nil, number: 9}
+           ]
+  end
+
   test "the card says why it waits: the question, the tool's name, or the kind of wait" do
     why = fn opts ->
       Session.card(fold(main() ++ [status(:needs, [at: @now] ++ opts)]), true, prices()).why
