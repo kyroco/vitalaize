@@ -509,7 +509,7 @@ defmodule WallboardWeb.BoardLive do
   # Lines from more than one repository each name theirs, so two
   # milestones of the same name never read alike.
   defp milestone_repos?(milestones),
-    do: milestones |> Enum.uniq_by(& &1.repo) |> length() > 1
+    do: milestones |> Enum.uniq_by(&String.downcase(&1.repo)) |> length() > 1
 
   # "#1418" for an issue in the session's own repository, "vendor/lib#12"
   # for one in another, so the number never reads as the wrong issue.

@@ -157,12 +157,14 @@ defmodule Wallboard.Sources.SessionIssues do
 
     picked = for {s, keys} <- wants, key = pick(keys, reads), do: {s, key}
 
-    # Each session's milestone, as {counts key, card key}.
+    # Each session's milestone, as {counts key, {card key, repository as
+    # written}}. The key ignores capitals, as GitHub's names do; the line
+    # shows the name as it was written.
     on =
       for {s, key} <- picked,
           {n, _} <- [reads[{:milestone, key}]],
           is_integer(n),
-          do: {{:counts, String.downcase(elem(key, 1)), n}, s.key}
+          do: {{:counts, String.downcase(elem(key, 1)), n}, {s.key, elem(key, 1)}}
 
     counts = on |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
     reads = read_counts(counts, reads, at, calls)
@@ -188,25 +190,27 @@ defmodule Wallboard.Sources.SessionIssues do
   defp milestones(on, reads) do
     on
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
-    |> Enum.flat_map(fn {{:counts, repo, n} = key, cards} ->
+    |> Enum.flat_map(fn {{:counts, repo, n} = key, on} ->
       case reads[key] do
         {%{} = c, _} ->
           [
             %{
-              repo: repo,
+              repo: on |> Enum.map(&elem(&1, 1)) |> Enum.min(),
               number: n,
               done: c.done,
               total: c.total,
               rev: c.rev,
-              sessions: Enum.sort(cards)
+              sessions: on |> Enum.map(&elem(&1, 0)) |> Enum.sort()
             }
           ]
 
         _ ->
           []
       end
+      |> Enum.map(&{repo, &1})
     end)
-    |> Enum.sort_by(&{&1.repo, &1.number})
+    |> Enum.sort_by(fn {repo, m} -> {repo, m.number} end)
+    |> Enum.map(&elem(&1, 1))
   end
 
   # The key that gives a session's issue. A named issue that is not known
