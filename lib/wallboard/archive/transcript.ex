@@ -37,6 +37,9 @@ defmodule Wallboard.Archive.Transcript do
       titles: %{},
       first_prompt: nil,
       last_prompt: nil,
+      # The first issues prompts name, as %{repo, number}, in order (see
+      # Wallboard.IssueRef): no prompt text.
+      issues: [],
       requests: %{},
       # The id of the request the latest reply line added or changed.
       last_request: nil,
@@ -226,6 +229,38 @@ defmodule Wallboard.Archive.Transcript do
 
   defp tool_call(_, t), do: t
 
+  @doc """
+  What the person typed in a user line, or nil for the results of tool
+  calls and for lines the app writes on its own.
+  """
+  def prompt(%{} = e) do
+    msg = if is_map(e["message"]), do: e["message"], else: %{}
+
+    cond do
+      Enum.any?(blocks(msg), &(&1["type"] == "tool_result")) -> nil
+      e["isMeta"] || e["isCompactSummary"] || e["isSidechain"] -> nil
+      true -> prompt_text(msg["content"])
+    end
+  end
+
+  @doc """
+  The text of a user line that can name an issue: what the person typed, or
+  the arguments of a slash command they typed, which Claude Code writes in
+  tags (`/work-on #3586` keeps `#3586` in `<command-args>`). Nil otherwise.
+  """
+  def issue_text(%{} = e), do: prompt(e) || command_args(e)
+
+  defp command_args(%{"message" => %{"content" => text}} = e) when is_binary(text) do
+    with true <- !(e["isMeta"] || e["isCompactSummary"] || e["isSidechain"]),
+         [_, args] <- Regex.run(~r{<command-args>(.*?)</command-args>}s, text) do
+      args
+    else
+      _ -> nil
+    end
+  end
+
+  defp command_args(_), do: nil
+
   # A user line is either a prompt or the results of tool calls.
   defp user(e, t) do
     msg = e["message"] || %{}
@@ -237,11 +272,16 @@ defmodule Wallboard.Archive.Transcript do
       results != [] ->
         Enum.reduce(results, t, &tool_result/2)
 
-      e["isMeta"] || e["isCompactSummary"] || e["isSidechain"] ->
-        t
+      text = prompt(e) ->
+        %{
+          t
+          | prompts: t.prompts + 1,
+            first_prompt: t.first_prompt || clip(text),
+            issues: Wallboard.IssueRef.keep(t.issues, text)
+        }
 
-      text = prompt_text(msg["content"]) ->
-        %{t | prompts: t.prompts + 1, first_prompt: t.first_prompt || clip(text)}
+      args = command_args(e) ->
+        %{t | issues: Wallboard.IssueRef.keep(t.issues, args)}
 
       true ->
         t

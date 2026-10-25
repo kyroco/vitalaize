@@ -403,7 +403,8 @@ defmodule Wallboard.Archive.CodexTranscript do
       t
       | prompts: t.prompts + 1,
         first_prompt: t.first_prompt || clip(text),
-        last_prompt: clip(text)
+        last_prompt: clip(text),
+        issues: Wallboard.IssueRef.keep(t.issues, text)
     }
   end
 

@@ -299,6 +299,14 @@ defmodule Wallboard.CodexTest do
       assert Codex.waiting(mark, t) == nil
     end
 
+    test "the card carries the issue the session's prompts named" do
+      t = Map.merge(running_tally(), %{mtime: at(40), path: "p"})
+      assert Codex.card(t, [], "Fix it", at(45)).issue_refs == []
+
+      named = Map.put(t, :issues, [%{repo: nil, number: 1418}])
+      assert Codex.card(named, [], "Fix it", at(45)).issue_refs == [%{repo: nil, number: 1418}]
+    end
+
     test "the card shows needs you, why, and since when" do
       t = Map.merge(running_tally(), %{mtime: at(40), path: "p"})
 

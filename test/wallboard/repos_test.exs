@@ -887,5 +887,36 @@ defmodule Wallboard.ReposTest do
       assert GitRemote.github_repo(Path.join(dir, "nowhere")) == nil
       assert GitRemote.github_repo(nil) == nil
     end
+
+    test "reads the branch a folder is on, in a checkout and in a worktree, and none when detached" do
+      dir = Wallboard.Fixtures.tmp_path("wallboard-branch")
+      on_exit(fn -> File.rm_rf!(dir) end)
+      main = Path.join(dir, "shop")
+      File.mkdir_p!(Path.join([main, ".git", "worktrees", "fix"]))
+      File.mkdir_p!(Path.join(main, "lib/deep"))
+      File.write!(Path.join([main, ".git", "HEAD"]), "ref: refs/heads/main\n")
+
+      assert GitRemote.branch(main) == "main"
+      assert GitRemote.branch(Path.join(main, "lib/deep")) == "main"
+
+      # A worktree's branch is in its own git folder, not the main checkout's.
+      tree = Path.join(dir, "fix")
+      File.mkdir_p!(tree)
+      File.write!(Path.join(tree, ".git"), "gitdir: #{main}/.git/worktrees/fix\n")
+
+      File.write!(
+        Path.join([main, ".git", "worktrees", "fix", "HEAD"]),
+        "ref: refs/heads/robert/1418-fix\n"
+      )
+
+      assert GitRemote.branch(tree) == "robert/1418-fix"
+
+      # Detached: HEAD names a commit, not a branch.
+      File.write!(Path.join([main, ".git", "HEAD"]), "3756165e5c0ffee\n")
+      assert GitRemote.branch(main) == nil
+
+      assert GitRemote.branch(Path.join(dir, "nowhere")) == nil
+      assert GitRemote.branch(nil) == nil
+    end
   end
 end

@@ -106,6 +106,13 @@ defmodule Wallboard.Application do
           interval_ms: settings.github.poll_seconds * 1000,
           timeout_ms: &Wallboard.Sources.GitHub.timeout_ms/1
         },
+        # The issue each live session is on. It asks GitHub about an issue
+        # or a branch at most every two minutes, whatever the interval.
+        {Wallboard.Poller,
+         name: :session_issues,
+         source: Wallboard.Sources.SessionIssues,
+         interval_ms: settings.github.poll_seconds * 1000,
+         timeout_ms: 120_000},
         # The first read of the transcripts can take a minute or two.
         {Wallboard.Poller,
          name: :usage,

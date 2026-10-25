@@ -106,6 +106,79 @@ defmodule Wallboard.LinkSessionTest do
     assert %{status: :working, name: "d299768e", machine: "papa", stale: false} = card
   end
 
+  test "the card carries the session's whole repository and branch, so its issue can be found" do
+    events =
+      events("collector/claude_session.jsonl", %{
+        file: @id <> ".jsonl",
+        repo: fn _ -> "acme/shop" end
+      })
+
+    card = Session.card(fold(events ++ [status(:working, at: @now)]), true, prices())
+    assert %{repo: "shop", gh_repo: "acme/shop", branch: "fix/login-loop"} = card
+
+    bare = Session.card(fold([status(:working, at: @now)]), true, prices())
+    assert %{gh_repo: nil, branch: nil} = bare
+  end
+
+  test "the card carries the issue the session's prompts named, as a repository and a number" do
+    text = fn prompts ->
+      Enum.map_join(
+        prompts,
+        &(Jason.encode!(%{type: "user", message: %{role: "user", content: &1}}) <> "\n")
+      )
+    end
+
+    read = fn prompts ->
+      {events, _} =
+        %{
+          tool: :claude,
+          session_id: @id,
+          account: "main",
+          prices: prices(),
+          file: @id <> ".jsonl"
+        }
+        |> Filter.new()
+        |> Filter.read(text.(prompts))
+
+      Session.card(fold(events ++ [status(:working, at: @now)]), true, prices())
+    end
+
+    assert read.(["hey", "https://github.com/acme/shop/issues/7"]).issue_refs ==
+             [%{repo: "acme/shop", number: 7}]
+
+    assert read.(["work on #1418"]).issue_refs == [%{repo: nil, number: 1418}]
+    assert read.(["hey"]).issue_refs == []
+  end
+
+  test "the hub keeps only issue references fit to send, whatever a collector sends" do
+    refs = [
+      %Proto.IssueRef{repo: "../..", number: 5},
+      %Proto.IssueRef{repo: "acme/shop\n", number: 6},
+      %Proto.IssueRef{repo: "", number: 1_000_000_000},
+      %Proto.IssueRef{repo: "", number: 0},
+      %Proto.IssueRef{repo: "acme/shop", number: 7},
+      %Proto.IssueRef{repo: "", number: 8},
+      %Proto.IssueRef{repo: "", number: 9},
+      %Proto.IssueRef{repo: "", number: 10}
+    ]
+
+    summary = %Proto.Event{
+      session_id: @id,
+      file: @id <> ".jsonl",
+      position: 1,
+      at: DateTime.to_unix(@now),
+      items: [%Proto.Item{body: {:summary, %Proto.Summary{issues: refs}}}]
+    }
+
+    card = Session.card(fold([summary, status(:working, at: @now)]), true, prices())
+
+    assert card.issue_refs == [
+             %{repo: "acme/shop", number: 7},
+             %{repo: nil, number: 8},
+             %{repo: nil, number: 9}
+           ]
+  end
+
   test "the card says why it waits: the question, the tool's name, or the kind of wait" do
     why = fn opts ->
       Session.card(fold(main() ++ [status(:needs, [at: @now] ++ opts)]), true, prices()).why

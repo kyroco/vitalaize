@@ -256,6 +256,9 @@ defmodule Wallboard.Link.Session do
         kind: "remote",
         folder: folder(sum.folder),
         repo: sum.repo |> blank() |> repo_name(),
+        gh_repo: blank(sum.repo),
+        branch: blank(sum.branch),
+        issue_refs: issue_refs(sum),
         status: status,
         task: short(sum.last_prompt) || blank(sum.folder),
         why: if(status == :needs, do: why(s.status)),
@@ -493,6 +496,28 @@ defmodule Wallboard.Link.Session do
     do: "Asks for your approval to use " <> tool
 
   defp why(%{why: why}), do: Map.get(@waiting_words, why, "Waiting on you")
+
+  # The issues the session's prompts named, as its collector sent them: a
+  # repository only when the prompt linked one (see Wallboard.IssueRef).
+  # What is not an issue reference is left out, and only the first three
+  # count.
+  defp issue_refs(%{issues: refs}) when is_list(refs) do
+    refs
+    |> Enum.flat_map(fn
+      %Proto.IssueRef{repo: repo, number: n} when n in 1..999_999_999 ->
+        cond do
+          repo in [nil, ""] -> [%{repo: nil, number: n}]
+          Wallboard.RepoPrompts.name?(repo) -> [%{repo: repo, number: n}]
+          true -> []
+        end
+
+      _ ->
+        []
+    end)
+    |> Enum.take(3)
+  end
+
+  defp issue_refs(_), do: []
 
   defp repo_name(nil), do: nil
   defp repo_name(repo), do: repo |> String.split("/") |> List.last()

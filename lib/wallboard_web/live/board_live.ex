@@ -94,6 +94,7 @@ defmodule WallboardWeb.BoardLive do
     builds = Poller.snapshot(:builds)
     release = Poller.snapshot(:release)
     budget = Poller.snapshot(:budget)
+    issues = Poller.snapshot(:session_issues)
 
     socket =
       socket
@@ -101,6 +102,8 @@ defmodule WallboardWeb.BoardLive do
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(stream: Wallboard.Link.Sessions.cards())
+      # The issue each session is on.
+      |> assign(session_issues: issues.facts)
       # What collectors say about the GitHub runners on their machines.
       |> assign(runners: Wallboard.Link.RunnerStates.states())
       |> assign(github: github.facts, github_meta: github.meta)
@@ -153,6 +156,11 @@ defmodule WallboardWeb.BoardLive do
   # Sessions that collectors stream from other machines.
   def handle_info({:stream, cards}, socket),
     do: {:noreply, socket |> assign(stream: cards) |> derive_sessions()}
+
+  # The issue each session is on, by session id (see
+  # Wallboard.Sources.SessionIssues).
+  def handle_info({:source, :session_issues, facts, _meta}, socket),
+    do: {:noreply, socket |> assign(session_issues: facts) |> derive_sessions()}
 
   # The GitHub runners collectors report, `%{name => state}`.
   def handle_info({:runners, states}, socket) when is_map(states),
@@ -437,14 +445,33 @@ defmodule WallboardWeb.BoardLive do
 
     sessions = Enum.map(sessions, &Map.put(&1, :long?, Claude.long_running?(&1, now, long)))
 
-    # Each card names its repository, looked up once per folder.
+    issues = (socket.assigns[:session_issues] || %{})[:sessions] || %{}
+
+    # Each card names its repository, looked up once per folder, and the
+    # issue it is on.
     {sessions, repo_of} =
       Enum.map_reduce(sessions, socket.assigns.repo_of, fn s, known ->
         cwd = s[:cwd]
-        known = if Map.has_key?(known, cwd), do: known, else: Map.put(known, cwd, repo_of(cwd))
+
+        known =
+          if Map.has_key?(known, cwd),
+            do: known,
+            else: Map.put(known, cwd, Wallboard.GitRemote.github_repo(cwd))
+
+        # Keyed by the card's own key: a streamed one names its machine.
+        found = issues[s[:key]] || %{}
+
         # A streamed session names its own repository: its folder is on
         # another machine.
-        {Map.put(s, :repo, s[:repo] || known[cwd]), known}
+        s =
+          Map.merge(s, %{
+            repo: s[:repo] || short_repo(known[cwd]),
+            gh_repo: s[:gh_repo] || known[cwd],
+            issue: found[:number],
+            issue_repo: found[:repo]
+          })
+
+        {s, known}
       end)
 
     needs = sessions |> Enum.filter(&(&1.status == :needs)) |> Enum.sort_by(&unix(&1.since))
@@ -460,13 +487,22 @@ defmodule WallboardWeb.BoardLive do
     )
   end
 
-  # "api" for a folder in acme/api, or nil outside a GitHub checkout.
-  defp repo_of(cwd) do
-    case Wallboard.GitRemote.github_repo(cwd) do
-      nil -> nil
-      repo -> repo |> String.split("/") |> List.last()
-    end
+  # "#1418" for an issue in the session's own repository, "vendor/lib#12"
+  # for one in another, so the number never reads as the wrong issue.
+  # The whole owner/name is compared, without regard to capitals: a fork's
+  # upstream has the fork's name.
+  defp issue_label(%{issue: n} = s) do
+    repo = s[:issue_repo]
+    own = s[:gh_repo]
+
+    if is_nil(repo) or (is_binary(own) and String.downcase(repo) == String.downcase(own)),
+      do: "##{n}",
+      else: "#{repo}##{n}"
   end
+
+  # "api" for acme/api.
+  defp short_repo(nil), do: nil
+  defp short_repo(repo), do: repo |> String.split("/") |> List.last()
 
   # Every repository, the ones with a column on the Git tab and the quiet
   # rest, and the first one's summary, which the Dev and Prod tiles read.
@@ -474,8 +510,36 @@ defmodule WallboardWeb.BoardLive do
   # poller's, so one added or removed on the settings page shows without a
   # reload. A runner GitHub does not list takes its state from a collector
   # on its machine, when one reports it.
+  #
+  # An error here is caught rather than left to crash the page, whichever
+  # message brought it: a LiveView's crash report prints its state and the
+  # message, and both hold the facts, issue text included. The log says
+  # only what kind of error it was, and the facts go back to the last ones
+  # that worked, so the next tick does not fail on the same ones. Before
+  # any have worked, that is none, which the page draws as not read yet.
+  # When those cannot be drawn either, the page draws no repositories.
   defp derive_github(socket) do
-    %{github: facts, now: now} = socket.assigns
+    show_github(socket, socket.assigns.github)
+  rescue
+    e ->
+      Logger.error("The board could not use the new GitHub data: #{inspect(e.__struct__)}")
+      good = socket.assigns[:github_good]
+      socket = assign(socket, github: good)
+
+      try do
+        show_github(socket, good)
+      rescue
+        e ->
+          Logger.error(
+            "The board could not show its last good GitHub data: #{inspect(e.__struct__)}"
+          )
+
+          assign(socket, git: [], git_columns: [], git_quiet: [], gh: nil)
+      end
+  end
+
+  defp show_github(socket, facts) do
+    now = socket.assigns[:now] || now()
     repos = GitHub.repos(facts, Settings.get(), now, socket.assigns[:runners] || %{})
     {columns, quiet} = GitHub.arrange(repos)
 
@@ -483,7 +547,8 @@ defmodule WallboardWeb.BoardLive do
       git: repos,
       git_columns: columns,
       git_quiet: quiet,
-      gh: repos |> List.first() |> then(&(&1 && &1.s))
+      gh: repos |> List.first() |> then(&(&1 && &1.s)),
+      github_good: facts
     )
   end
 
@@ -492,6 +557,8 @@ defmodule WallboardWeb.BoardLive do
   # running runs, from the archive, or from one read of that run alone.
   defp derive_run(%{assigns: %{open_run: nil}} = socket), do: assign(socket, run_view: nil)
 
+  # An error here is caught for the same reason as in derive_github/1; the
+  # run's panel closes.
   defp derive_run(%{assigns: %{open_run: %{repo: repo, id: id}}} = socket) do
     seen = socket.assigns.run_view && socket.assigns.run_view.run
 
@@ -506,6 +573,10 @@ defmodule WallboardWeb.BoardLive do
           run_view: %{repo: repo, run: run, jobs: jobs, listed: listed_runners(socket, repo)}
         )
     end
+  rescue
+    e ->
+      Logger.error("The board could not show one GitHub Actions run: #{inspect(e.__struct__)}")
+      assign(socket, open_run: nil, run_view: nil)
   end
 
   # The runners GitHub lists as the repository's own, now and before (see
@@ -1632,7 +1703,8 @@ defmodule WallboardWeb.BoardLive do
 
   # One session. The first block comes from `claude agents`; the details
   # (context, cost, model, lines changed, subagents) from its transcript.
-  defp session_card(assigns) do
+  @doc false
+  def session_card(assigns) do
     ~H"""
     <div
       class={[
@@ -1656,6 +1728,7 @@ defmodule WallboardWeb.BoardLive do
         <span :if={@s.account} class="acct">{@s.account}</span>
         <span :if={@s[:started_by]} class="acct">from {@s.started_by}</span>
         <span :if={@s[:repo]} class="sc-repo" title={@s.folder}>{@s.repo}</span>
+        <span :if={@s[:issue]} class="sc-issue" title="The issue this session is on">{issue_label(@s)}</span>
         <span :if={!@s[:repo] && @s.folder} class="sc-folder">{@s.folder}</span>
       </div>
       <div class="sc-task">{if @s.status == :needs, do: @s.why, else: @s.task}</div>

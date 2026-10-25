@@ -219,6 +219,19 @@ defmodule Wallboard.Collector.Proto.Summary do
   field(:effort, 9, type: :string)
   field(:version, 10, type: :string)
   field(:entrypoint, 11, type: :string)
+  field(:issues, 12, repeated: true, type: Wallboard.Collector.Proto.IssueRef)
+end
+
+defmodule Wallboard.Collector.Proto.IssueRef do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.IssueRef",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:repo, 1, type: :string)
+  field(:number, 2, type: :uint64)
 end
 
 defmodule Wallboard.Collector.Proto.PullRequest do

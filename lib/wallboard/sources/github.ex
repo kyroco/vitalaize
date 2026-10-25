@@ -29,6 +29,8 @@ defmodule Wallboard.Sources.GitHub do
   """
 
   alias Wallboard.{Cmd, Runners, Settings, Store}
+
+  require Logger
   alias Wallboard.Archive.GitHubCollector
 
   # How long to wait before asking again for runners GitHub refused to list.
@@ -63,7 +65,7 @@ defmodule Wallboard.Sources.GitHub do
     entries =
       settings
       |> Settings.github_repos()
-      |> Task.async_stream(fn gh -> {gh.repo, fetch(gh, before[gh.repo], now)} end,
+      |> Task.async_stream(fn gh -> {gh.repo, fetch_safely(gh, before[gh.repo], now)} end,
         max_concurrency: 4,
         timeout: :infinity
       )
@@ -100,6 +102,23 @@ defmodule Wallboard.Sources.GitHub do
 
   # ---------------------------------------------------------------------------
   # Fetching
+
+  # One repository's read, in its own task. A raise, throw or exit is caught
+  # here: left to escape, it would end the task with a crash report and
+  # take the whole poll down with the error's text, which can hold what
+  # GitHub sent. It fails that repository alone, in plain words for the
+  # panel; the log names only the error's kind.
+  defp fetch_safely(gh, prev, now) do
+    fetch(gh, prev, now)
+  rescue
+    e ->
+      Logger.error("A GitHub read hit an error: #{inspect(e.__struct__)}")
+      {:error, "the read hit an error"}
+  catch
+    kind, _ ->
+      Logger.error("A GitHub read stopped early (#{kind})")
+      {:error, "the read stopped early"}
+  end
 
   @doc """
   One repository's facts: {:ok, facts} or {:error, reason}. `gh` is that
@@ -306,11 +325,12 @@ defmodule Wallboard.Sources.GitHub do
         "graphql",
         "-f",
         "query=" <> @gql,
-        "-F",
+        # -f, not -F: -F would send a name of digits as a number.
+        "-f",
         "owner=" <> owner,
-        "-F",
+        "-f",
         "name=" <> name,
-        "-F",
+        "-f",
         "branch=" <> gh.branch
       ],
       timeout: 30_000

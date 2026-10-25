@@ -252,6 +252,8 @@ button { font: inherit; }
 .sc-folder { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 /* The repository a session works in, from its folder's git remote. */
 .sc-repo { font-size: 12px; font-weight: 700; color: var(--info); overflow: hidden; text-overflow: ellipsis; }
+/* The issue it is on, from its name, its branch or the pull request its branch closes. */
+.sc-issue { font-size: 12px; font-weight: 700; color: var(--info); white-space: nowrap; }
 .card-grid .sc-task { font-size: 13px; display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ctx { display: flex; flex-direction: column; gap: 3px; }
 .bar.thin { height: 5px; }
