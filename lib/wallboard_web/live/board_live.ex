@@ -491,9 +491,19 @@ defmodule WallboardWeb.BoardLive do
   # message brought it: a LiveView's crash report prints its state and the
   # message, and both hold the facts, issue text included. The log says
   # only what kind of error it was, and the facts go back to the last ones
-  # that worked, so the next tick does not fail on the same ones.
+  # that worked, so the next tick does not fail on the same ones. Before
+  # any have worked, that is none, which the page draws as not read yet.
   defp derive_github(socket) do
-    %{github: facts, now: now} = socket.assigns
+    show_github(socket, socket.assigns.github)
+  rescue
+    e ->
+      Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
+      good = socket.assigns[:github_good]
+      socket |> assign(github: good) |> show_github(good)
+  end
+
+  defp show_github(socket, facts) do
+    now = socket.assigns[:now] || now()
     repos = GitHub.repos(facts, Settings.get(), now, socket.assigns[:runners] || %{})
     {columns, quiet} = GitHub.arrange(repos)
 
@@ -504,10 +514,6 @@ defmodule WallboardWeb.BoardLive do
       gh: repos |> List.first() |> then(&(&1 && &1.s)),
       github_good: facts
     )
-  rescue
-    e ->
-      Logger.error("The board could not take in GitHub facts: #{inspect(e.__struct__)}")
-      assign(socket, github: socket.assigns[:github_good])
   end
 
   # The open run and its jobs. A run that leaves GitHub's last-day list
