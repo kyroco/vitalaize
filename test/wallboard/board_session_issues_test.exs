@@ -20,6 +20,7 @@ defmodule Wallboard.BoardSessionIssuesTest do
       folder: "/nowhere/" <> name,
       cwd: nil,
       repo: "shop",
+      gh_repo: "acme/shop",
       status: :working,
       task: "working on it",
       why: nil,
@@ -82,6 +83,19 @@ defmodule Wallboard.BoardSessionIssuesTest do
     [card] = socket.assigns.working
     html = render_component(&BoardLive.session_card/1, s: card)
     assert html =~ ~r{class="sc-issue"[^>]*>\s*vendor/lib#12\s*<}
+
+    # Another owner's repository of the same name is named too: a fork's
+    # upstream is not the fork.
+    socket = socket([session("cccc3333", "fork")])
+    facts = %{sessions: %{"main:cccc3333" => %{repo: "upstream/shop", number: 77}}}
+
+    {:noreply, socket} =
+      BoardLive.handle_info({:source, :session_issues, facts, %{error: nil}}, socket)
+
+    [card] = socket.assigns.working
+
+    assert render_component(&BoardLive.session_card/1, s: card) =~
+             ~r{class="sc-issue"[^>]*>\s*upstream/shop#77\s*<}
 
     # The session's own repository, in any capitals, is left out.
     own = Map.merge(session("b", "notes"), %{issue: 7, issue_repo: "Acme/SHOP"})
