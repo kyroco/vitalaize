@@ -15,9 +15,9 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
-## What's new in 0.4.3
+## What's new in 0.5.0
 
-0.4.3 shows which issue each agent is working on, and how far along its
+0.5.0 shows which issue each agent is working on, and how far along its
 milestone is, on the Agents tab:
 
 - Each card shows the GitHub issue its session is on, such as `#1418`. The
