@@ -122,7 +122,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
         width: width,
         done: text(box, ~r{class="ms-done">(.*?</span>.*?)</span>}s),
         agents:
-          ~r{class="ms-chip">(.*?)</span>}s
+          ~r{class="ms-chip">(.*?</span>)\s*</span>}s
           |> Regex.scan(box, capture: :all_but_first)
           |> Enum.map(fn [chip] -> squish(chip) end)
       }
@@ -162,8 +162,8 @@ defmodule Wallboard.BoardMilestoneLineTest do
                tone: "ms-1",
                repo: "acme/shop",
                title: "Checkout v2",
-               left: "5 left · 38%",
-               width: "38",
+               left: "5 left · 37%",
+               width: "37",
                done: "3 of 8 done",
                agents: ["#101 a"]
              },
@@ -289,5 +289,55 @@ defmodule Wallboard.BoardMilestoneLineTest do
     assert log =~ "not_an_event_the_board_handles"
     assert log =~ "assigns"
     refute log =~ "PLANTED"
+  end
+
+  test "the percent rounds down, so a box reads 100% only when every issue is done" do
+    view = open_board()
+
+    read = fn done, total ->
+      [box] = boxes(tell(view, [milestone("acme/shop", 11, done, total, "Big", ["main:a"])]))
+      {box.left, box.width}
+    end
+
+    assert read.(199, 200) == {"1 left · 99%", "99"}
+    assert read.(3, 8) == {"5 left · 37%", "37"}
+    assert read.(8, 8) == {"0 left · 100%", "100"}
+    # A milestone with no issues yet, and counts read out of step.
+    assert read.(0, 0) == {"0 left · 0%", "0"}
+    assert read.(9, 8) == {"0 left · 100%", "100"}
+  end
+
+  test "each agent's name is its own part of the chip, so a long one ends in an ellipsis" do
+    view = open_board()
+    name = "robert/1400-checkout-flow-and-cart"
+    one = milestone("acme/shop", 11, 1, 2, "Checkout", ["main:a"])
+    html = tell(view, [one], [%{card("a") | name: name}])
+
+    assert html =~ ~s(<span class="ms-chip-name" title="#{name}">#{name}</span>)
+  end
+
+  test "more milestones sit more to a row, up to four, so the cards keep their room" do
+    view = open_board()
+
+    cols = fn n ->
+      ms = for i <- 1..n, do: milestone("acme/shop", i, 0, 1, "M#{i}", ["main:a"])
+
+      [cols] =
+        Regex.run(~r{class="milestone-grid" style="--ms-cols: (\d)"}, tell(view, ms),
+          capture: :all_but_first
+        )
+
+      cols
+    end
+
+    assert Enum.map([1, 2, 3, 4, 5, 8], cols) == ~w(2 2 3 4 4 4)
+  end
+
+  test "with no sessions, the live counts are not shown" do
+    view = open_board()
+    html = tell(view, [], [])
+    assert html =~ "No Claude sessions running."
+    refute html =~ "live-chip"
+    assert tell(view, [], [card("a")]) =~ "live-chip"
   end
 end
