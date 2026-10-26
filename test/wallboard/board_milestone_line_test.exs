@@ -1,9 +1,9 @@
 defmodule Wallboard.BoardMilestoneLineTest do
-  # Above the cards on the Agents tab, one line for each milestone a live
-  # session's issue is in (issue #144), on the real board page. A title is
-  # GitHub text: it is drawn, but never printed when the page crashes. One
-  # at a time: the settings, the endpoint and the log are this whole test
-  # run's.
+  # Above the cards on the Agents tab, one box for each milestone a live
+  # session's issue is in (issues #144 and #168), on the real board page. A
+  # title is GitHub text: it is drawn, but never printed when the page
+  # crashes. One at a time: the settings, the endpoint and the log are this
+  # whole test run's.
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
@@ -14,7 +14,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
 
   @endpoint WallboardWeb.Endpoint
 
-  setup do
+  setup context do
     old_settings = :persistent_term.get({Settings, :settings}, nil)
     endpoint = Application.get_env(:wallboard, @endpoint, [])
 
@@ -26,7 +26,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
 
     settings =
       Settings.merge(Settings.defaults(), %{
-        archive: %{enabled: false, collect_local: false, advertise: false},
+        archive: %{enabled: !!context[:archive], collect_local: false, advertise: false},
         new_relic: %{enabled: false}
       })
 
@@ -97,77 +97,185 @@ defmodule Wallboard.BoardMilestoneLineTest do
     render(view)
   end
 
-  defp lines(html) do
-    ~r{<p class="milestone-line">(.*?)</p>}s
-    |> Regex.scan(html, capture: :all_but_first)
-    |> Enum.map(fn [text] -> text |> String.split() |> Enum.join(" ") end)
+  defp tell_issues(view, milestones, cards, issues) do
+    send(view.pid, {:stream, cards})
+    facts = %{sessions: issues, milestones: milestones}
+    send(view.pid, {:source, :session_issues, facts, %{error: nil}})
+    render(view)
   end
 
-  test "one line for each milestone being worked, with its name and how many are done" do
+  # Each milestone box, read back as a person sees it.
+  defp boxes(html) do
+    html
+    |> String.split(~s(<article class="milestone-box ))
+    |> tl()
+    |> Enum.map(fn box ->
+      box = box |> String.split("</article>") |> hd()
+      [tone] = Regex.run(~r{^(ms-\d)}, box, capture: :all_but_first)
+      [width] = Regex.run(~r{class="ms-fill" style="width: (\d+)%"}, box, capture: :all_but_first)
+
+      %{
+        tone: tone,
+        repo: text(box, ~r{class="ms-repo">(.*?)</span>}s),
+        title: text(box, ~r{class="ms-title">(.*?)</div>}s),
+        left: text(box, ~r{class="ms-left">(.*?)</span>}s),
+        width: width,
+        done: text(box, ~r{class="ms-done">(.*?</span>.*?)</span>}s),
+        agents:
+          ~r{class="ms-chip">(.*?)</span>}s
+          |> Regex.scan(box, capture: :all_but_first)
+          |> Enum.map(fn [chip] -> squish(chip) end)
+      }
+    end)
+  end
+
+  defp titles(html), do: html |> boxes() |> Enum.map(& &1.title)
+
+  defp text(html, re) do
+    [found] = Regex.run(re, html, capture: :all_but_first)
+    squish(found)
+  end
+
+  defp squish(html),
+    do: html |> String.replace(~r{<[^>]*>}, " ") |> String.split() |> Enum.join(" ")
+
+  # The class on each card's issue number, by card name.
+  defp issue_classes(html) do
+    ~r{<span class="sc-name">([^<]*)</span>.*?class="(sc-issue[^"]*)"}s
+    |> Regex.scan(html, capture: :all_but_first)
+    |> Map.new(fn [name, class] -> {name, class} end)
+  end
+
+  test "one box for each milestone being worked: repository, name, bar, counts and agents" do
     view = open_board()
-    assert lines(render(view)) == []
+    refute render(view) =~ "Milestones being worked"
 
-    one = milestone(11, 3, 8, "Project tab: 1. Know what each session is working on")
+    one = milestone("acme/shop", 11, 3, 8, "Checkout v2", ["main:a"])
+    two = milestone("acme/shop", 12, 0, 6, "Search", ["main:b"])
+    issues = %{"main:a" => %{number: 101, repo: "acme/shop"}, "main:b" => %{number: 102}}
+    html = tell_issues(view, [one, two], [card("a"), card("b")], issues)
 
-    assert lines(tell(view, [one])) == [
-             "Project tab: 1. Know what each session is working on · 3 of 8 done"
+    assert html =~ "Milestones being worked"
+
+    assert boxes(html) == [
+             %{
+               tone: "ms-1",
+               repo: "acme/shop",
+               title: "Checkout v2",
+               left: "5 left · 38%",
+               width: "38",
+               done: "3 of 8 done",
+               agents: ["#101 a"]
+             },
+             %{
+               tone: "ms-2",
+               repo: "acme/shop",
+               title: "Search",
+               left: "6 left · 0%",
+               width: "0",
+               done: "0 of 6 done",
+               agents: ["#102 b"]
+             }
            ]
 
-    two = milestone(12, 0, 6, "Project tab: 2. Wiki")
-
-    assert lines(tell(view, [one, two])) == [
-             "Project tab: 1. Know what each session is working on · 3 of 8 done",
-             "Project tab: 2. Wiki · 0 of 6 done"
-           ]
+    # The bar says the same in words, for a screen reader.
+    assert html =~ ~s(aria-label="3 of 8 issues done")
 
     # One that closes counts at once.
-    assert lines(tell(view, [%{one | done: 4}])) == [
-             "Project tab: 1. Know what each session is working on · 4 of 8 done"
-           ]
+    [box] = boxes(tell_issues(view, [%{one | done: 4}], [card("a")], issues))
+    assert {box.left, box.width, box.done} == {"4 left · 50%", "50", "4 of 8 done"}
 
-    assert lines(tell(view, [])) == []
+    # Two agents on one milestone share its box.
+    both = milestone("acme/shop", 11, 8, 8, "Checkout v2", ["main:a", "main:b"])
+    [box] = boxes(tell_issues(view, [both], [card("a"), card("b")], issues))
+    assert {box.left, box.width, box.agents} == {"0 left · 100%", "100", ["#101 a", "#102 b"]}
+
+    html = tell(view, [])
+    assert boxes(html) == []
+    refute html =~ "Milestones being worked"
   end
 
-  test "lines from more than one repository each name their repository" do
-    view = open_board()
-    shop = milestone("acme/shop", 1, 3, 8, "v1.0")
-    api = milestone("acme/api", 1, 1, 2, "v1.0")
-
-    assert lines(tell(view, [api, shop])) == [
-             "acme/api · v1.0 · 1 of 2 done",
-             "acme/shop · v1.0 · 3 of 8 done"
-           ]
-
-    assert lines(tell(view, [shop])) == ["v1.0 · 3 of 8 done"]
-  end
-
-  test "lines in one repository, written with different capitals, name no repository (#164)" do
+  test "each box names its repository as it was written" do
     view = open_board()
     one = milestone("Acme/Shop", 1, 3, 8, "v1.0")
-    two = milestone("acme/shop", 2, 1, 2, "v2.0")
+    two = milestone("acme/api", 1, 1, 2, "v1.0")
 
-    assert lines(tell(view, [one, two])) == ["v1.0 · 3 of 8 done", "v2.0 · 1 of 2 done"]
+    assert Enum.map(boxes(tell(view, [one, two])), &{&1.repo, &1.title}) == [
+             {"Acme/Shop", "v1.0"},
+             {"acme/api", "v1.0"}
+           ]
   end
 
-  test "a milestone line goes as soon as the last card on it does" do
+  test "a milestone's color is on its box and its cards' issue numbers; other cards' are plain" do
+    view = open_board()
+    one = milestone("acme/shop", 11, 3, 8, "Checkout v2", ["main:a"])
+    two = milestone("acme/shop", 12, 0, 6, "Search", ["main:b"])
+
+    issues = %{
+      "main:a" => %{number: 101},
+      "main:b" => %{number: 102},
+      "main:c" => %{number: 103}
+    }
+
+    html = tell_issues(view, [one, two], [card("a"), card("b"), card("c"), card("d")], issues)
+
+    assert Enum.map(boxes(html), & &1.tone) == ["ms-1", "ms-2"]
+
+    # Card d is on no issue, so it has no number at all.
+    assert issue_classes(html) == %{
+             "a" => "sc-issue ms-1",
+             "b" => "sc-issue ms-2",
+             "c" => "sc-issue"
+           }
+
+    # Four colors; a fifth milestone takes the first again.
+    five = for n <- 1..5, do: milestone("acme/shop", n, 0, 1, "M#{n}", ["main:a"])
+    assert Enum.map(boxes(tell(view, five)), & &1.tone) == ~w(ms-1 ms-2 ms-3 ms-4 ms-1)
+  end
+
+  test "a milestone box goes as soon as the last card on it does" do
     view = open_board()
     one = milestone("acme/shop", 11, 3, 8, "Project tab: 1", ["main:a", "main:b"])
-    assert lines(tell(view, [one], [card("a"), card("b")])) == ["Project tab: 1 · 3 of 8 done"]
-    assert lines(tell(view, [one], [card("b")])) == ["Project tab: 1 · 3 of 8 done"]
+    assert titles(tell(view, [one], [card("a"), card("b")])) == ["Project tab: 1"]
+    assert titles(tell(view, [one], [card("b")])) == ["Project tab: 1"]
 
     # The issue finder has not checked again yet, but no card is on it.
     send(view.pid, {:stream, []})
-    assert lines(render(view)) == []
+    assert titles(render(view)) == []
+  end
+
+  @tag archive: true
+  test "with the archive on, Live, Archive and Trends are tabs, with the live counts as chips" do
+    view = open_board()
+    waiting = %{card("a") | status: :needs, why: "May I push?"}
+    html = tell(view, [], [waiting, card("b")])
+
+    tabs =
+      ~r{<button class="view-tab([^"]*)" role="tab" aria-selected="(\w+)".*?>(.*?)</button>}s
+      |> Regex.scan(html, capture: :all_but_first)
+      |> Enum.map(fn [on, selected, label] -> {String.trim(on), selected, squish(label)} end)
+
+    assert [{"on", "true", "Live 2"}, {"", "false", "Archive" <> _}, {"", "false", "Trends"}] =
+             tabs
+
+    assert html =~ ~s(role="tablist" aria-label="Agents views")
+
+    chips =
+      ~r{<span class="live-chip[^"]*">(.*?)</span>(?=\s*</?(?:span|div))}s
+      |> Regex.scan(html, capture: :all_but_first)
+      |> Enum.map(fn [chip] -> squish(chip) end)
+
+    assert chips == ["1 need you", "1 working", "0 idle"]
   end
 
   test "a page that crashes for another reason prints no milestone title" do
     Process.flag(:trap_exit, true)
     view = open_board()
     planted = milestone(31, 2, 5, "PLANTED milestone title")
-    assert lines(tell(view, [planted])) == ["PLANTED milestone title · 2 of 5 done"]
+    assert titles(tell(view, [planted])) == ["PLANTED milestone title"]
 
     # The page takes any message or event, so crash it with a call nothing
-    # takes, far from the line.
+    # takes, far from the box.
     log =
       capture_log(fn ->
         ref = Process.monitor(view.pid)
