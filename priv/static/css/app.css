@@ -282,7 +282,7 @@ button { font: inherit; }
 .milestones { display: flex; flex-direction: column; gap: 10px; flex: 0 1 auto; min-height: 0; }
 .milestones-note { font-size: 13px; color: var(--text-muted); }
 .milestone-grid { display: grid; grid-template-columns: repeat(var(--ms-cols, 2), minmax(0, 1fr)); gap: 12px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
-.milestones ~ .card-grid { flex: 1 1 150px; min-height: 150px; }
+.milestones ~ .card-grid { flex: 1 1 150px; min-height: 150px; grid-auto-rows: auto; }
 .milestone-box { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px 16px; border-radius: 6px; border: 1px solid var(--border); border-left: 4px solid var(--ms); background: var(--page); }
 .ms-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; background: var(--ms); }
 .ms-repo, .ms-left { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
