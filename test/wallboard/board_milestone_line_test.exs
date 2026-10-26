@@ -340,4 +340,16 @@ defmodule Wallboard.BoardMilestoneLineTest do
     refute html =~ "live-chip"
     assert tell(view, [], [card("a")]) =~ "live-chip"
   end
+
+  test "a box names two of its agents and counts the rest, so it stays short" do
+    view = open_board()
+    cards = for id <- ~w(a b c d), do: card(id)
+    one = milestone("acme/shop", 11, 1, 2, "Checkout", ~w(main:a main:b main:c main:d))
+    [box] = boxes(tell(view, [one], cards))
+    assert box.agents == ["a", "b", "+2 more"]
+
+    two = milestone("acme/shop", 11, 1, 2, "Checkout", ~w(main:a main:b))
+    [box] = boxes(tell(view, [two], cards))
+    assert box.agents == ["a", "b"]
+  end
 end
