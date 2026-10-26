@@ -15,6 +15,29 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.4.3
+
+0.4.3 shows which issue each agent is working on, and how far along its
+milestone is, on the Agents tab:
+
+- Each card shows the GitHub issue its session is on, such as `#1418`. The
+  board finds it in the first prompt that names one, written as `#1418`,
+  `issue 1418`, a link to the issue, or a project board link that opens it.
+  When no prompt names one, an open pull request from the session's branch
+  that closes an issue counts.
+- Above the cards, one box for each milestone those issues are in shows a
+  progress bar, how many of its issues are done, and which agents are on it.
+  Each milestone has its own color, and its agents' issue numbers share it.
+- Live, Archive and Trends are real tabs now, with the need you, working and
+  idle counts beside them.
+- Bandit 1.14.0 and plug_crypto 2.2.1 fix three published security
+  advisories.
+
+The board asks GitHub through your signed-in `gh`, about each issue at most
+once every two minutes. The wiki's
+[What it shows](https://github.com/kyroco/vitalaize/wiki/What-it-shows#the-issue-each-card-is-on)
+page explains how a card finds its issue, and why one can show none.
+
 ## What's new in 0.4.2
 
 0.4.2 replaces the board password with approval by code. Before, every other

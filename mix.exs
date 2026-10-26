@@ -4,7 +4,7 @@ defmodule Wallboard.MixProject do
   def project do
     [
       app: :wallboard,
-      version: "0.4.2",
+      version: "0.4.3",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
