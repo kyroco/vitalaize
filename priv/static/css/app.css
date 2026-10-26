@@ -41,7 +41,7 @@ button { font: inherit; }
 .empty-note { font-size: 14px; color: var(--text-muted); padding: 6px 0; }
 /* An empty list still sits in a white box, like a list with rows. */
 .empty-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 18px; font-size: 15px; color: var(--text-muted); flex: none; }
-.ok-ink { color: var(--ok); } .bad-ink { color: var(--accent); } .muted-ink { color: var(--text-muted); } .alert-ink { color: var(--alert); }
+.ok-ink { color: var(--ok); } .bad-ink { color: var(--accent); } .muted-ink { color: var(--text-muted); }
 
 /* Header */
 .header { display: flex; align-items: center; gap: 20px; height: 56px; flex: none; }
@@ -125,8 +125,26 @@ button { font: inherit; }
 .tile-sub { font-size: 12px; font-weight: 500; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; min-height: 15px; }
 
 /* Agents tab: the sessions across the whole width. */
-.sessions { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; overflow: hidden; flex: 1 1 auto; }
+.sessions { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; flex: 1 1 auto; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .counts { font-size: 12px; color: var(--text-body); white-space: nowrap; }
+/* The panel's top edge: Live, Archive and Trends as tabs, the open one
+   underlined, and the live counts as chips at the right. */
+.panel-tabs { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 20px; border-bottom: 1px solid var(--border); flex: none; }
+.view-tabs { display: flex; align-items: stretch; gap: 4px; align-self: stretch; }
+.view-tab { display: flex; align-items: center; gap: 10px; border: 0; background: none; margin: 0 0 -1px; padding: 16px 14px 13px; border-bottom: 3px solid transparent; font-size: 15px; font-weight: 600; color: var(--text-body); cursor: pointer; }
+.view-tab.on { font-weight: 700; color: var(--text); border-bottom-color: var(--info); }
+.view-tab:focus:not(:focus-visible) { outline: none; }
+.panel-title { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; color: var(--text); }
+.tab-count { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 9999px; background: var(--track); color: var(--text-body); }
+.view-tab.on .tab-count, .panel-title .tab-count { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
+.live-chips { display: flex; align-items: center; gap: 8px; }
+.live-chip { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 9999px; background: var(--track); color: var(--text-body); white-space: nowrap; }
+.live-chip.needs { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn-deep); }
+.panel-side { display: flex; align-items: center; gap: 8px; }
+.panel-body { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px 20px; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+/* Inside the panel, cards sit on the page color, as in the mockup. */
+.sessions .session-card, .sessions .trend-card, .sessions .empty-box { background: var(--page); }
+.sessions .session-card.needs { background: color-mix(in srgb, var(--warn) 12%, var(--page)); }
 
 .session-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; flex: none; }
 /* A card says its state with its badge alone: green while it works, orange
@@ -244,8 +262,53 @@ button { font: inherit; }
 .cc-name { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
 .cc-value { font-size: 36px; font-weight: 700; color: var(--text); }
 
-/* How far down each milestone being worked is, one line each above the cards. */
-.milestone-line { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--text-body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* How far down each milestone being worked is: one box each above the
+   cards, two across. Each shown milestone has a color, by its place in the
+   list, on its box, its bar, its agent chips and its cards' issue numbers.
+   Four colors; a fifth milestone takes the first again. None is the
+   needs-you orange, so a box never reads as a card that needs you. Each clears 4.5:1
+   as text on the page color and on a needs-you card, in both looks. */
+.ms-1 { --ms: var(--info); }
+.ms-2 { --ms: var(--milestone-2); }
+.ms-3 { --ms: var(--milestone-3); }
+.ms-4 { --ms: var(--milestone-4); }
+:root { --milestone-2: #5b46b8; --milestone-3: #9b2c6e; --milestone-4: #7a5230; }
+:root[data-theme=dark] { --milestone-2: #a196ee; --milestone-3: #e07ab5; --milestone-4: #c8a27a; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) { --milestone-2: #a196ee; --milestone-3: #e07ab5; --milestone-4: #c8a27a; }
+}
+/* The boxes give way before the cards do: past two rows they scroll, and
+   the cards below always keep one whole row. */
+.milestones { display: flex; flex-direction: column; gap: 10px; flex: 0 1 auto; min-height: 0; }
+.milestones-note { font-size: 13px; color: var(--text-muted); }
+.milestone-grid { display: grid; grid-template-columns: repeat(var(--ms-cols, 2), minmax(0, 1fr)); gap: 12px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
+.milestones ~ .card-grid { flex: 1 1 150px; min-height: 150px; }
+.milestone-box { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px 16px; border-radius: 6px; border: 1px solid var(--border); border-left: 4px solid var(--ms); background: var(--page); }
+.ms-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; background: var(--ms); }
+.ms-repo, .ms-left { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.ms-repo { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* A long name takes a second line before it is shortened. */
+.ms-title { font-size: 17px; font-weight: 700; line-height: 1.3; color: var(--text); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+/* Boxes three or more to a row keep their titles to one line, so two
+   rows of boxes fit above the cards. */
+.milestone-grid.narrow .ms-title { -webkit-line-clamp: 1; }
+.ms-bar { flex: 1 1 auto; height: 12px; border-radius: 9999px; background: var(--track); overflow: hidden; }
+.ms-fill { height: 100%; min-width: 6px; border-radius: 9999px; background: var(--ms); }
+/* Nothing done draws no fill; anything done shows at least a sliver. */
+.ms-fill.none { min-width: 0; }
+.ms-done { font-size: 20px; font-weight: 700; color: var(--text); white-space: nowrap; }
+.ms-done span { font-size: 14px; font-weight: 600; color: var(--text-muted); }
+/* One line of chips: a long name ends in an ellipsis, so the box keeps
+   its height whatever the names. */
+.ms-agents { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: auto; overflow: hidden; }
+.ms-agents-label { font-size: 12px; color: var(--text-muted); flex: none; }
+.ms-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 13px; padding: 4px 10px; border-radius: 9999px; border: 1px solid var(--ms); color: var(--text); white-space: nowrap; }
+.ms-chip-name { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+/* The issue number keeps its full width and never shrinks; only one too
+   long to leave the name 3em (an issue in another repository) ends in an
+   ellipsis. */
+.ms-chip b { flex: none; max-width: calc(100% - 3em - 6px); overflow: hidden; text-overflow: ellipsis; color: var(--ms); }
+.ms-chip.ms-more { flex: none; color: var(--text-body); border-color: var(--border-strong); }
 
 /* Session cards: four across, with the details from the transcripts. More than fit scroll. */
 .card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 12px; align-content: start; min-height: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
@@ -255,8 +318,10 @@ button { font: inherit; }
 .sc-folder { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 /* The repository a session works in, from its folder's git remote. */
 .sc-repo { font-size: 12px; font-weight: 700; color: var(--info); overflow: hidden; text-overflow: ellipsis; }
-/* The issue it is on, from its name, its branch or the pull request its branch closes. */
-.sc-issue { font-size: 12px; font-weight: 700; color: var(--info); white-space: nowrap; }
+/* The issue it is on, in its milestone's color when that milestone has a
+   box, else plain. */
+.sc-issue { font-size: 12px; font-weight: 700; color: var(--text-body); white-space: nowrap; padding: 1px 8px; border-radius: 9999px; border: 1px solid var(--border-strong); }
+.sc-issue[class*="ms-"] { color: var(--ms); border-color: var(--ms); }
 .card-grid .sc-task { font-size: 13px; display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ctx { display: flex; flex-direction: column; gap: 3px; }
 .bar.thin { height: 5px; }
@@ -285,9 +350,7 @@ button { font: inherit; }
 /* Lists that hide rows which do not fit whole (see clipRows in app.js). */
 [data-clip] { position: relative; }
 
-/* Views inside the Agents tab: Live, Archive and Trends, lighter than the
-   board's own tabs above them. */
-.tabs { display: flex; gap: 6px; flex: none; }
+/* Small pills, such as the Trends tab's 7, 14 and 30 days. */
 .tab { border: 0; background: none; padding: 6px 12px; margin: 0; border-radius: 9999px; font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-body); cursor: pointer; }
 .tab.on { background: var(--border); color: var(--text); }
 .link-button { border: 0; background: none; padding: 5px 8px; margin: 0; font-size: 12px; font-weight: 700; color: var(--info); cursor: pointer; }
@@ -357,8 +420,6 @@ button { font: inherit; }
 
 /* Trends: one card per metric, one bar per day. */
 .range { display: flex; gap: 2px; }
-/* The sessions heading holds the tab pills, so it centers rather than lines up text. */
-.sessions > .heading-row { align-items: center; flex: none; }
 .tab:focus:not(:focus-visible), .link-button:focus:not(:focus-visible) { outline: none; }
 .trend-wide { grid-column: 1 / -1; }
 

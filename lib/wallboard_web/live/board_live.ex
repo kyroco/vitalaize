@@ -477,6 +477,7 @@ defmodule WallboardWeb.BoardLive do
     needs = sessions |> Enum.filter(&(&1.status == :needs)) |> Enum.sort_by(&unix(&1.since))
     working = sessions |> Enum.filter(&(&1.status == :working)) |> Enum.sort_by(&unix(&1.since))
     idle = sessions |> Enum.filter(&(&1.status == :idle)) |> Enum.sort_by(& &1.name)
+    milestones = live_milestones(socket.assigns[:session_issues], sessions)
 
     assign(socket,
       needs: needs,
@@ -484,20 +485,28 @@ defmodule WallboardWeb.BoardLive do
       idle: idle,
       session_count: length(sessions),
       repo_of: repo_of,
-      milestones: live_milestones(socket.assigns[:session_issues], sessions)
+      milestones: milestones,
+      # Each card on a shown milestone takes its color.
+      milestone_tone: for(m <- milestones, a <- m.agents, into: %{}, do: {a.key, m.tone})
     )
   end
 
   # The milestones live sessions' issues are in, numbers only: each title
-  # is looked up as the line is drawn (see milestone_title/1). A milestone
+  # is looked up as the box is drawn (see milestone_title/1). A milestone
   # goes as soon as no card on the board is on it, without waiting for the
-  # issue finder's next check.
+  # issue finder's next check. Each gets the cards on it, and a color by
+  # its place: four colors, used again in order past the fourth.
   defp live_milestones(facts, sessions) do
-    live = MapSet.new(sessions, & &1[:key])
+    by_key = Map.new(sessions, &{&1[:key], &1})
 
-    for m <- (facts || %{})[:milestones] || [],
-        Enum.any?(m.sessions, &MapSet.member?(live, &1)),
-        do: m
+    ((facts || %{})[:milestones] || [])
+    |> Enum.map(fn m -> {m, m.sessions |> Enum.map(&by_key[&1]) |> Enum.reject(&is_nil/1)} end)
+    |> Enum.reject(fn {_m, on} -> on == [] end)
+    |> Enum.with_index()
+    |> Enum.map(fn {{m, on}, i} ->
+      agents = for s <- on, do: %{key: s[:key], name: s.name, issue: s[:issue] && issue_label(s)}
+      Map.merge(m, %{tone: rem(i, 4) + 1, agents: agents})
+    end)
   end
 
   # A milestone's title, from Wallboard.MilestoneTitles, never from the
@@ -506,10 +515,15 @@ defmodule WallboardWeb.BoardLive do
   defp milestone_title(m),
     do: Wallboard.MilestoneTitles.get(m.repo, m.number) || "Milestone #{m.number}"
 
-  # Lines from more than one repository each name theirs, so two
-  # milestones of the same name never read alike.
-  defp milestone_repos?(milestones),
-    do: milestones |> Enum.uniq_by(&String.downcase(&1.repo)) |> length() > 1
+  # Milestone boxes to a row: two, or up to four as more are worked, so the
+  # boxes stay at most two rows high in all but rare cases and the session
+  # cards keep their room.
+  defp milestone_columns(milestones), do: milestones |> length() |> max(2) |> min(4)
+
+  # How much of a milestone is done, as a whole percent, rounded down so
+  # 100% means every issue is done.
+  defp milestone_percent(%{total: t}) when t <= 0, do: 0
+  defp milestone_percent(%{done: d, total: t}), do: min(div(100 * max(d, 0), t), 100)
 
   # "#1418" for an issue in the session's own repository, "vendor/lib#12"
   # for one in another, so the number never reads as the wrong issue.
@@ -720,6 +734,7 @@ defmodule WallboardWeb.BoardLive do
                 idle={@idle}
                 count={@session_count}
                 milestones={@milestones}
+                milestone_tone={@milestone_tone}
                 meta={@claude_meta}
                 details={(@usage && @usage.sessions) || %{}}
                 problems={(@claude && @claude.problems) || []}
@@ -1305,6 +1320,7 @@ defmodule WallboardWeb.BoardLive do
   attr :details, :map, required: true
   attr :problems, :list, required: true
   attr :milestones, :list, default: []
+  attr :milestone_tone, :map, default: %{}
   attr :tab, :atom, default: :live
   attr :archive_on?, :boolean, default: false
   attr :archive, :list, default: []
@@ -1319,49 +1335,53 @@ defmodule WallboardWeb.BoardLive do
   defp sessions(assigns) do
     ~H"""
     <section class="sessions" aria-label="Claude sessions">
-      <div class="heading-row">
-        <h2 :if={!@archive_on?} class="kicker">Claude sessions · {@count}</h2>
-        <div :if={@archive_on?} class="tabs" role="tablist">
+      <%!-- One panel: Live, Archive and Trends are tabs along its top edge,
+           the open one underlined, and the live counts sit at the right. --%>
+      <div class="panel-tabs">
+        <h2 :if={!@archive_on?} class="panel-title">
+          Claude sessions <span class="tab-count">{@count}</span>
+        </h2>
+        <div :if={@archive_on?} class="view-tabs" role="tablist" aria-label="Agents views">
           <button
-            class={["tab", @tab == :live && "on"]}
+            class={["view-tab", @tab == :live && "on"]}
             role="tab"
+            aria-selected={to_string(@tab == :live)}
             phx-click="session_tab"
             phx-value-tab="live"
           >
-            Live · {@count}
+            Live <span class="tab-count">{@count}</span>
           </button>
           <button
-            class={["tab", @tab == :archive && "on"]}
+            class={["view-tab", @tab == :archive && "on"]}
             role="tab"
+            aria-selected={to_string(@tab == :archive)}
             phx-click="session_tab"
             phx-value-tab="archive"
           >
-            Archive{if @archive_counts, do: " · #{thousands(@archive_counts.total)}"}
+            Archive<span :if={@archive_counts} class="tab-count">{thousands(@archive_counts.total)}</span>
           </button>
           <button
-            class={["tab", @tab == :trends && "on"]}
+            class={["view-tab", @tab == :trends && "on"]}
             role="tab"
+            aria-selected={to_string(@tab == :trends)}
             phx-click="session_tab"
             phx-value-tab="trends"
           >
             Trends
           </button>
         </div>
-        <%= if @tab == :live do %>
-          <span :if={@count > 0} class="counts">
-            <b class="alert-ink">{length(@needs)}</b>
-            need you · <b>{length(@working)}</b>
-            working · <b>{length(@idle)}</b>
-            idle
-          </span>
-          <.freshness meta={@meta} />
-        <% end %>
-        <.archive_status
-          :if={@tab == :archive}
-          counts={@archive_counts}
-          progress={@archive_progress}
-        />
+        <.freshness :if={@tab == :live} meta={@meta} />
         <span class="grow"></span>
+        <div :if={@tab == :live && @count > 0} class="live-chips">
+          <span class="live-chip needs">
+            <span class="dot8 warn"></span>{length(@needs)} need you
+          </span>
+          <span class="live-chip"><span class="dot8 ok"></span>{length(@working)} working</span>
+          <span class="live-chip"><span class="dot8 muted"></span>{length(@idle)} idle</span>
+        </div>
+        <div :if={@tab == :archive} class="panel-side">
+          <.archive_status counts={@archive_counts} progress={@archive_progress} />
+        </div>
         <div :if={@tab == :trends} class="range">
           <button
             :for={d <- [7, 14, 30]}
@@ -1373,45 +1393,103 @@ defmodule WallboardWeb.BoardLive do
           </button>
         </div>
       </div>
-      <div :for={p <- @problems} class="stale-note small">Could not read {p}</div>
 
-      <%= if @tab == :live do %>
-        <%!-- How far down each milestone being worked is, one line each. --%>
-        <p :for={m <- @milestones} class="milestone-line">
-          {if milestone_repos?(@milestones), do: "#{m.repo} · "}{milestone_title(m)} · {m.done} of {m.total} done
-        </p>
-        <%!-- Every session gets a full card, needs-you first. When there are
+      <div class="panel-body">
+        <div :for={p <- @problems} class="stale-note small">Could not read {p}</div>
+
+        <%= if @tab == :live do %>
+          <%!-- How far down each milestone being worked is, one box each. --%>
+          <div :if={@milestones != []} class="milestones">
+            <div class="row baseline">
+              <h3 class="kicker">Milestones being worked</h3>
+              <span class="milestones-note">from the issues your agents are on</span>
+            </div>
+            <div
+              class={["milestone-grid", milestone_columns(@milestones) > 2 && "narrow"]}
+              style={"--ms-cols: #{milestone_columns(@milestones)}"}
+            >
+              <.milestone_box
+                :for={m <- @milestones}
+                m={m}
+                named={if milestone_columns(@milestones) > 2, do: 1, else: 2}
+              />
+            </div>
+          </div>
+          <h3 :if={@milestones != [] && @count > 0} class="kicker">Sessions</h3>
+          <%!-- Every session gets a full card, needs-you first. When there are
              more than fit, the cards scroll rather than hide. --%>
-        <div class="card-grid">
-          <.session_card
-            :for={s <- @needs ++ @working ++ @idle}
-            s={s}
-            d={s[:detail] || @details[Map.get(s, :session_id)]}
-            machine={@archive_on? && (s[:machine] || @machine)}
-          />
-        </div>
-        <div :if={@count == 0} class="empty-box">No Claude sessions running.</div>
-      <% end %>
-      <.trends
-        :if={@tab == :trends && @trends}
-        t={@trends}
-        usage={@usage}
-        usage_meta={@usage_meta}
-      />
-      <%= if @tab == :archive do %>
-        <div class="card-grid">
-          <.archive_card
-            :for={a <- @archive}
-            a={a}
-            live?={a.session_id in Enum.map(@needs ++ @working ++ @idle, & &1.session_id)}
-            local={@machine}
-          />
-        </div>
-        <div :if={@archive == []} class="empty-box">
-          No sessions saved yet. The first save runs in the background after the board starts.
-        </div>
-      <% end %>
+          <div class="card-grid">
+            <.session_card
+              :for={s <- @needs ++ @working ++ @idle}
+              s={s}
+              d={s[:detail] || @details[Map.get(s, :session_id)]}
+              machine={@archive_on? && (s[:machine] || @machine)}
+              tone={@milestone_tone[s[:key]]}
+            />
+          </div>
+          <div :if={@count == 0} class="empty-box">No Claude sessions running.</div>
+        <% end %>
+        <.trends
+          :if={@tab == :trends && @trends}
+          t={@trends}
+          usage={@usage}
+          usage_meta={@usage_meta}
+        />
+        <%= if @tab == :archive do %>
+          <div class="card-grid">
+            <.archive_card
+              :for={a <- @archive}
+              a={a}
+              live?={a.session_id in Enum.map(@needs ++ @working ++ @idle, & &1.session_id)}
+              local={@machine}
+            />
+          </div>
+          <div :if={@archive == []} class="empty-box">
+            No sessions saved yet. The first save runs in the background after the board starts.
+          </div>
+        <% end %>
+      </div>
     </section>
+    """
+  end
+
+  attr :m, :map, required: true
+  attr :named, :integer, default: 2
+
+  # One milestone being worked: its repository, its name, a bar of how
+  # much is done, and the agents on it, all in the milestone's color. Two
+  # agents are named (one when boxes sit three or four to a row) and the
+  # rest counted, so a busy milestone's box stays as short as the others; each card's issue number carries the color too.
+  defp milestone_box(assigns) do
+    assigns = assign(assigns, :pct, milestone_percent(assigns.m))
+
+    ~H"""
+    <article class={["milestone-box", "ms-#{@m.tone}"]}>
+      <div class="row">
+        <span class="ms-swatch"></span>
+        <span class="ms-repo">{@m.repo}</span>
+        <span class="grow"></span>
+        <span class="ms-left">{max(@m.total - @m.done, 0)} left · {@pct}%</span>
+      </div>
+      <div class="ms-title">{milestone_title(@m)}</div>
+      <div class="row">
+        <div class="ms-bar" role="img" aria-label={"#{@m.done} of #{@m.total} issues done"}>
+          <div class={["ms-fill", @m.done <= 0 && "none"]} style={"width: #{@pct}%"}></div>
+        </div>
+        <span class="ms-done">{@m.done} <span>of {@m.total} done</span></span>
+      </div>
+      <div class="ms-agents">
+        <span class="ms-agents-label">Agents on it</span>
+        <span :for={a <- Enum.take(@m.agents, @named)} class="ms-chip"><b
+          :if={a.issue}
+          title={a.issue}
+        >{a.issue}</b>
+        <span class="ms-chip-name" title={a.name}>{a.name}</span></span>
+        <span :if={length(@m.agents) > @named} class="ms-chip ms-more">
+          +{length(@m.agents) - @named} more
+        </span>
+      </div>
+    </article>
     """
   end
 
@@ -1730,6 +1808,7 @@ defmodule WallboardWeb.BoardLive do
   attr :s, :map, required: true
   attr :d, :map, default: nil
   attr :machine, :any, default: nil
+  attr :tone, :integer, default: nil
 
   # One session. The first block comes from `claude agents`; the details
   # (context, cost, model, lines changed, subagents) from its transcript.
@@ -1758,7 +1837,11 @@ defmodule WallboardWeb.BoardLive do
         <span :if={@s.account} class="acct">{@s.account}</span>
         <span :if={@s[:started_by]} class="acct">from {@s.started_by}</span>
         <span :if={@s[:repo]} class="sc-repo" title={@s.folder}>{@s.repo}</span>
-        <span :if={@s[:issue]} class="sc-issue" title="The issue this session is on">{issue_label(@s)}</span>
+        <span
+          :if={@s[:issue]}
+          class={if @tone, do: "sc-issue ms-#{@tone}", else: "sc-issue"}
+          title="The issue this session is on"
+        >{issue_label(@s)}</span>
         <span :if={!@s[:repo] && @s.folder} class="sc-folder">{@s.folder}</span>
       </div>
       <div class="sc-task">{if @s.status == :needs, do: @s.why, else: @s.task}</div>
