@@ -265,16 +265,17 @@ button { font: inherit; }
 /* How far down each milestone being worked is: one box each above the
    cards, two across. Each shown milestone has a color, by its place in the
    list, on its box, its bar, its agent chips and its cards' issue numbers.
-   Four colors; a fifth milestone takes the first again. Each clears 4.5:1
+   Four colors; a fifth milestone takes the first again. None is the
+   needs-you orange, so a box never reads as a card that needs you. Each clears 4.5:1
    as text on the page color and on a needs-you card, in both looks. */
 .ms-1 { --ms: var(--info); }
 .ms-2 { --ms: var(--milestone-2); }
 .ms-3 { --ms: var(--milestone-3); }
 .ms-4 { --ms: var(--milestone-4); }
-:root { --milestone-2: #9a4a07; --milestone-3: #5b46b8; --milestone-4: #9b2c6e; }
-:root[data-theme=dark] { --milestone-2: #f0a43a; --milestone-3: #a196ee; --milestone-4: #e07ab5; }
+:root { --milestone-2: #5b46b8; --milestone-3: #9b2c6e; --milestone-4: #7a5230; }
+:root[data-theme=dark] { --milestone-2: #a196ee; --milestone-3: #e07ab5; --milestone-4: #c8a27a; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme=light]) { --milestone-2: #f0a43a; --milestone-3: #a196ee; --milestone-4: #e07ab5; }
+  :root:not([data-theme=light]) { --milestone-2: #a196ee; --milestone-3: #e07ab5; --milestone-4: #c8a27a; }
 }
 /* The boxes give way before the cards do: past two rows they scroll, and
    the cards below always keep one whole row. */
@@ -288,8 +289,13 @@ button { font: inherit; }
 .ms-repo { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* A long name takes a second line before it is shortened. */
 .ms-title { font-size: 17px; font-weight: 700; line-height: 1.3; color: var(--text); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+/* Boxes three or more to a row keep their titles to one line, so two
+   rows of boxes fit above the cards. */
+.milestone-grid.narrow .ms-title { -webkit-line-clamp: 1; }
 .ms-bar { flex: 1 1 auto; height: 12px; border-radius: 9999px; background: var(--track); overflow: hidden; }
 .ms-fill { height: 100%; min-width: 6px; border-radius: 9999px; background: var(--ms); }
+/* Nothing done draws no fill at all. */
+.ms-fill[style="width: 0%"] { min-width: 0; }
 .ms-done { font-size: 20px; font-weight: 700; color: var(--text); white-space: nowrap; }
 .ms-done span { font-size: 14px; font-weight: 600; color: var(--text-muted); }
 /* One line of chips: a long name ends in an ellipsis, so the box keeps
@@ -297,8 +303,10 @@ button { font: inherit; }
 .ms-agents { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: auto; overflow: hidden; }
 .ms-agents-label { font-size: 12px; color: var(--text-muted); flex: none; }
 .ms-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 13px; padding: 4px 10px; border-radius: 9999px; border: 1px solid var(--ms); color: var(--text); white-space: nowrap; }
-.ms-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.ms-chip b { flex: none; color: var(--ms); }
+.ms-chip-name { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The name gives way first; a label too long for the chip (an issue in
+   another repository) ends in an ellipsis too. */
+.ms-chip b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ms); }
 .ms-chip.ms-more { flex: none; color: var(--text-body); border-color: var(--border-strong); }
 
 /* Session cards: four across, with the details from the transcripts. More than fit scroll. */

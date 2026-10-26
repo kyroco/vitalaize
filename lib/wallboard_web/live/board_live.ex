@@ -1404,7 +1404,10 @@ defmodule WallboardWeb.BoardLive do
               <h3 class="kicker">Milestones being worked</h3>
               <span class="milestones-note">from the issues your agents are on</span>
             </div>
-            <div class="milestone-grid" style={"--ms-cols: #{milestone_columns(@milestones)}"}>
+            <div
+              class={["milestone-grid", milestone_columns(@milestones) > 2 && "narrow"]}
+              style={"--ms-cols: #{milestone_columns(@milestones)}"}
+            >
               <.milestone_box
                 :for={m <- @milestones}
                 m={m}
