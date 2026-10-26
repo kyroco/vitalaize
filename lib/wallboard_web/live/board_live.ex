@@ -515,9 +515,15 @@ defmodule WallboardWeb.BoardLive do
   defp milestone_title(m),
     do: Wallboard.MilestoneTitles.get(m.repo, m.number) || "Milestone #{m.number}"
 
-  # How much of a milestone is done, as a whole percent.
+  # Milestone boxes to a row: two, or up to four as more are worked, so the
+  # boxes stay at most two rows high in all but rare cases and the session
+  # cards keep their room.
+  defp milestone_columns(milestones), do: milestones |> length() |> max(2) |> min(4)
+
+  # How much of a milestone is done, as a whole percent, rounded down so
+  # 100% means every issue is done.
   defp milestone_percent(%{total: t}) when t <= 0, do: 0
-  defp milestone_percent(%{done: d, total: t}), do: min(round(100 * d / t), 100)
+  defp milestone_percent(%{done: d, total: t}), do: min(div(100 * max(d, 0), t), 100)
 
   # "#1418" for an issue in the session's own repository, "vendor/lib#12"
   # for one in another, so the number never reads as the wrong issue.
@@ -1366,7 +1372,7 @@ defmodule WallboardWeb.BoardLive do
         </div>
         <.freshness :if={@tab == :live} meta={@meta} />
         <span class="grow"></span>
-        <div :if={@tab == :live} class="live-chips">
+        <div :if={@tab == :live && @count > 0} class="live-chips">
           <span class="live-chip needs">
             <span class="dot8 warn"></span>{length(@needs)} need you
           </span>
@@ -1398,8 +1404,12 @@ defmodule WallboardWeb.BoardLive do
               <h3 class="kicker">Milestones being worked</h3>
               <span class="milestones-note">from the issues your agents are on</span>
             </div>
-            <div class="milestone-grid">
-              <.milestone_box :for={m <- @milestones} m={m} />
+            <div class="milestone-grid" style={"--ms-cols: #{milestone_columns(@milestones)}"}>
+              <.milestone_box
+                :for={m <- @milestones}
+                m={m}
+                named={if milestone_columns(@milestones) > 2, do: 1, else: 2}
+              />
             </div>
           </div>
           <h3 :if={@milestones != [] && @count > 0} class="kicker">Sessions</h3>
@@ -1441,9 +1451,12 @@ defmodule WallboardWeb.BoardLive do
   end
 
   attr :m, :map, required: true
+  attr :named, :integer, default: 2
 
   # One milestone being worked: its repository, its name, a bar of how
-  # much is done, and the agents on it, all in the milestone's color.
+  # much is done, and the agents on it, all in the milestone's color. Two
+  # agents are named (one when boxes sit three or four to a row) and the
+  # rest counted, so a busy milestone's box stays as short as the others; each card's issue number carries the color too.
   defp milestone_box(assigns) do
     assigns = assign(assigns, :pct, milestone_percent(assigns.m))
 
@@ -1464,7 +1477,11 @@ defmodule WallboardWeb.BoardLive do
       </div>
       <div class="ms-agents">
         <span class="ms-agents-label">Agents on it</span>
-        <span :for={a <- @m.agents} class="ms-chip"><b :if={a.issue}>{a.issue}</b> {a.name}</span>
+        <span :for={a <- Enum.take(@m.agents, @named)} class="ms-chip"><b :if={a.issue}>{a.issue}</b>
+        <span class="ms-chip-name" title={a.name}>{a.name}</span></span>
+        <span :if={length(@m.agents) > @named} class="ms-chip ms-more">
+          +{length(@m.agents) - @named} more
+        </span>
       </div>
     </article>
     """
