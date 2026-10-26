@@ -112,7 +112,9 @@ defmodule Wallboard.BoardMilestoneLineTest do
     |> Enum.map(fn box ->
       box = box |> String.split("</article>") |> hd()
       [tone] = Regex.run(~r{^(ms-\d)}, box, capture: :all_but_first)
-      [width] = Regex.run(~r{class="ms-fill" style="width: (\d+)%"}, box, capture: :all_but_first)
+
+      [width] =
+        Regex.run(~r{class="ms-fill[^"]*" style="width: (\d+)%"}, box, capture: :all_but_first)
 
       %{
         tone: tone,
@@ -364,5 +366,145 @@ defmodule Wallboard.BoardMilestoneLineTest do
     others = for n <- 12..13, do: milestone("acme/shop", n, 0, 1, "M#{n}", ["main:d"])
     [box | _] = boxes(tell(view, [%{one | sessions: ~w(main:a main:b main:c)} | others], cards))
     assert box.agents == ["a", "+2 more"]
+  end
+
+  # What the browser tests measure: the board, the card area, the
+  # needs-you cards and each milestone box, with its title, bar and chips.
+  @measure """
+  (() => {
+    const rect = (el) => { const r = el.getBoundingClientRect(); return {top: r.top, bottom: r.bottom, right: r.right, height: r.height}; };
+    const textWidth = (el) => { const r = document.createRange(); r.selectNodeContents(el); return r.getBoundingClientRect().width; };
+    const grid = document.querySelector('.milestone-grid');
+    const cards = document.querySelector('.card-grid');
+    return {
+      board: rect(document.getElementById('board')),
+      cards: {...rect(cards), client: cards.clientHeight},
+      card_height: Math.max(...[...cards.querySelectorAll('.session-card')].map((c) => c.getBoundingClientRect().height)),
+      needs: [...document.querySelectorAll('.session-card.needs')].map(rect),
+      grid: {...rect(grid), client: grid.clientHeight, scroll: grid.scrollHeight},
+      boxes: [...document.querySelectorAll('.milestone-box')].map((b) => {
+        const t = b.querySelector('.ms-title');
+        return {
+          ...rect(b),
+          title: {height: t.getBoundingClientRect().height, line: parseFloat(getComputedStyle(t).lineHeight)},
+          done: b.querySelector('.ms-done').textContent.trim().replace(/\\s+/g, ' '),
+          fill: b.querySelector('.ms-fill').getBoundingClientRect().width,
+          labels: [...b.querySelectorAll('.ms-chip b')].map((l) => ({text: l.textContent.trim(), width: l.getBoundingClientRect().width, needs: textWidth(l)})),
+          names: [...b.querySelectorAll('.ms-chip-name')].map((n) => n.getBoundingClientRect().width),
+          more: [...b.querySelectorAll('.ms-more')].map((m) => ({...rect(m), whole: m.scrollWidth <= m.clientWidth}))
+        };
+      })
+    };
+  })()
+  """
+
+  defp drawn(milestones, cards, issues) do
+    view = open_board()
+    html = tell_issues(view, milestones, cards, issues)
+    [board] = Regex.run(~r{<div[^>]*id="board".*}s, html)
+    Wallboard.Browser.measure(board, @measure)
+  end
+
+  defp long_title(n), do: "Milestone #{n}: checkout, carts, gift cards and the order history page"
+
+  @tag :browser
+  test "with eight milestones, the needs-you card is still wholly in view (#169)" do
+    cards = [
+      %{card("a") | status: :needs, why: "May I push?"}
+      | for(id <- ~w(b c d e f g h), do: card(id))
+    ]
+
+    ms =
+      for {id, n} <- Enum.with_index(~w(a b c d e f g h), 1),
+          do: milestone("acme/shop", n, 1, 4, long_title(n), ["main:" <> id])
+
+    m = drawn(ms, cards, %{})
+
+    assert m["cards"]["client"] >= m["card_height"]
+    [needs] = m["needs"]
+    assert needs["top"] >= m["cards"]["top"]
+    assert needs["bottom"] <= m["cards"]["top"] + m["cards"]["client"]
+    assert needs["bottom"] <= m["board"]["bottom"]
+  end
+
+  @tag :browser
+  test "six milestones fit whole: one-line titles, whole issue numbers, agent names and +N more (#170)" do
+    names =
+      for id <- ~w(a b c d e f g h i),
+          into: %{},
+          do: {id, "robert/#{id}-refactor-the-board-layout-and-the-cards"}
+
+    cards = for {id, name} <- names, do: %{card(id) | name: name}
+
+    issues =
+      %{"main:a" => %{number: 1400, repo: "acme/payments-service"}, "main:b" => %{number: 7}}
+      |> Map.merge(for id <- ~w(c d e f g h i), into: %{}, do: {"main:" <> id, %{number: 1418}})
+
+    ms = [
+      milestone("acme/shop", 1, 2, 60, long_title(1), ~w(main:a main:b main:c main:d))
+      | for(
+          {id, n} <- Enum.zip(~w(e f g h i), 2..6),
+          do: milestone("acme/shop", n, 3, 8, long_title(n), ["main:" <> id])
+        )
+    ]
+
+    m = drawn(ms, cards, issues)
+    assert length(m["boxes"]) == 6
+    # Both rows of boxes are whole, above the cards.
+    assert m["grid"]["scroll"] <= m["grid"]["client"]
+
+    for box <- m["boxes"] do
+      assert box["bottom"] <= m["grid"]["bottom"] + 0.5
+      assert box["title"]["height"] <= box["title"]["line"] * 1.5
+
+      for label <- box["labels"],
+          not String.contains?(label["text"], "/"),
+          do: assert(label["needs"] <= label["width"] + 0.01, "#{label["text"]} is cut")
+
+      for name <- box["names"], do: assert(name >= 30, "an agent name is #{name}px wide")
+
+      for more <- box["more"] do
+        assert more["whole"]
+        assert more["right"] <= box["right"]
+      end
+    end
+  end
+
+  @tag :browser
+  test "a bar fills only when something is done, however little (#170)" do
+    ms = [
+      milestone("acme/shop", 1, 0, 5, "None yet", ["main:a"]),
+      milestone("acme/shop", 2, 1, 200, "Barely", ["main:b"])
+    ]
+
+    m = drawn(ms, [card("a"), card("b")], %{})
+
+    assert [{"0 of 5 done", 0}, {"1 of 200 done", some}] =
+             Enum.map(m["boxes"], &{&1["done"], &1["fill"]})
+
+    assert some > 0
+  end
+
+  test "no milestone color is the needs-you orange, in either look" do
+    css = File.read!(Application.app_dir(:wallboard, "priv/static/css/app.css"))
+    theme = Wallboard.Settings.defaults().theme
+
+    for {look, block, colors} <- [
+          {:light, ~r/^:root \{ (--milestone-[^}]*)\}/m, theme},
+          {:dark, ~r/^:root\[data-theme=dark\] \{ (--milestone-[^}]*)\}/m, theme.dark}
+        ] do
+      [vars] = Regex.run(block, css, capture: :all_but_first)
+      values = Regex.scan(~r/--milestone-\d: (#[0-9a-f]{6})/i, vars, capture: :all_but_first)
+      assert length(values) == 3
+
+      orange = Enum.map([colors.warn, colors.warn_deep], &String.downcase/1)
+
+      for [value] <- values,
+          do: refute(String.downcase(value) in orange, "#{look} milestone color #{value}")
+
+      # The first milestone takes the theme's info color.
+      assert css =~ ".ms-1 { --ms: var(--info); }"
+      refute String.downcase(colors.info) in orange
+    end
   end
 end
