@@ -122,9 +122,9 @@ defmodule Wallboard.BoardMilestoneLineTest do
         width: width,
         done: text(box, ~r{class="ms-done">(.*?</span>.*?)</span>}s),
         agents:
-          ~r{class="ms-chip">(.*?</span>)\s*</span>}s
+          ~r{class="ms-chip">(.*?</span>)\s*</span>|class="ms-chip ms-more">(.*?)</span>}s
           |> Regex.scan(box, capture: :all_but_first)
-          |> Enum.map(fn [chip] -> squish(chip) end)
+          |> Enum.map(&(&1 |> Enum.join() |> squish()))
       }
     end)
   end
@@ -341,7 +341,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
     assert tell(view, [], [card("a")]) =~ "live-chip"
   end
 
-  test "a box names two of its agents and counts the rest, so it stays short" do
+  test "a box names two of its agents, or one when boxes are narrow, and counts the rest" do
     view = open_board()
     cards = for id <- ~w(a b c d), do: card(id)
     one = milestone("acme/shop", 11, 1, 2, "Checkout", ~w(main:a main:b main:c main:d))
@@ -351,5 +351,10 @@ defmodule Wallboard.BoardMilestoneLineTest do
     two = milestone("acme/shop", 11, 1, 2, "Checkout", ~w(main:a main:b))
     [box] = boxes(tell(view, [two], cards))
     assert box.agents == ["a", "b"]
+
+    # Three or more to a row leave room for one name.
+    others = for n <- 12..13, do: milestone("acme/shop", n, 0, 1, "M#{n}", ["main:d"])
+    [box | _] = boxes(tell(view, [%{one | sessions: ~w(main:a main:b main:c)} | others], cards))
+    assert box.agents == ["a", "+2 more"]
   end
 end
