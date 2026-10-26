@@ -323,7 +323,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
       ms = for i <- 1..n, do: milestone("acme/shop", i, 0, 1, "M#{i}", ["main:a"])
 
       [cols] =
-        Regex.run(~r{class="milestone-grid" style="--ms-cols: (\d)"}, tell(view, ms),
+        Regex.run(~r{class="milestone-grid[^"]*" style="--ms-cols: (\d)"}, tell(view, ms),
           capture: :all_but_first
         )
 
@@ -331,6 +331,14 @@ defmodule Wallboard.BoardMilestoneLineTest do
     end
 
     assert Enum.map([1, 2, 3, 4, 5, 8], cols) == ~w(2 2 3 4 4 4)
+
+    # Three or more to a row are narrow: their titles keep to one line.
+    narrow? = fn n ->
+      ms = for i <- 1..n, do: milestone("acme/shop", i, 0, 1, "M#{i}", ["main:a"])
+      tell(view, ms) =~ ~s(class="milestone-grid narrow")
+    end
+
+    assert Enum.map([2, 3, 5], narrow?) == [false, true, true]
   end
 
   test "with no sessions, the live counts are not shown" do
