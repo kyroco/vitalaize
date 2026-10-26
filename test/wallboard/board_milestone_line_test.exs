@@ -472,6 +472,15 @@ defmodule Wallboard.BoardMilestoneLineTest do
   end
 
   @tag :browser
+  test "one row of cards keeps the cards' own height, not the panel's" do
+    ms = [milestone("acme/shop", 1, 2, 8, "Checkout", ["main:a"])]
+
+    m = drawn(ms, [card("a"), card("b"), card("c")], %{})
+
+    assert m["card_height"] < 300, "a card is #{m["card_height"]}px tall"
+  end
+
+  @tag :browser
   test "a bar fills only when something is done, however little (#170)" do
     ms = [
       milestone("acme/shop", 1, 0, 5, "None yet", ["main:a"]),
