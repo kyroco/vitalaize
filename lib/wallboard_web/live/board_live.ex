@@ -1474,13 +1474,16 @@ defmodule WallboardWeb.BoardLive do
       <div class="ms-title">{milestone_title(@m)}</div>
       <div class="row">
         <div class="ms-bar" role="img" aria-label={"#{@m.done} of #{@m.total} issues done"}>
-          <div class="ms-fill" style={"width: #{@pct}%"}></div>
+          <div class={["ms-fill", @m.done <= 0 && "none"]} style={"width: #{@pct}%"}></div>
         </div>
         <span class="ms-done">{@m.done} <span>of {@m.total} done</span></span>
       </div>
       <div class="ms-agents">
         <span class="ms-agents-label">Agents on it</span>
-        <span :for={a <- Enum.take(@m.agents, @named)} class="ms-chip"><b :if={a.issue}>{a.issue}</b>
+        <span :for={a <- Enum.take(@m.agents, @named)} class="ms-chip"><b
+          :if={a.issue}
+          title={a.issue}
+        >{a.issue}</b>
         <span class="ms-chip-name" title={a.name}>{a.name}</span></span>
         <span :if={length(@m.agents) > @named} class="ms-chip ms-more">
           +{length(@m.agents) - @named} more

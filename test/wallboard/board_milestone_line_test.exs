@@ -370,6 +370,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
 
   # What the browser tests measure: the board, the card area, the
   # needs-you cards and each milestone box, with its title, bar and chips.
+  # A name's width is the part its chip shows, inside the chip's padding.
   @measure """
   (() => {
     const rect = (el) => { const r = el.getBoundingClientRect(); return {top: r.top, bottom: r.bottom, right: r.right, height: r.height}; };
@@ -390,7 +391,7 @@ defmodule Wallboard.BoardMilestoneLineTest do
           done: b.querySelector('.ms-done').textContent.trim().replace(/\\s+/g, ' '),
           fill: b.querySelector('.ms-fill').getBoundingClientRect().width,
           labels: [...b.querySelectorAll('.ms-chip b')].map((l) => ({text: l.textContent.trim(), width: l.getBoundingClientRect().width, needs: textWidth(l)})),
-          names: [...b.querySelectorAll('.ms-chip-name')].map((n) => n.getBoundingClientRect().width),
+          names: [...b.querySelectorAll('.ms-chip-name')].map((n) => { const r = n.getBoundingClientRect(); const box = n.parentElement.getBoundingClientRect(); return Math.min(r.right, box.right - 10) - r.left; }),
           more: [...b.querySelectorAll('.ms-more')].map((m) => ({...rect(m), whole: m.scrollWidth <= m.clientWidth}))
         };
       })

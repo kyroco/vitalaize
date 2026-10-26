@@ -294,8 +294,8 @@ button { font: inherit; }
 .milestone-grid.narrow .ms-title { -webkit-line-clamp: 1; }
 .ms-bar { flex: 1 1 auto; height: 12px; border-radius: 9999px; background: var(--track); overflow: hidden; }
 .ms-fill { height: 100%; min-width: 6px; border-radius: 9999px; background: var(--ms); }
-/* Nothing done draws no fill at all. */
-.ms-fill[style="width: 0%"] { min-width: 0; }
+/* Nothing done draws no fill; anything done shows at least a sliver. */
+.ms-fill.none { min-width: 0; }
 .ms-done { font-size: 20px; font-weight: 700; color: var(--text); white-space: nowrap; }
 .ms-done span { font-size: 14px; font-weight: 600; color: var(--text-muted); }
 /* One line of chips: a long name ends in an ellipsis, so the box keeps
@@ -303,10 +303,11 @@ button { font: inherit; }
 .ms-agents { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: auto; overflow: hidden; }
 .ms-agents-label { font-size: 12px; color: var(--text-muted); flex: none; }
 .ms-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 13px; padding: 4px 10px; border-radius: 9999px; border: 1px solid var(--ms); color: var(--text); white-space: nowrap; }
-.ms-chip-name { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* The name gives way first; a label too long for the chip (an issue in
-   another repository) ends in an ellipsis too. */
-.ms-chip b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ms); }
+.ms-chip-name { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+/* The issue number keeps its full width and never shrinks; only one too
+   long to leave the name 3em (an issue in another repository) ends in an
+   ellipsis. */
+.ms-chip b { flex: none; max-width: calc(100% - 3em - 6px); overflow: hidden; text-overflow: ellipsis; color: var(--ms); }
 .ms-chip.ms-more { flex: none; color: var(--text-body); border-color: var(--border-strong); }
 
 /* Session cards: four across, with the details from the transcripts. More than fit scroll. */
