@@ -73,6 +73,12 @@ defmodule Wallboard.Sources.SessionIssues do
   # waits for the next check, oldest read first.
   @per_check 8
 
+  # At most this many issues, or branches, in one question to Linear. A
+  # collector decides how many sessions it streams, so without a limit it
+  # would decide how large the question is, and one Linear refuses would
+  # take this machine's own answers with it.
+  @linear_batch 25
+
   # How long Linear's list of teams stands, and how soon it is asked again
   # after a read of it failed.
   @teams_fresh_s 600
@@ -181,10 +187,13 @@ defmodule Wallboard.Sources.SessionIssues do
     |> Enum.reject(&is_nil/1)
   end
 
-  # A branch Linear could tie to an issue: not the main one, and short
-  # enough to be a branch's name.
-  defp linear_branch?(name),
-    do: name not in ["main", "master", "HEAD"] and byte_size(name) in 1..200
+  # A branch Linear could tie to an issue: not the main one, short enough
+  # to be a branch's name, and with nothing git lets no branch hold: a
+  # collector can send any bytes as one.
+  defp linear_branch?(name) do
+    name not in ["main", "master", "HEAD"] and byte_size(name) in 1..200 and
+      String.valid?(name) and name =~ ~r/\A[^\s\x00-\x1f\x7f~^:?*\[\\]+\z/
+  end
 
   # Whether the key is an issue a prompt named, not a branch's.
   defp named?({:issue, _, _}), do: true
@@ -357,7 +366,7 @@ defmodule Wallboard.Sources.SessionIssues do
       |> Enum.map(fn {_s, keys} -> next_stale(keys, reads, at) end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
-      |> jobs()
+      |> jobs(mine)
       |> Enum.sort_by(fn job ->
         {if(Enum.any?(job_keys(job), &MapSet.member?(mine, &1)), do: 0, else: 1),
          read_at(job, reads)}
@@ -377,22 +386,31 @@ defmodule Wallboard.Sources.SessionIssues do
   end
 
   # One call to GitHub for each issue, and one for each repository's
-  # branches together. One call to Linear for every issue named there, and
-  # one for every branch.
-  defp jobs(keys) do
+  # branches together. Linear is asked about issues together and branches
+  # together, at most @linear_batch to a call, this machine's own (`mine`)
+  # in the first calls, so those are made first and do not share a call
+  # with more of a collector's than fill it.
+  defp jobs(keys, mine) do
     by = Enum.group_by(keys, &elem(&1, 0))
 
-    linear_issues =
-      for {:linear, team, n} <- by[:linear] || [], do: {team, n}
-
-    linear_branches = for {:linear_branch, name} <- by[:linear_branch] || [], do: name
+    batches = fn kind ->
+      (by[kind] || [])
+      |> Enum.sort_by(&if(MapSet.member?(mine, &1), do: 0, else: 1))
+      |> Enum.chunk_every(@linear_batch)
+    end
 
     (by[:issue] || []) ++
       ((by[:branch] || [])
        |> Enum.group_by(fn {:branch, repo, _} -> repo end, fn {:branch, _, b} -> b end)
        |> Enum.map(fn {repo, names} -> {:branches, repo, names} end)) ++
-      if(linear_issues == [], do: [], else: [{:linear_issues, linear_issues}]) ++
-      if(linear_branches == [], do: [], else: [{:linear_branches, linear_branches}])
+      for(
+        batch <- batches.(:linear),
+        do: {:linear_issues, for({:linear, team, n} <- batch, do: {team, n})}
+      ) ++
+      for(
+        batch <- batches.(:linear_branch),
+        do: {:linear_branches, Enum.map(batch, &elem(&1, 1))}
+      )
   end
 
   # When a call's answer was last read, or 0 when never: for a call that
