@@ -15,6 +15,25 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.6.0
+
+0.6.0 adds Linear. If you track work in Linear, the Agents tab now shows it
+the way it shows GitHub:
+
+- Each card shows the Linear issue its session is on, such as `VIT-41`. The
+  board finds it in the first prompt that names one, written as `VIT-41` or
+  a link to the issue. When no prompt names one, it asks Linear which issue
+  goes with the session's branch.
+- Above the cards, a box shows that issue's milestone, with its project's
+  name above it, a progress bar and how many issues are done. An issue in no
+  milestone gets a box for its whole project.
+- To turn it on, add a Linear API key in Settings, under Linear, or give
+  where the key is in 1Password. The board only reads from Linear, and
+  nothing changes until a key is set. GitHub issues and milestones work as
+  before.
+- Bandit 1.14.1, Cowboy 2.21.0, cowlib 2.22.0, grpc_server 1.0.6 and
+  phoenix_html 4.4.0 fix five published security advisories.
+
 ## What's new in 0.5.0
 
 0.5.0 shows which issue each agent is working on, and how far along its
