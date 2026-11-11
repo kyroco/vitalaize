@@ -130,8 +130,12 @@ defmodule Wallboard.Sources.SessionIssues do
 
   # What to ask GitHub about a session, in order: the issues its prompts
   # named, then its branch's pull requests. Only names fit to send.
-  # `teams` is the Linear workspace's teams, or nil when Linear is not
-  # set up or its teams are not known yet: then nothing is asked of it.
+  # `teams` is the Linear workspace's teams, nil when Linear is not set
+  # up, and :unknown when it is but its teams could not be read yet. Not
+  # set up, nothing is asked of it. Unknown, nothing can be asked yet, and
+  # a session that named something written like a Linear issue waits for
+  # the teams as it waits for an issue Linear could not be asked about, so
+  # its branch's issue never stands in.
   defp keys(%{issue_refs: :waiting}, _teams), do: []
 
   defp keys(s, teams) do
@@ -151,10 +155,13 @@ defmodule Wallboard.Sources.SessionIssues do
         else: []
 
     (named ++ branch)
-    |> Enum.filter(fn
-      {:linear, team, _} -> teams != nil and MapSet.member?(teams, team)
-      {:linear_branch, name} -> teams != nil and linear_branch?(name)
-      key -> repo?(elem(key, 1))
+    |> Enum.flat_map(fn
+      {:linear, _, _} when is_nil(teams) -> []
+      {:linear, team, n} when teams == :unknown -> [{:linear_unknown, team, n}]
+      {:linear, team, _} = key -> if MapSet.member?(teams, team), do: [key], else: []
+      {:linear_branch, _} when teams in [nil, :unknown] -> []
+      {:linear_branch, name} = key -> if linear_branch?(name), do: [key], else: []
+      key -> if repo?(elem(key, 1)), do: [key], else: []
     end)
     |> first_linear(3)
   end
@@ -164,8 +171,11 @@ defmodule Wallboard.Sources.SessionIssues do
   defp first_linear(keys, most) do
     keys
     |> Enum.map_reduce(0, fn
-      {:linear, _, _} = key, n -> {if(n < most, do: key), n + 1}
-      key, n -> {key, n}
+      {kind, _, _} = key, n when kind in [:linear, :linear_unknown] ->
+        {if(n < most, do: key), n + 1}
+
+      key, n ->
+        {key, n}
     end)
     |> elem(0)
     |> Enum.reject(&is_nil/1)
@@ -179,18 +189,20 @@ defmodule Wallboard.Sources.SessionIssues do
   # Whether the key is an issue a prompt named, not a branch's.
   defp named?({:issue, _, _}), do: true
   defp named?({:linear, _, _}), do: true
+  # Named, and never read: no call is made for it, so it stays unknown.
+  defp named?({:linear_unknown, _, _}), do: true
   defp named?(_), do: false
 
-  # Linear's teams, read at most every ten minutes: {teams or nil, what to
+  # Linear's teams, read at most every ten minutes: {teams, what to
   # keep}. A read that fails keeps the teams known before and is tried
-  # again in two minutes.
+  # again in two minutes; with none known before, they are :unknown.
   defp linear_teams(kept, at) do
     cond do
       not Linear.on?() ->
         {nil, nil}
 
       match?({_, read_at} when at - read_at < @teams_fresh_s, kept) ->
-        {elem(kept, 0), kept}
+        {elem(kept, 0) || :unknown, kept}
 
       true ->
         case Linear.teams() do
@@ -199,7 +211,7 @@ defmodule Wallboard.Sources.SessionIssues do
 
           :failed ->
             before = last_value(kept)
-            {before, {before, at - @teams_fresh_s + @teams_retry_s}}
+            {before || :unknown, {before, at - @teams_fresh_s + @teams_retry_s}}
         end
     end
   end
