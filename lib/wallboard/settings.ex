@@ -1634,7 +1634,7 @@ defmodule Wallboard.Settings do
       %{} = linear ->
         %{
           api_key: if(is_map(linear[:api_key]), do: linear[:api_key]),
-          api_key_ref: blank_to_nil(linear[:api_key_ref])
+          api_key_ref: op_address(linear[:api_key_ref])
         }
 
       _ ->
@@ -1693,6 +1693,16 @@ defmodule Wallboard.Settings do
   defp updates(%{}), do: @defaults.updates
   defp updates(nil), do: @defaults.updates
   defp updates(_), do: %{check: false}
+
+  # Where a key is in 1Password, or nil for anything else. A settings
+  # file written by hand can hold the key itself here, and what is here is
+  # handed to the op command, on its command line.
+  defp op_address(value) when is_binary(value) do
+    value = String.trim(value)
+    if String.starts_with?(value, "op://"), do: value
+  end
+
+  defp op_address(_), do: nil
 
   defp blank_to_nil(nil), do: nil
 

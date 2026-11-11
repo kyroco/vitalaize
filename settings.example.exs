@@ -260,6 +260,8 @@
     # VitalAIze app's Settings or with `vitalaize setup`, and it is kept
     # where the New Relic key is. Or give where it is in 1Password.
     # Example: "op://Private/Linear/credential"
+    # Only an op:// address counts here. Anything else is ignored, so a
+    # key pasted here by mistake is never used or passed on.
     api_key_ref: nil
   },
 
