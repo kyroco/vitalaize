@@ -257,4 +257,33 @@ defmodule Wallboard.LinearTest do
     # A hub from before the field reads only the GitHub ones.
     assert [%Proto.IssueRef{number: 7}] = back.issues
   end
+
+  test "words written like an issue before the real one do not crowd it out" do
+    refs =
+      Wallboard.IssueRef.keep(
+        [],
+        "Fix the UTF-8 decoding of ISO-8601 dates, SHA-256 too, per VIT-41"
+      )
+
+    {facts, _} = SessionIssues.match([session("s1", issue_refs: refs)], %{}, @now)
+    assert facts.sessions == %{"s1" => %{linear: "VIT-41"}}
+
+    # A later prompt's issue still counts after such words.
+    later =
+      []
+      |> Wallboard.IssueRef.keep("UTF-8, ISO-8601 and SHA-256")
+      |> Wallboard.IssueRef.keep("VIT-42")
+
+    {facts, _} = SessionIssues.match([session("s2", issue_refs: later)], %{}, @now)
+    assert facts.sessions == %{"s2" => %{linear: "VIT-42"}}
+  end
+
+  test "a session is asked about at most three Linear issues, whatever it named", c do
+    refs = for n <- [999, 998, 997, 41], do: %{team: "VIT", number: n}
+    {facts, _} = SessionIssues.match([session("s1", issue_refs: refs)], %{}, @now)
+
+    assert facts.sessions == %{}
+    asked = for {_, vars} <- questions(c), {"n" <> _, n} <- vars, do: n
+    assert Enum.sort(asked) == [997, 998, 999]
+  end
 end
