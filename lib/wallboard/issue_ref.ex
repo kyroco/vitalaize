@@ -23,10 +23,18 @@ defmodule Wallboard.IssueRef do
   colour `#333333` or the word `UTF-8`, must not stop a later real one
   from counting. Which is an issue is for GitHub or Linear to say (see
   `Wallboard.Sources.SessionIssues`).
+
+  Many plain words are written like a Linear id (`UTF-8`, `ISO-8601`,
+  `SHA-256`), so more of that kind are kept: which of them name a team in
+  the workspace is only known where Linear is asked, and the first three
+  that do are the ones that count there.
   """
 
-  # How many a session keeps of each kind, GitHub's and Linear's.
+  # How many GitHub references a session keeps.
   @kept 3
+
+  # How many written like a Linear id it keeps.
+  @kept_linear 12
 
   # A Linear team's letters: capitals and digits, a capital first.
   @team "[A-Z][A-Z0-9]{0,9}"
@@ -60,8 +68,9 @@ defmodule Wallboard.IssueRef do
   def find_all(_), do: []
 
   @doc """
-  What a session keeps after one more prompt: the first #{@kept} it has
-  named of each kind, in the order written.
+  What a session keeps after one more prompt, in the order written: the
+  first #{@kept} GitHub references it has named, and the first
+  #{@kept_linear} written like a Linear id.
   """
   def keep(kept, text) do
     if full?(kept) do
@@ -70,9 +79,9 @@ defmodule Wallboard.IssueRef do
       (kept ++ find_all(text))
       |> Enum.uniq()
       |> Enum.reduce({[], %{}}, fn ref, {out, seen} ->
-        kind = if linear?(ref), do: :linear, else: :github
+        {kind, most} = if linear?(ref), do: {:linear, @kept_linear}, else: {:github, @kept}
 
-        if Map.get(seen, kind, 0) < @kept,
+        if Map.get(seen, kind, 0) < most,
           do: {[ref | out], Map.update(seen, kind, 1, &(&1 + 1))},
           else: {out, seen}
       end)
@@ -84,8 +93,11 @@ defmodule Wallboard.IssueRef do
   @doc "Whether a session has kept all it keeps, of both kinds."
   def full?(kept) do
     {linear, github} = Enum.split_with(kept, &linear?/1)
-    length(linear) >= @kept and length(github) >= @kept
+    length(linear) >= @kept_linear and length(github) >= @kept
   end
+
+  @doc "How many written like a Linear id a session keeps."
+  def kept_linear, do: @kept_linear
 
   @doc "Whether the reference names a Linear issue."
   def linear?(ref), do: is_map(ref) and is_binary(ref[:team])

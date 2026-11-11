@@ -531,7 +531,9 @@ defmodule Wallboard.Link.Session do
       _ ->
         []
     end)
-    |> Enum.take(3)
+    # As many as a session keeps: which are a team's is known only where
+    # Linear is asked, and at most three of those are asked about.
+    |> Enum.take(Wallboard.IssueRef.kept_linear())
   end
 
   defp linear_refs(_), do: []

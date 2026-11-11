@@ -98,7 +98,7 @@ defmodule Wallboard.IssueRefTest do
     end
   end
 
-  test "a session keeps the first three of each kind, in the order written" do
+  test "a session keeps the first three GitHub ones and the first twelve written like a Linear id" do
     kept =
       []
       |> IssueRef.keep("UTF-8 and #1, #2, #3, #4")
@@ -110,11 +110,15 @@ defmodule Wallboard.IssueRefTest do
              %{repo: nil, number: 2},
              %{repo: nil, number: 3},
              %{team: "SHA", number: 256},
-             %{team: "ISO", number: 8601}
+             %{team: "ISO", number: 8601},
+             %{team: "VIT", number: 41}
            ]
 
-    assert IssueRef.full?(kept)
-    refute IssueRef.full?(Enum.take(kept, 4))
-    assert IssueRef.keep(kept, "VIT-42 and #9") == kept
+    refute IssueRef.full?(kept)
+
+    full = IssueRef.keep(kept, Enum.map_join(1..20, " ", &"AB-#{&1}"))
+    assert Enum.count(full, &IssueRef.linear?/1) == IssueRef.kept_linear()
+    assert IssueRef.full?(full)
+    assert IssueRef.keep(full, "VIT-42 and #9") == full
   end
 end

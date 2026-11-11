@@ -150,11 +150,25 @@ defmodule Wallboard.Sources.SessionIssues do
         do: [{:branch, s[:repo], s.branch}, {:linear_branch, s.branch}],
         else: []
 
-    Enum.filter(named ++ branch, fn
+    (named ++ branch)
+    |> Enum.filter(fn
       {:linear, team, _} -> teams != nil and MapSet.member?(teams, team)
       {:linear_branch, name} -> teams != nil and linear_branch?(name)
       key -> repo?(elem(key, 1))
     end)
+    |> first_linear(3)
+  end
+
+  # A session's prompts may hold many words written like a Linear id. Of
+  # those a team here could own, only the first few are asked about.
+  defp first_linear(keys, most) do
+    keys
+    |> Enum.map_reduce(0, fn
+      {:linear, _, _} = key, n -> {if(n < most, do: key), n + 1}
+      key, n -> {key, n}
+    end)
+    |> elem(0)
+    |> Enum.reject(&is_nil/1)
   end
 
   # A branch Linear could tie to an issue: not the main one, and short
@@ -218,6 +232,7 @@ defmodule Wallboard.Sources.SessionIssues do
 
     # A session has at most eight keys (three named on GitHub, three on
     # Linear, and its branch on each), so eight rounds settle every one.
+    # A collector may send more named ones: keys/2 drops the rest.
     {reads, calls} = settle(wants, reads, at, 8)
 
     picked = for {s, keys} <- wants, key = pick(keys, reads), do: {s, key}
