@@ -372,4 +372,25 @@ defmodule Wallboard.LinearTest do
       assert sizes(c, "issueVcsBranchSearch") == []
     end
   end
+
+  describe "the 1Password address in a settings file" do
+    alias Wallboard.Settings
+
+    defp linear(section),
+      do: Settings.normalize(Settings.merge(Settings.defaults(), %{linear: section})).linear
+
+    test "is kept when it is an op:// address" do
+      ref = "op://Private/Linear/credential"
+      assert linear(%{api_key_ref: ref}) == %{api_key: nil, api_key_ref: ref}
+      assert linear(%{api_key_ref: "  " <> ref <> " "}).api_key_ref == ref
+    end
+
+    test "is dropped when it is anything else, a key pasted there above all" do
+      for wrong <- ["lin_api_PLANTEDKEY", "https://linear.app", 42, "", %{a: 1}] do
+        assert linear(%{api_key_ref: wrong, api_key: "x", other: 1}) ==
+                 %{api_key: nil, api_key_ref: nil},
+               inspect(wrong)
+      end
+    end
+  end
 end
