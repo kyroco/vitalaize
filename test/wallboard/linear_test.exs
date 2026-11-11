@@ -331,4 +331,45 @@ defmodule Wallboard.LinearTest do
       assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 77}}
     end
   end
+
+  describe "many sessions from a collector" do
+    # How many issues or branches each question to Linear held.
+    defp sizes(c, kind) do
+      for {q, vars} <- questions(c),
+          q =~ kind,
+          do: Enum.count(vars, fn {k, _} -> k =~ ~r/^[tb]\d+$/ end)
+    end
+
+    test "never make one question to Linear larger than 25 issues, and this machine's come first",
+         c do
+      mine = named("mine", 41, local?: true)
+      theirs = for n <- 100..160, do: named("stream:far:#{n}", n)
+
+      {facts, _} = SessionIssues.match(theirs ++ [mine], %{}, @now)
+
+      assert facts.sessions["mine"] == %{linear: "VIT-41"}
+      assert sizes(c, "i0: issues(") != []
+      assert Enum.max(sizes(c, "i0: issues(")) <= 25
+
+      # This machine's issue is in a question with none of the collector's
+      # beyond what fills it, and that question is asked.
+      assert Enum.any?(questions(c), fn {_, vars} -> vars["t0"] == "VIT" and vars["n0"] == 41 end)
+    end
+
+    test "never make one question to Linear larger than 25 branches", c do
+      theirs = for n <- 1..60, do: session("stream:far:#{n}", branch: "feature/far-#{n}")
+      SessionIssues.match(theirs, %{}, @now)
+
+      assert sizes(c, "issueVcsBranchSearch") != []
+      assert Enum.max(sizes(c, "issueVcsBranchSearch")) <= 25
+    end
+
+    test "a branch name that could not be a git branch is never sent to Linear", c do
+      odd = ["feature/a b", "feature/\n$b0", "feature/" <> <<0>>, "x\ty", <<255, 254>>]
+      sessions = for {b, i} <- Enum.with_index(odd), do: session("stream:far:#{i}", branch: b)
+      SessionIssues.match(sessions, %{}, @now)
+
+      assert sizes(c, "issueVcsBranchSearch") == []
+    end
+  end
 end
