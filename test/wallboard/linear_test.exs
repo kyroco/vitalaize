@@ -286,4 +286,49 @@ defmodule Wallboard.LinearTest do
     asked = for {_, vars} <- questions(c), {"n" <> _, n} <- vars, do: n
     assert Enum.sort(asked) == [997, 998, 999]
   end
+
+  describe "a board that starts while Linear cannot be reached" do
+    setup c do
+      # A stand-in gh: an open pull request from any branch closes issue 77.
+      dir = Wallboard.Fixtures.tmp_path("wallboard-linear-gh")
+      File.mkdir_p!(dir)
+
+      File.write!(Path.join(dir, "gh"), """
+      #!/bin/sh
+      echo called >> "#{dir}/calls"
+      echo '{"data": {"repository": {"b0": {"nodes": [{"headRepository": {"nameWithOwner": "acme/shop"}, "closingIssuesReferences": {"nodes": [{"number": 77, "repository": {"nameWithOwner": "acme/shop"}}]}}]}}}}'
+      """)
+
+      File.chmod!(Path.join(dir, "gh"), 0o755)
+      path = System.get_env("PATH")
+      System.put_env("PATH", dir <> ":" <> path)
+
+      on_exit(fn ->
+        System.put_env("PATH", path)
+        File.rm_rf!(dir)
+      end)
+
+      Agent.update(c.down, fn _ -> true end)
+      %{gh: dir}
+    end
+
+    test "a named Linear issue waits: its branch's GitHub issue does not stand in", c do
+      s = named("s1", 41, repo: "acme/shop", branch: "feature/checkout")
+
+      assert {%{sessions: none, milestones: []}, memory} = SessionIssues.match([s], %{}, @now)
+      assert none == %{}
+      refute File.exists?(Path.join(c.gh, "calls"))
+
+      # Once Linear answers, the issue the prompt named shows.
+      Agent.update(c.down, fn _ -> false end)
+      {facts, _} = SessionIssues.match([s], memory, DateTime.add(@now, 180))
+      assert facts.sessions == %{"s1" => %{linear: "VIT-41"}}
+    end
+
+    test "a session that named nothing still takes its branch's GitHub issue" do
+      s = session("s1", repo: "acme/shop", branch: "feature/checkout")
+      {facts, _} = SessionIssues.match([s], %{}, @now)
+      assert facts.sessions == %{"s1" => %{repo: "acme/shop", number: 77}}
+    end
+  end
 end
