@@ -126,6 +126,10 @@ defmodule Wallboard.Settings.Watch do
     if Enum.any?(paths, &(&1 in [[:new_relic, :api_key], [:new_relic, :api_key_ref]])),
       do: reload_new_relic_key(now, state)
 
+    # The same for the Linear key.
+    if Enum.any?(paths, &(&1 in [[:linear, :api_key], [:linear, :api_key_ref]])),
+      do: reload_linear_key(now, state)
+
     if state.listener, do: send(state.listener, {:settings, :reloaded})
   rescue
     e ->
@@ -144,6 +148,14 @@ defmodule Wallboard.Settings.Watch do
   defp reload_new_relic_key(settings, state) do
     if settings.role != :collector and settings.new_relic.enabled do
       load = Keyword.get(state.opts, :load_key, &Wallboard.Secrets.load_new_relic/1)
+      Task.Supervisor.start_child(Wallboard.TaskSupervisor, fn -> load.(settings) end)
+    end
+  end
+
+  # Only where the board reads it, and in the background, as above.
+  defp reload_linear_key(settings, state) do
+    if settings.role != :collector do
+      load = Keyword.get(state.opts, :load_linear_key, &Wallboard.Secrets.load_linear/1)
       Task.Supervisor.start_child(Wallboard.TaskSupervisor, fn -> load.(settings) end)
     end
   end

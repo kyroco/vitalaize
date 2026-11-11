@@ -467,7 +467,7 @@ defmodule WallboardWeb.BoardLive do
           Map.merge(s, %{
             repo: s[:repo] || short_repo(known[cwd]),
             gh_repo: s[:gh_repo] || known[cwd],
-            issue: found[:number],
+            issue: found[:number] || found[:linear],
             issue_repo: found[:repo]
           })
 
@@ -503,6 +503,14 @@ defmodule WallboardWeb.BoardLive do
     |> Enum.map(fn m -> {m, m.sessions |> Enum.map(&by_key[&1]) |> Enum.reject(&is_nil/1)} end)
     |> Enum.reject(fn {_m, on} -> on == [] end)
     |> Enum.with_index()
+    # Linear's come after GitHub's, a project's milestones side by side and
+    # in the order of their names. The names are only compared here.
+    |> Enum.sort_by(fn
+      {{%{source: :linear} = m, _on}, _i} -> {1, milestone_place(m), milestone_title(m)}
+      {_, i} -> {0, i, nil}
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.with_index()
     |> Enum.map(fn {{m, on}, i} ->
       agents = for s <- on, do: %{key: s[:key], name: s.name, issue: s[:issue] && issue_label(s)}
       Map.merge(m, %{tone: rem(i, 4) + 1, agents: agents})
@@ -512,8 +520,21 @@ defmodule WallboardWeb.BoardLive do
   # A milestone's title, from Wallboard.MilestoneTitles, never from the
   # assigns: a page's crash report prints them. One not kept is named by
   # its number.
+  defp milestone_title(%{source: :linear} = m) do
+    Wallboard.MilestoneTitles.get("linear", m.number) ||
+      if(m[:kind] == :project, do: "Project", else: "Milestone")
+  end
+
   defp milestone_title(m),
     do: Wallboard.MilestoneTitles.get(m.repo, m.number) || "Milestone #{m.number}"
+
+  # What a milestone is part of, shown above its name: a GitHub
+  # milestone's repository, a Linear milestone's project, looked up as the
+  # box is drawn like its title, and Linear for a project.
+  defp milestone_place(%{source: :linear} = m),
+    do: Wallboard.MilestoneTitles.get("linear project", m.number) || "Linear"
+
+  defp milestone_place(m), do: m.repo
 
   # Milestone boxes to a row: two, or up to four as more are worked, so the
   # boxes stay at most two rows high in all but rare cases and the session
@@ -529,6 +550,9 @@ defmodule WallboardWeb.BoardLive do
   # for one in another, so the number never reads as the wrong issue.
   # The whole owner/name is compared, without regard to capitals: a fork's
   # upstream has the fork's name.
+  # A Linear issue's own id says its team, so it stands as it is.
+  defp issue_label(%{issue: id}) when is_binary(id), do: id
+
   defp issue_label(%{issue: n} = s) do
     repo = s[:issue_repo]
     own = s[:gh_repo]
@@ -1467,7 +1491,7 @@ defmodule WallboardWeb.BoardLive do
     <article class={["milestone-box", "ms-#{@m.tone}"]}>
       <div class="row">
         <span class="ms-swatch"></span>
-        <span class="ms-repo">{@m.repo}</span>
+        <span class="ms-repo">{milestone_place(@m)}</span>
         <span class="grow"></span>
         <span class="ms-left">{max(@m.total - @m.done, 0)} left · {@pct}%</span>
       </div>

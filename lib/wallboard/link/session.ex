@@ -501,7 +501,10 @@ defmodule Wallboard.Link.Session do
   # repository only when the prompt linked one (see Wallboard.IssueRef).
   # What is not an issue reference is left out, and only the first three
   # count.
-  defp issue_refs(%{issues: refs}) when is_list(refs) do
+  # Linear's come in a list of their own, and follow GitHub's here.
+  defp issue_refs(sum), do: github_refs(sum) ++ linear_refs(sum)
+
+  defp github_refs(%{issues: refs}) when is_list(refs) do
     refs
     |> Enum.flat_map(fn
       %Proto.IssueRef{repo: repo, number: n} when n in 1..999_999_999 ->
@@ -517,7 +520,23 @@ defmodule Wallboard.Link.Session do
     |> Enum.take(3)
   end
 
-  defp issue_refs(_), do: []
+  defp github_refs(_), do: []
+
+  defp linear_refs(%{linear_issues: refs}) when is_list(refs) do
+    refs
+    |> Enum.flat_map(fn
+      %Proto.LinearRef{team: team, number: n} when n in 1..999_999_999 ->
+        if Wallboard.IssueRef.team?(team), do: [%{team: team, number: n}], else: []
+
+      _ ->
+        []
+    end)
+    # As many as a session keeps: which are a team's is known only where
+    # Linear is asked, and at most three of those are asked about.
+    |> Enum.take(Wallboard.IssueRef.kept_linear())
+  end
+
+  defp linear_refs(_), do: []
 
   defp repo_name(nil), do: nil
   defp repo_name(repo), do: repo |> String.split("/") |> List.last()

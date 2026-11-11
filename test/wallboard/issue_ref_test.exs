@@ -65,4 +65,60 @@ defmodule Wallboard.IssueRefTest do
       assert IssueRef.find(text) == nil, inspect(text)
     end
   end
+
+  test "a Linear issue is named by its own id, or a link to it" do
+    assert IssueRef.find("work on VIT-41 please") == %{team: "VIT", number: 41}
+    assert IssueRef.find("(MAST-9)") == %{team: "MAST", number: 9}
+
+    assert IssueRef.find("see https://linear.app/acme/issue/VIT-41/add-linear-support") ==
+             %{team: "VIT", number: 41}
+
+    assert IssueRef.find_all("https://linear.app/acme/issue/VIT-41 then #12 and VIT-42") == [
+             %{team: "VIT", number: 41},
+             %{repo: nil, number: 12},
+             %{team: "VIT", number: 42}
+           ]
+
+    assert IssueRef.linear?(%{team: "VIT", number: 41})
+    refute IssueRef.linear?(%{repo: nil, number: 41})
+  end
+
+  test "what is not written as a Linear id names none" do
+    for text <- [
+          "robert/vit-41-short-title",
+          "vit-41",
+          "feature/VIT-41-title",
+          "VIT-41-more",
+          "xVIT-41",
+          "VIT-0",
+          "https://example.com/VIT-41",
+          "v1.VIT-41"
+        ] do
+      assert IssueRef.find(text) == nil, inspect(text)
+    end
+  end
+
+  test "a session keeps the first three GitHub ones and the first twelve written like a Linear id" do
+    kept =
+      []
+      |> IssueRef.keep("UTF-8 and #1, #2, #3, #4")
+      |> IssueRef.keep("SHA-256, ISO-8601, VIT-41, then issue 5")
+
+    assert kept == [
+             %{team: "UTF", number: 8},
+             %{repo: nil, number: 1},
+             %{repo: nil, number: 2},
+             %{repo: nil, number: 3},
+             %{team: "SHA", number: 256},
+             %{team: "ISO", number: 8601},
+             %{team: "VIT", number: 41}
+           ]
+
+    refute IssueRef.full?(kept)
+
+    full = IssueRef.keep(kept, Enum.map_join(1..20, " ", &"AB-#{&1}"))
+    assert Enum.count(full, &IssueRef.linear?/1) == IssueRef.kept_linear()
+    assert IssueRef.full?(full)
+    assert IssueRef.keep(full, "VIT-42 and #9") == full
+  end
 end

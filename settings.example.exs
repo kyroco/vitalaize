@@ -248,6 +248,23 @@
     slots: 3
   },
 
+  # Linear, for the Agents tab: each card shows the Linear issue its session
+  # is on, such as VIT-41, and a box above the cards shows how far down
+  # that issue's milestone is, or its project when it is in no milestone.
+  # The board finds the issue in the first prompt that names one, written
+  # as VIT-41 or a link to it, and else asks Linear which issue goes with
+  # the session's branch. It is off until a key is set, and it only reads.
+  linear: %{
+    # A personal API key (it starts with lin_api_), made in Linear under
+    # Settings, Security and access. It is not written here: type it in the
+    # VitalAIze app's Settings or with `vitalaize setup`, and it is kept
+    # where the New Relic key is. Or give where it is in 1Password.
+    # Example: "op://Private/Linear/credential"
+    # Only an op:// address counts here. Anything else is ignored, so a
+    # key pasted here by mistake is never used or passed on.
+    api_key_ref: nil
+  },
+
   # The look. These are the Kyroco colors and fonts; change them to make the
   # board yours. Colors are CSS colors. Font files live in fonts_dir (nil
   # means the fonts that come with the board).

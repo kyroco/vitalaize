@@ -179,6 +179,11 @@ defmodule Wallboard.Application do
         else: []
       ) ++
       [
+        # The Linear key, read in the background the same way. With none
+        # set it finds none, and Linear is never asked anything.
+        Supervisor.child_spec({Task, fn -> Wallboard.Secrets.load_linear(settings) end},
+          id: :load_linear_key
+        ),
         %{
           id: Wallboard.Pollers,
           type: :supervisor,
