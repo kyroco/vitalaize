@@ -164,12 +164,22 @@ message Summary {
   // The first issues the session's prompts name, in order. Never the
   // prompts' text.
   repeated IssueRef issues = 12;
+  // The first Linear issues the prompts name, in order. A field of their
+  // own, so a hub from before it never reads one as a GitHub number.
+  repeated LinearRef linear_issues = 13;
 }
 
 // An issue a prompt named: its repository as owner/name when the prompt
 // linked it (else empty, for the session's own), and its number.
 message IssueRef {
   string repo = 1;
+  uint64 number = 2;
+}
+
+// A Linear issue a prompt named: its team's letters and its number, as
+// VIT and 41 for VIT-41.
+message LinearRef {
+  string team = 1;
   uint64 number = 2;
 }
 

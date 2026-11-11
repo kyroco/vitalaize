@@ -220,6 +220,24 @@ defmodule Wallboard.Collector.Proto.Summary do
   field(:version, 10, type: :string)
   field(:entrypoint, 11, type: :string)
   field(:issues, 12, repeated: true, type: Wallboard.Collector.Proto.IssueRef)
+
+  field(:linear_issues, 13,
+    repeated: true,
+    type: Wallboard.Collector.Proto.LinearRef,
+    json_name: "linearIssues"
+  )
+end
+
+defmodule Wallboard.Collector.Proto.LinearRef do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "wallboard.collector.proto.LinearRef",
+    protoc_gen_elixir_version: "0.17.0",
+    syntax: :proto3
+
+  field(:team, 1, type: :string)
+  field(:number, 2, type: :uint64)
 end
 
 defmodule Wallboard.Collector.Proto.IssueRef do

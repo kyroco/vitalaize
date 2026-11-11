@@ -517,4 +517,31 @@ defmodule Wallboard.BoardMilestoneLineTest do
       refute String.downcase(colors.info) in orange
     end
   end
+
+  test "a Linear milestone shows its project above its name, and each card its Linear id" do
+    view = open_board()
+    id = "11111111-1111-4111-8111-111111111111"
+    loose = "22222222-2222-4222-8222-222222222222"
+    MilestoneTitles.put("linear", id, "Build")
+    MilestoneTitles.put("linear project", id, "Linear support")
+    MilestoneTitles.put("linear", loose, "New Ideas")
+
+    base = %{repo: "Linear", source: :linear, rev: 1}
+
+    milestones = [
+      Map.merge(base, %{kind: :milestone, number: id, done: 2, total: 5, sessions: ["main:a"]}),
+      Map.merge(base, %{kind: :project, number: loose, done: 1, total: 2, sessions: ["main:b"]})
+    ]
+
+    issues = %{"main:a" => %{linear: "VIT-41"}, "main:b" => %{linear: "VIT-42"}}
+    html = tell_issues(view, milestones, [card("a"), card("b")], issues)
+
+    # A project's milestones sit together, in the order of their names.
+    assert [
+             %{repo: "Linear", title: "New Ideas", done: "1 of 2 done", agents: ["VIT-42 b"]},
+             %{repo: "Linear support", title: "Build", done: "2 of 5 done", agents: ["VIT-41 a"]}
+           ] = boxes(html)
+
+    assert html =~ ~r{class="sc-issue ms-2"[^>]*>\s*VIT-41\s*<}
+  end
 end

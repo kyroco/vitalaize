@@ -503,6 +503,7 @@ defmodule Wallboard.Collector.Filter do
 
     body = %Proto.Summary{
       issues: Enum.flat_map(t[:issues] || [], &issue/1),
+      linear_issues: Enum.flat_map(t[:issues] || [], &linear_issue/1),
       title: text(t.titles[:custom] || t.titles[:agent] || s.ctx[:title] || t.titles[:ai]),
       first_prompt: text(t.first_prompt),
       last_prompt: text(t.last_prompt),
@@ -529,6 +530,13 @@ defmodule Wallboard.Collector.Filter do
   end
 
   defp issue(_), do: []
+
+  # A Linear issue a prompt named, as its team's letters and its number.
+  defp linear_issue(%{team: team, number: n}) when is_integer(n) and n > 0 do
+    if Wallboard.IssueRef.team?(team), do: [%Proto.LinearRef{team: team, number: n}], else: []
+  end
+
+  defp linear_issue(_), do: []
 
   # Asked again only when the folder changes: it reads the folder's git
   # config. Only for a whole path, so a made-up folder never points it at

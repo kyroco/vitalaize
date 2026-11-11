@@ -292,6 +292,13 @@ defmodule Wallboard.Settings do
       checks: [],
       slots: 3
     },
+    # Linear, for the issue, milestone and project each session is on. On
+    # once a key is set, kept as New Relic's is: api_key holds only the
+    # note that one is kept, and api_key_ref is where it is in 1Password.
+    linear: %{
+      api_key: nil,
+      api_key_ref: nil
+    },
     theme: %{
       page: "#f1efed",
       surface: "#ffffff",
@@ -674,7 +681,7 @@ defmodule Wallboard.Settings do
 
   # The settings kept in the key store (`Wallboard.KeyStore`), and the
   # name each is kept under there.
-  @kept_keys [{[:new_relic, :api_key], "new_relic"}]
+  @kept_keys [{[:new_relic, :api_key], "new_relic"}, {[:linear, :api_key], "linear"}]
 
   @doc """
   Puts each key typed in a save (what `change/1` returned) in the key
@@ -874,6 +881,16 @@ defmodule Wallboard.Settings do
          {[:new_relic, :api_key_ref], "Or where it is in 1Password", :string, false,
           "An op:// address, read with 1Password's op command. Used when no key is typed above"},
          {[:new_relic, :region], "Region", {:choice, ["us", "eu"]}, false, nil}
+       ]},
+      {"Linear",
+       [
+         {[:linear, :api_key], "Linear API key", :key, false,
+          "Shows the Linear issue, milestone and project each agent is on. Paste a personal " <>
+            "API key (it starts with lin_api_), made in Linear under Settings, Security and " <>
+            "access. Read access is all it needs. Kept in your keychain on a Mac, in a file " <>
+            "only you can read on Linux. Empty the field (- in vitalaize setup) to remove it"},
+         {[:linear, :api_key_ref], "Or where the Linear key is in 1Password", :string, false,
+          "An op:// address, read with 1Password's op command. Used when no key is typed above"}
        ]},
       {"Collectors on other machines",
        [
@@ -1115,18 +1132,22 @@ defmodule Wallboard.Settings do
   # A key for the key store. It is held inside a function until it is
   # kept, so printing what a save holds never shows it (see keep_keys/1).
   # No message here repeats what was typed.
-  defp parse(:key, raw, _path) do
+  defp parse(:key, raw, path) do
     value = String.trim(raw)
+    linear? = path == [:linear, :api_key]
 
     cond do
       value == "" ->
         {:ok, nil}
 
+      String.starts_with?(value, "op://") and linear? ->
+        {:error, "that is a 1Password address: put it in Or where the Linear key is in 1Password"}
+
       String.starts_with?(value, "op://") ->
         {:error, "that is a 1Password address: put it in Or where it is in 1Password"}
 
       not (value =~ ~r/\A[\w.\-]{8,256}\z/) ->
-        {:error, "use the key exactly as New Relic shows it"}
+        {:error, "use the key exactly as #{if linear?, do: "Linear", else: "New Relic"} shows it"}
 
       true ->
         {:ok, {:store, fn -> value end}}
@@ -1147,6 +1168,10 @@ defmodule Wallboard.Settings do
       path == [:new_relic, :api_key_ref] and not String.starts_with?(value, "op://") ->
         {:error,
          "use the op:// address from 1Password. To give the key itself, put it in New Relic API key"}
+
+      path == [:linear, :api_key_ref] and not String.starts_with?(value, "op://") ->
+        {:error,
+         "use the op:// address from 1Password. To give the key itself, put it in Linear API key"}
 
       path == [:alerts, :slack_webhook] and not (value =~ ~r{^https://\S+$}) ->
         {:error, "use the https:// address Slack gave you"}
@@ -1604,6 +1629,16 @@ defmodule Wallboard.Settings do
     |> update_in([:new_relic, :api_key], fn
       %{} = note -> note
       _ -> nil
+    end)
+    |> Map.update(:linear, @defaults.linear, fn
+      %{} = linear ->
+        %{
+          api_key: if(is_map(linear[:api_key]), do: linear[:api_key]),
+          api_key_ref: blank_to_nil(linear[:api_key_ref])
+        }
+
+      _ ->
+        @defaults.linear
     end)
     |> Map.update(:updates, @defaults.updates, &updates/1)
     |> update_in([:archive, :path], &db_path/1)

@@ -11,20 +11,34 @@ defmodule Wallboard.IssueRef do
   Number 0 is never an issue. Only the repository and the number are kept,
   never the prompt's text.
 
-  A session keeps the first few it names, in order (`keep/2`): something
-  written like one that is not an issue, such as the colour `#333333`, must
-  not stop a later real one from counting. Which is an issue is for GitHub
-  to say (see `Wallboard.Sources.SessionIssues`).
+  A Linear issue is named by its own id, a team's letters and a number:
+
+    * `VIT-41`, in capitals as Linear writes it
+    * a link to the issue, `https://linear.app/acme/issue/VIT-41/some-title`
+
+  It is kept as `%{team: "VIT", number: 41}`, with no repository.
+
+  A session keeps the first few it names of each kind, in order
+  (`keep/2`): something written like one that is not an issue, such as the
+  colour `#333333` or the word `UTF-8`, must not stop a later real one
+  from counting. Which is an issue is for GitHub or Linear to say (see
+  `Wallboard.Sources.SessionIssues`).
   """
 
-  # How many a session keeps.
+  # How many a session keeps of each kind, GitHub's and Linear's.
   @kept 3
+
+  # A Linear team's letters: capitals and digits, a capital first.
+  @team "[A-Z][A-Z0-9]{0,9}"
 
   @forms [
     {:link, ~r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\d{1,9})(?!\w)"},
     {:link, ~r"[?&]issue=([A-Za-z0-9_.-]+)(?:%7C|\|)([A-Za-z0-9_.-]+)(?:%7C|\|)(\d{1,9})(?!\w)"i},
     {:bare, ~r"(?<![\w#&])#(\d{1,9})(?!\w)"},
-    {:bare, ~r"(?<!\w)issue\s+#?(\d{1,9})(?!\w)"i}
+    {:bare, ~r"(?<!\w)issue\s+#?(\d{1,9})(?!\w)"i},
+    {:linear, ~r"https?://linear\.app/[A-Za-z0-9_.-]+/issue/(#{@team})-(\d{1,9})(?!\w)"},
+    # Not inside a link or a longer name: a link is the form above.
+    {:linear, ~r"(?<![\w/.#-])(#{@team})-(\d{1,9})(?![\w-])"}
   ]
 
   @doc "The first issue the text names, as `%{repo, number}` (repo nil for the session's own), or nil."
@@ -45,15 +59,43 @@ defmodule Wallboard.IssueRef do
 
   def find_all(_), do: []
 
-  @doc "What a session keeps after one more prompt: the first #{@kept} it has named, in order."
-  def keep(kept, _text) when length(kept) >= @kept, do: kept
-  def keep(kept, text), do: (kept ++ find_all(text)) |> Enum.uniq() |> Enum.take(@kept)
+  @doc """
+  What a session keeps after one more prompt: the first #{@kept} it has
+  named of each kind, in the order written.
+  """
+  def keep(kept, text) do
+    if full?(kept) do
+      kept
+    else
+      (kept ++ find_all(text))
+      |> Enum.uniq()
+      |> Enum.reduce({[], %{}}, fn ref, {out, seen} ->
+        kind = if linear?(ref), do: :linear, else: :github
 
-  @doc "Whether a session has kept all it keeps."
-  def full?(kept), do: length(kept) >= @kept
+        if Map.get(seen, kind, 0) < @kept,
+          do: {[ref | out], Map.update(seen, kind, 1, &(&1 + 1))},
+          else: {out, seen}
+      end)
+      |> elem(0)
+      |> Enum.reverse()
+    end
+  end
+
+  @doc "Whether a session has kept all it keeps, of both kinds."
+  def full?(kept) do
+    {linear, github} = Enum.split_with(kept, &linear?/1)
+    length(linear) >= @kept and length(github) >= @kept
+  end
+
+  @doc "Whether the reference names a Linear issue."
+  def linear?(ref), do: is_map(ref) and is_binary(ref[:team])
+
+  @doc "Whether the text is a Linear team's letters, as `VIT` in `VIT-41`."
+  def team?(team), do: is_binary(team) and team =~ ~r/\A#{@team}\z/
 
   defp ref(:link, [owner, name, n]),
     do: %{repo: owner <> "/" <> name, number: String.to_integer(n)}
 
   defp ref(:bare, [n]), do: %{repo: nil, number: String.to_integer(n)}
+  defp ref(:linear, [team, n]), do: %{team: team, number: String.to_integer(n)}
 end

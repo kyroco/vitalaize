@@ -65,4 +65,56 @@ defmodule Wallboard.IssueRefTest do
       assert IssueRef.find(text) == nil, inspect(text)
     end
   end
+
+  test "a Linear issue is named by its own id, or a link to it" do
+    assert IssueRef.find("work on VIT-41 please") == %{team: "VIT", number: 41}
+    assert IssueRef.find("(MAST-9)") == %{team: "MAST", number: 9}
+
+    assert IssueRef.find("see https://linear.app/acme/issue/VIT-41/add-linear-support") ==
+             %{team: "VIT", number: 41}
+
+    assert IssueRef.find_all("https://linear.app/acme/issue/VIT-41 then #12 and VIT-42") == [
+             %{team: "VIT", number: 41},
+             %{repo: nil, number: 12},
+             %{team: "VIT", number: 42}
+           ]
+
+    assert IssueRef.linear?(%{team: "VIT", number: 41})
+    refute IssueRef.linear?(%{repo: nil, number: 41})
+  end
+
+  test "what is not written as a Linear id names none" do
+    for text <- [
+          "robert/vit-41-short-title",
+          "vit-41",
+          "feature/VIT-41-title",
+          "VIT-41-more",
+          "xVIT-41",
+          "VIT-0",
+          "https://example.com/VIT-41",
+          "v1.VIT-41"
+        ] do
+      assert IssueRef.find(text) == nil, inspect(text)
+    end
+  end
+
+  test "a session keeps the first three of each kind, in the order written" do
+    kept =
+      []
+      |> IssueRef.keep("UTF-8 and #1, #2, #3, #4")
+      |> IssueRef.keep("SHA-256, ISO-8601, VIT-41, then issue 5")
+
+    assert kept == [
+             %{team: "UTF", number: 8},
+             %{repo: nil, number: 1},
+             %{repo: nil, number: 2},
+             %{repo: nil, number: 3},
+             %{team: "SHA", number: 256},
+             %{team: "ISO", number: 8601}
+           ]
+
+    assert IssueRef.full?(kept)
+    refute IssueRef.full?(Enum.take(kept, 4))
+    assert IssueRef.keep(kept, "VIT-42 and #9") == kept
+  end
 end
