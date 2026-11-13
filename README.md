@@ -35,6 +35,8 @@ you:
 - The rest is for fun and says nothing about a session: small talk,
   shouting, lunch outside as a group, ping pong, a cat, and a water cooler
   that runs dry.
+- grpc_server 1.1.0 and grpc_core 1.1.0 fix five published security
+  advisories.
 
 Add `?floor=demo` to the board's address to see a made-up cast with one of
 every behavior. Tap the floor, or use the W, A, S and D keys, to walk
