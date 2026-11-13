@@ -15,6 +15,33 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.7.0
+
+0.7.0 adds the Floor tab, between Agents and Git. It draws every session as
+a little person in an office, so one look across the room says who needs
+you:
+
+- A session that needs you leaves its desk and comes to you with a red "!".
+  The longer it waits, the louder it gets: a wave at 2 minutes, a bullhorn
+  at 10, a picket sign at 30.
+- A working session types at its desk. An idle one wanders, falls asleep at
+  its desk after a day, and sits by the campfire with its bag packed after
+  seven, ready to archive.
+- A foreman, a session with "foreman" in its name or its folder's name,
+  wears a hard hat and does the rounds of its crew's desks. Each project
+  is a crew with its own rug.
+- Tap anyone to see what they are doing and what they asked. On the Mac
+  that runs the board, **Open session** opens it in the Claude app.
+- The rest is for fun and says nothing about a session: small talk,
+  shouting, lunch outside as a group, ping pong, a cat, and a water cooler
+  that runs dry.
+- grpc_server 1.1.0 and grpc_core 1.1.0 fix five published security
+  advisories.
+
+Add `?floor=demo` to the board's address to see a made-up cast with one of
+every behavior. Tap the floor, or use the W, A, S and D keys, to walk
+yourself around.
+
 ## What's new in 0.6.0
 
 0.6.0 adds Linear. If you track work in Linear, the Agents tab now shows it

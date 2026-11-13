@@ -334,6 +334,15 @@ defmodule Wallboard.LinkTest do
       # Nothing the port was started with was turned down.
       refute log =~ "unknown or invalid"
 
+      # The port's own limits reached the listener, whatever shape the gRPC
+      # library hands its start in: three seconds for a handshake, one
+      # counter of connections, and HTTP/2 as the only protocol offered.
+      started = :ranch.get_transport_options(inspect(Wallboard.Link.Endpoint))
+      assert started.handshake_timeout == 3_000
+      assert started.num_conns_sups == 1
+      assert Keyword.get_values(started.socket_opts, :alpn_preferred_protocols) == [["h2"]]
+      refute Keyword.has_key?(started.socket_opts, :next_protocols_advertised)
+
       # An approved machine that offers only HTTP/1.1 gets no connection.
       {:ok, papa} = Authority.issue(link, "papa")
       old = [alpn_advertised_protocols: ["http/1.1"], active: false]

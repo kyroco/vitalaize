@@ -521,3 +521,29 @@ button { font: inherit; }
 .machine-disconnect { font: inherit; font-size: 14px; font-weight: 600; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; padding: 9px 12px; min-height: 40px; cursor: pointer; }
 .machine-disconnect.sure { color: #fff; background: var(--accent); border-color: var(--accent); }
 @media (max-width: 700px) { .machine-row { grid-template-columns: 1fr; gap: 4px; } }
+
+/* Floor tab: the sessions as little people in an office, drawn on a canvas
+   by floor.js. The panel matches the Agents tab's. */
+.floor-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; flex: 1 1 auto; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.floor-hint { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.floor-demo { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 9999px; background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); white-space: nowrap; }
+/* The counts at the right of its top edge, like the Agents tab's chips. */
+.floor-chips { display: flex; align-items: center; gap: 8px; }
+.floor-chip { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 9999px; background: var(--track); color: var(--text-body); white-space: nowrap; }
+.floor-chip.needs { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn-deep); }
+.floor-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.floor-canvas { position: absolute; inset: 0; }
+.floor-canvas canvas { display: block; }
+/* The same cast as a list: all a screen reader gets, and all anyone gets
+   when the browser cannot draw. Once the canvas is up it is moved out of
+   sight, not removed. */
+.floor-list { list-style: none; margin: 0; padding: 14px 20px; display: flex; flex-direction: column; gap: 6px; max-height: 100%; overflow-y: auto; touch-action: pan-y; }
+.floor-list button { border: 0; background: none; padding: 6px 0; margin: 0; font-size: 14px; color: var(--text-body); text-align: left; cursor: pointer; }
+.floor-stage.drawn .floor-list { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* The talk box of whoever was tapped. */
+.floor-talk { gap: 12px; }
+.floor-line { margin: 0; font-size: 17px; font-weight: 700; color: var(--text); }
+.floor-line.needs { color: var(--alert); }
+.floor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.floor-actions a.mailbox-act { text-decoration: none; display: inline-flex; align-items: center; }
+.badge-foreman { background: #ffd21f; color: #1d1d1d; }

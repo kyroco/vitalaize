@@ -1,7 +1,7 @@
 defmodule WallboardWeb.BoardLive do
   @moduledoc """
   The board: a header and status line that stay put, and under them tabs
-  (Agents, Git, New Relic) laid side by side. The browser rotates between
+  (Agents, Floor, Git, New Relic) laid side by side. The browser rotates between
   the tabs and handles taps and swipes; the server only sends what changed.
 
   Times go to the browser as timestamps, and the browser writes them in the
@@ -12,7 +12,7 @@ defmodule WallboardWeb.BoardLive do
 
   require Logger
 
-  alias Wallboard.{Mailbox, Poller, RunJobs, Runners, Settings, Store}
+  alias Wallboard.{DesktopSessions, Floor, Mailbox, Poller, RunJobs, Runners, Settings, Store}
   alias Wallboard.Archive.{CiMinutes, Collector, Trends}
   alias Wallboard.Sources.{Builds, Claude, DevPower, GitHub}
 
@@ -28,6 +28,8 @@ defmodule WallboardWeb.BoardLive do
   # them. A new tab is one entry here and its section in render/1.
   @tabs [
     {:agents, "Agents"},
+    # The same sessions as little people in an office (see Wallboard.Floor).
+    {:floor, "Floor"},
     {:git, "Git"},
     {:new_relic, "New Relic"}
   ]
@@ -41,14 +43,14 @@ defmodule WallboardWeb.BoardLive do
   end
 
   @impl true
-  def mount(_params, session, socket) do
+  def mount(params, session, socket) do
     # A screen left open across an update reconnects on its own but keeps the
     # old app.css and app.js, so it gets a full reload to fetch the new ones.
     if connected?(socket) and
          get_connect_params(socket)["asset_version"] != WallboardWeb.Layouts.asset_version() do
       {:ok, redirect(socket, to: "/")}
     else
-      mount_board(socket, session)
+      mount_board(socket, session, params)
     end
   end
 
@@ -76,8 +78,11 @@ defmodule WallboardWeb.BoardLive do
   def reload_for?(shown, now),
     do: now != shown and put_in(now, [:github, :repos], shown.github.repos) != shown
 
-  defp mount_board(socket, session) do
+  defp mount_board(socket, session, params) do
     settings = Settings.get()
+    # /?floor=demo fills the Floor tab with a made-up cast (see
+    # Wallboard.Floor.demo/1). The other tabs keep the real sessions.
+    floor_demo? = is_map(params) and params["floor"] == "demo"
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Wallboard.PubSub, Poller.topic())
@@ -99,6 +104,7 @@ defmodule WallboardWeb.BoardLive do
     socket =
       socket
       |> assign(settings: settings, now: now(), product: @product, tabs: tabs(settings))
+      |> assign(floor_demo?: floor_demo?, floor_talk: nil, floor_link: nil)
       |> assign(claude: claude.facts, claude_meta: claude.meta)
       |> assign(codex: codex.facts)
       |> assign(stream: Wallboard.Link.Sessions.cards())
@@ -241,7 +247,9 @@ defmodule WallboardWeb.BoardLive do
          run_view: nil,
          back_ref: nil,
          mailbox_open?: false,
-         mailbox_note: nil
+         mailbox_note: nil,
+         floor_talk: nil,
+         floor_link: nil
        )}
 
   def handle_info(_, socket), do: {:noreply, socket}
@@ -289,6 +297,23 @@ defmodule WallboardWeb.BoardLive do
 
   def handle_event("close_session", _params, socket),
     do: {:noreply, socket |> assign(selected: nil) |> touched()}
+
+  # Someone on the Floor tab was tapped: its talk box opens. The link that
+  # opens the session in the Claude app is only worked out for the person
+  # at this machine, since the app is here and nowhere else.
+  def handle_event("floor_talk", %{"key" => key}, socket) when is_binary(key) do
+    case Enum.find(socket.assigns.floor_sessions, &(&1[:key] == key)) do
+      nil ->
+        {:noreply, socket}
+
+      s ->
+        link = if floor_openable?(s, socket.assigns.who), do: DesktopSessions.link(s.session_id)
+        {:noreply, socket |> assign(floor_talk: key, floor_link: link) |> touched()}
+    end
+  end
+
+  def handle_event("floor_close", _params, socket),
+    do: {:noreply, socket |> assign(floor_talk: nil, floor_link: nil) |> touched()}
 
   # A repository's details, over the board like a session's. They follow
   # the live numbers while open.
@@ -415,7 +440,8 @@ defmodule WallboardWeb.BoardLive do
              selected: nil,
              open_repo: nil,
              open_run: nil,
-             mailbox_open?: false
+             mailbox_open?: false,
+             floor_talk: nil
            }
          } = socket
        ),
@@ -428,6 +454,13 @@ defmodule WallboardWeb.BoardLive do
   end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
+
+  # The Claude app can open a session only on the machine it runs on, and
+  # only one of this machine's own Claude sessions.
+  defp floor_openable?(s, who) do
+    who.local? and is_binary(s[:session_id]) and is_nil(s[:machine]) and
+      s[:tool] not in [:codex, "codex"] and s[:demo] != true
+  end
 
   # ---------------------------------------------------------------------------
   # Shaping the data for the page
@@ -479,7 +512,13 @@ defmodule WallboardWeb.BoardLive do
     idle = sessions |> Enum.filter(&(&1.status == :idle)) |> Enum.sort_by(& &1.name)
     milestones = live_milestones(socket.assigns[:session_issues], sessions)
 
+    # The Floor tab draws the same sessions, or its made-up cast.
+    on_floor = if socket.assigns[:floor_demo?], do: Floor.demo(now), else: sessions
+    details = (socket.assigns[:usage] && socket.assigns.usage[:sessions]) || %{}
+
     assign(socket,
+      floor_sessions: on_floor,
+      floor: Floor.cast(on_floor, now, details),
       needs: needs,
       working: working,
       idle: idle,
@@ -774,6 +813,9 @@ defmodule WallboardWeb.BoardLive do
                 usage_meta={@usage_meta}
               />
             </section>
+            <section :if={tab?(@tabs, :floor)} class="page page-floor" aria-label="Floor">
+              <.floor_tab cast={@floor} demo?={@floor_demo?} tz={@settings.timezone} />
+            </section>
             <section :if={tab?(@tabs, :git)} class="page page-git" aria-label="Git">
               <.git_tab columns={@git_columns} quiet={@git_quiet} now={@now} meta={@github_meta} />
             </section>
@@ -795,6 +837,14 @@ defmodule WallboardWeb.BoardLive do
         meta={@github_meta}
       />
       <.run_detail :if={@run_view} v={@run_view} />
+      <.floor_talk
+        :if={@floor_talk && Enum.find(@floor_sessions, &(&1[:key] == @floor_talk))}
+        s={Enum.find(@floor_sessions, &(&1[:key] == @floor_talk))}
+        now={@now}
+        link={@floor_link}
+        details?={@archive_on? && !@floor_demo?}
+        machine={@machine}
+      />
       <WallboardWeb.MailboxPanel.panel
         :if={@mailbox_open?}
         items={@mailbox}
@@ -815,6 +865,133 @@ defmodule WallboardWeb.BoardLive do
 
   # ---------------------------------------------------------------------------
   # Pieces
+
+  attr :cast, :list, required: true
+  attr :demo?, :boolean, default: false
+  attr :tz, :string, required: true
+
+  # The Floor tab: everyone as a little person in an office. The server
+  # sends who they are and what they are doing (see Wallboard.Floor); the
+  # browser draws and moves them (see priv/static/js/floor.js) inside
+  # #floor-stage, which LiveView leaves alone. Under it, the same cast as a
+  # plain list for a screen reader, or a browser that cannot draw.
+  defp floor_tab(assigns) do
+    assigns = assign(assigns, counts: Enum.frequencies_by(assigns.cast, & &1.mood))
+
+    ~H"""
+    <section class="floor-panel" aria-label="The floor">
+      <div class="panel-tabs">
+        <h2 class="panel-title">
+          The floor <span class="tab-count">{length(@cast)}</span>
+        </h2>
+        <span :if={@demo?} class="floor-demo">Made-up cast, to show every behavior</span>
+        <span class="floor-hint">
+          Hard hat is a foreman. Tap anyone to talk. Tap the floor to walk over.
+        </span>
+        <span class="grow"></span>
+        <div :if={@cast != []} class="floor-chips">
+          <span class="floor-chip needs">
+            <span class="dot8 warn"></span>{@counts["needs"] || 0} need you
+          </span>
+          <span class="floor-chip">
+            <span class="dot8 ok"></span>{@counts["working"] || 0} working
+          </span>
+          <span class="floor-chip">
+            <span class="dot8 muted"></span>{@counts["wandering"] || 0} idle
+          </span>
+          <span :if={@counts["asleep"]} class="floor-chip">{@counts["asleep"]} asleep</span>
+          <span :if={@counts["packed"]} class="floor-chip">
+            {@counts["packed"]} ready to archive
+          </span>
+        </div>
+      </div>
+      <div
+        id="floor-room"
+        class="floor-stage"
+        data-keep="class"
+        phx-hook="Floor"
+        data-cast={Jason.encode!(@cast)}
+        data-tz={@tz}
+      >
+        <div id="floor-stage" class="floor-canvas" phx-update="ignore"></div>
+        <ul class="floor-list">
+          <li :for={member <- @cast}>
+            <button phx-click="floor_talk" phx-value-key={member.key}>
+              {member.name}, {member.role} on {member.crew}: {floor_mood(member.mood)}{if member.says,
+                do: ". " <> member.says}
+            </button>
+          </li>
+        </ul>
+      </div>
+    </section>
+    """
+  end
+
+  defp floor_mood("needs"), do: "needs you"
+  defp floor_mood("working"), do: "working"
+  defp floor_mood("wandering"), do: "idle"
+  defp floor_mood("asleep"), do: "asleep"
+  defp floor_mood("packed"), do: "ready to archive"
+
+  attr :s, :map, required: true
+  attr :now, :any, required: true
+  # The address that opens this session in the Claude app, or nil.
+  attr :link, :string, default: nil
+  # Whether its saved details can be opened (the archive is on).
+  attr :details?, :boolean, default: false
+  attr :machine, :string, default: nil
+
+  # The talk box: who was tapped on the Floor tab, what they are doing,
+  # and what they said last.
+  defp floor_talk(assigns) do
+    assigns =
+      assign(assigns,
+        role: Floor.role(assigns.s),
+        mood: Floor.mood(assigns.s, assigns.now),
+        line: Floor.status_line(assigns.s, assigns.now),
+        says: Floor.says(assigns.s)
+      )
+
+    ~H"""
+    <div class="detail-scrim" phx-click="floor_close">
+      <div class="detail detail-small floor-talk" phx-click="noop">
+        <div class="row">
+          <.tool_icon tool={@s[:tool]} />
+          <h2 class="detail-title">{@s.name}</h2>
+          <span class="grow"></span>
+          <button class="close" phx-click="floor_close" aria-label="Close">×</button>
+        </div>
+        <div class="detail-meta">
+          <span class={["badge", if(@role == :foreman, do: "badge-foreman", else: "badge-idle")]}>
+            {if @role == :foreman, do: "Foreman", else: "Worker"}
+          </span>
+          <span class="sc-repo">{Floor.crew(@s)}</span>
+          <span :if={@s[:issue]} class="sc-issue">{Floor.tag(@s)}</span>
+          <span :if={@s[:account]} class="acct">{@s.account}</span>
+          <span :if={@s[:short_id]} class="sc-id">{@s.short_id}</span>
+        </div>
+        <p class={["floor-line", @mood == :needs && "needs"]}>{@line}</p>
+        <p :if={@says} class="detail-prompt">{@says}</p>
+        <p :if={@s[:stale]} class="stale-note small">
+          Its machine is not connected, so this is how it stood when the board last heard.
+        </p>
+        <div class="floor-actions">
+          <a :if={@link} class="mailbox-act primary" href={@link}>Open session</a>
+          <button
+            :if={@details? && @s[:session_id] && (@s[:machine] || @machine)}
+            class="mailbox-act"
+            phx-click={JS.push("floor_close") |> JS.push("open_session")}
+            phx-value-machine={@s[:machine] || @machine}
+            phx-value-id={@s[:session_id]}
+          >
+            More details
+          </button>
+          <button class="mailbox-act" phx-click="floor_close">Back to the floor</button>
+        </div>
+      </div>
+    </div>
+    """
+  end
 
   attr :brand, :map, required: true
   attr :title, :string, required: true

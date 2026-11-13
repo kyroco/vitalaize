@@ -89,31 +89,50 @@ defmodule Wallboard.Link.Hub do
       GRPC.Server.Supervisor.child_spec(Wallboard.Link.Endpoint, port, adapter_opts: adapter_opts)
 
     case spec do
-      %{start: {m, f, [ref, transport, %{socket_opts: socket_opts} = trans, protocol, proto]}} ->
-        {socket_opts, _} =
-          Enum.flat_map_reduce(socket_opts, false, fn
-            {:next_protocols_advertised, _}, seen? -> {[], seen?}
-            {:alpn_preferred_protocols, _}, true -> {[], true}
-            {:alpn_preferred_protocols, _} = first, false -> {[first], true}
-            other, seen? -> {[other], seen?}
-          end)
+      # grpc_server before 1.1: the listener's own start.
+      %{start: {_m, _f, [_ref, _transport, %{socket_opts: _}, _protocol, _proto]} = start} ->
+        %{spec | start: tighten(start)}
 
-        # A connection gets three seconds to finish its handshake. Until it
-        # has, it is a stranger holding one of the port's places.
-        # One counter of connections, so the limit is the limit; left alone
-        # there is one per acceptor and the port takes four times as many.
-        trans =
-          Map.merge(trans, %{
-            socket_opts: socket_opts,
-            handshake_timeout: 3_000,
-            num_conns_sups: 1
-          })
+      # grpc_server 1.1 wraps the listener's start in one of its own, which
+      # logs the port once it is up. The listener's start is its last
+      # argument.
+      %{start: {wm, wf, wrapped}} when is_list(wrapped) and wrapped != [] ->
+        case List.last(wrapped) do
+          {_m, _f, [_ref, _transport, %{socket_opts: _}, _protocol, _proto]} = start ->
+            %{spec | start: {wm, wf, List.replace_at(wrapped, -1, tighten(start))}}
 
-        %{spec | start: {m, f, [ref, transport, trans, protocol, proto]}}
+          _ ->
+            spec
+        end
 
       other ->
         other
     end
+  end
+
+  # The listener's start with the two TLS settings taken out and the
+  # port's limits put in.
+  defp tighten({m, f, [ref, transport, %{socket_opts: socket_opts} = trans, protocol, proto]}) do
+    {socket_opts, _} =
+      Enum.flat_map_reduce(socket_opts, false, fn
+        {:next_protocols_advertised, _}, seen? -> {[], seen?}
+        {:alpn_preferred_protocols, _}, true -> {[], true}
+        {:alpn_preferred_protocols, _} = first, false -> {[first], true}
+        other, seen? -> {[other], seen?}
+      end)
+
+    # A connection gets three seconds to finish its handshake. Until it
+    # has, it is a stranger holding one of the port's places.
+    # One counter of connections, so the limit is the limit; left alone
+    # there is one per acceptor and the port takes four times as many.
+    trans =
+      Map.merge(trans, %{
+        socket_opts: socket_opts,
+        handshake_timeout: 3_000,
+        num_conns_sups: 1
+      })
+
+    {m, f, [ref, transport, trans, protocol, proto]}
   end
 
   @doc "The port the hub listens on."

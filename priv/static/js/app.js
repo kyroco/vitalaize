@@ -279,7 +279,8 @@
     const assetVersion = document.querySelector("meta[name='asset-version']").getAttribute("content");
     const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
       params: { _csrf_token: csrf, asset_version: assetVersion },
-      hooks: Hooks,
+      // The Floor tab's hook comes from floor.js, loaded before this file.
+      hooks: Object.assign(Hooks, window.WallboardHooks || {}),
       dom: {
         // Keep what the browser owns (the page position, the active dot) and
         // write times before they appear, so nothing flickers on an update.
