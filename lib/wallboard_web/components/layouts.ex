@@ -37,6 +37,9 @@ defmodule WallboardWeb.Layouts do
         </script>
         <script defer src="/vendor/phoenix_live_view.min.js">
         </script>
+        <%!-- The Floor tab's drawing. Before app.js, which takes its hook. --%>
+        <script defer src={"/js/floor.js?v=" <> asset_version()}>
+        </script>
         <script defer src={"/js/app.js?v=" <> asset_version()}>
         </script>
       </head>
@@ -48,7 +51,7 @@ defmodule WallboardWeb.Layouts do
   end
 
   @doc """
-  A short fingerprint of app.css and app.js, added to their addresses so a
+  A short fingerprint of app.css, app.js and floor.js, added to their addresses so a
   browser that kept an old copy (Safari on the iPad does) fetches the new one
   after an update.
   """
@@ -59,6 +62,7 @@ defmodule WallboardWeb.Layouts do
           [
             "css/app.css",
             "js/app.js",
+            "js/floor.js",
             "images/claude.png",
             "images/codex-dark.png",
             "images/codex-light.png"
