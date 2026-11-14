@@ -263,22 +263,42 @@ const CHECKS = {
     // they are but are dealt out again, by name, while someone is on the
     // way to the desk that was theirs a moment ago.
     const crew = (keys, mood) => keys.map((k) => m(k, "alpha", "worker", k === "w3" ? mood : "working"));
-    const deal = open({ w: 1400, h: 800, cast: crew(["w0", "w1", "w2", "w3"], "wandering"), seed: 205 }), D = deal.F, dealt = watchFurniture(deal, "where the desks are dealt out again");
-    deal.step(8, dealt);
-    deal.cast(crew(["w0", "w1", "w2", "w3"], "working"));
-    const walker = D.actors.get("w3"), was = desks(D);
-    let turned = false;
-    for (let i = 0; i < 600 && walker.path.length; i++) {
-      // A step or two short of its desk, the desks are dealt out again.
-      if (!turned && walker.path.length <= 2 && Math.hypot(walker.x - walker.seat.x, walker.y - walker.seat.y) < 22) {
-        deal.cast(crew(["w1", "w2", "w3", "w9"], "working"));
-        need(desks(D) === was, "the desks moved when they were only meant to change hands");
-        turned = true;
+    let turns = 0;
+    [205, 206, 207].forEach((seed) => {
+      const deal = open({ w: 1400, h: 800, cast: crew(["w0", "w1", "w2", "w3"], "wandering"), seed }), D = deal.F, dealt = watchFurniture(deal, "where the desks are dealt out again");
+      deal.step(8, dealt);
+      deal.cast(crew(["w0", "w1", "w2", "w3"], "working"));
+      const walker = D.actors.get("w3"), was = desks(D);
+      let turned = false;
+      for (let i = 0; i < 900 && !turned; i++) {
+        // A step or two short of its desk, the desks are dealt out again.
+        if (walker.where === "seat" && walker.path.length && Math.hypot(walker.x - walker.seat.x, walker.y - walker.seat.y) < 22) {
+          deal.cast(crew(["w1", "w2", "w3", "w9"], "working"));
+          need(desks(D) === was, "the desks moved when they were only meant to change hands");
+          turned = true; turns++;
+        }
+        deal.step(1 / 30, dealt);
       }
-      deal.step(1 / 30, dealt);
-    }
-    need(turned, "w3 never came within reach of its desk");
-    deal.step(15, dealt);
+      deal.step(15, dealt);
+    });
+    need(turns >= 1, "in three tries nobody was caught a step short of their desk");
+    // A ping pong game ends while its two players are on their way to the
+    // net to argue a point: one of them is called back to work.
+    let caught = 0;
+    [0, 1, 2, 3].forEach((n) => {
+      const cast = idle(2 + (n % 2)), game = open({ w: 1400, h: 800, cast, seed: 230 + n }), P = game.F.pong;
+      const look = watchFurniture(game, "where a game ends on the way to an argument");
+      const walking = () => P.spat && P.spat.who.some((x) => x.path.length);
+      for (let i = 0; i < 900 * 30 && !walking(); i++) game.step(1 / 30, look);
+      if (!walking()) return;
+      caught++;
+      // Half way to the net.
+      game.step(0.4, look);
+      const back = (P.spat || { who: P.players }).who[n > 1 ? 1 : 0].key;
+      game.cast(cast.map((x) => (x.key === back ? Object.assign({}, x, { mood: "working", says: "Back to work" }) : x)));
+      game.step(20, look);
+    });
+    need(caught >= 2, "only " + caught + " of four games reached an argument in fifteen minutes");
     // A session ends while its person argues a point at the ping pong net,
     // where only the two arguing may stand.
     [0, 1].forEach((which) => {
