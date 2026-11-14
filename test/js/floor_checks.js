@@ -120,7 +120,36 @@ const until = (world, max, test) => {
   return test();
 };
 
+// The piece of furniture a walker is inside, if any. Touching its edge
+// does not count.
+const inside = (F, o) => F.S.solids.find((r) => o.x > r.x0 + 0.6 && o.x < r.x1 - 0.6 && o.y > r.y0 + 0.6 && o.y < r.y1 - 0.6);
+const desks = (F) => F.S.solids.filter((r) => r.name === "desk").map((r) => r.x0 + "," + r.y0).join(" ");
+
 const CHECKS = {
+  // A session joining a crew moves the crew's desks along, with the room
+  // otherwise as it was. Whoever a desk lands on steps clear of it.
+  desks_move_and_land_on_nobody() {
+    [[6, 7], [7, 6], [9, 11], [4, 5]].forEach(([from, to], n) => {
+      const crew = (count) => Array.from({ length: count }, (_, i) => m("w" + i, "alpha", "worker", i === 1 ? "asleep" : "working", { days: 2 }));
+      const world = open({ w: 1600, h: 900, cast: crew(from), seed: 9 + n });
+      const F = world.F;
+      world.step(1);
+      // You pop up beside a desk, as a tap on whoever sits there puts you. The
+      // cat sits beside the sleeper's desk, where it goes for a nap.
+      const sat = F.actors.get("w0"), bed = F.actors.get("w1").seat;
+      world.tap(sat.x, sat.y - 8);
+      Object.assign(F.cat, { x: bed.aisle, y: bed.y + 3, path: [], state: "sit", wait: 90, on: null, jump: null });
+      need(!inside(F, F.boss) && !inside(F, F.cat), "you or the cat began inside furniture");
+      const room = F.S.sig, before = desks(F);
+      world.cast(crew(to));
+      need(F.S.sig === room && desks(F) !== before, "going from " + from + " desks to " + to + " did not move the desks and leave the room alone");
+      world.step(1, () => {
+        check(!inside(F, F.boss), "with " + to + " desks where there were " + from + ", you are left standing inside a " + (inside(F, F.boss) || {}).name);
+        check(!inside(F, F.cat), "with " + to + " desks where there were " + from + ", the cat is left inside a " + (inside(F, F.cat) || {}).name);
+      });
+    });
+  },
+
   // The two playing ping pong step in for a short ball and back for a deep one.
   ping_pong_players_move() {
     const world = open({ w: 1400, h: 800, cast: idle(2), seed: 11 });

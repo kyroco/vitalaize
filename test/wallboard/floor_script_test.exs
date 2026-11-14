@@ -18,6 +18,8 @@ defmodule Wallboard.FloorScriptTest do
   @script Path.expand("../js/floor_checks.js", __DIR__)
 
   @checks [
+    {"desks_move_and_land_on_nobody",
+     "a desk that moves when a session joins or leaves lands on nobody"},
     {"ping_pong_players_move",
      "ping pong players step in for a short ball and back for a deep one"},
     {"arguments_end_and_play_goes_on",
