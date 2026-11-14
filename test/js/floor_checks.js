@@ -125,6 +125,48 @@ const until = (world, max, test) => {
 const inside = (F, o) => F.S.solids.find((r) => o.x > r.x0 + 0.6 && o.x < r.x1 - 0.6 && o.y > r.y0 + 0.6 && o.y < r.y1 - 0.6);
 const desks = (F) => F.S.solids.filter((r) => r.name === "desk").map((r) => r.x0 + "," + r.y0).join(" ");
 
+// You walk about: a tap somewhere every few seconds, and the keys.
+const walkAbout = (world, frame) => {
+  const F = world.F;
+  if (frame % 80 === 0) world.tap(world.random() * F.W, world.random() * F.H);
+  if (frame % 45 === 0) {
+    "wasd".split("").forEach((k) => world.key(k, false));
+    if (world.random() < 0.5) world.key("wasd"[Math.floor(world.random() * 4)], true);
+  }
+};
+
+// Gives back a look to take after every frame: nobody may be inside a
+// piece of furniture, not a person, not you, not the cat, not whoever
+// brings the water. What is meant to be inside a box is let through:
+// someone at their own desk, on a picnic bench or on the couch, with the
+// step out of the seat; the two arguing across the far side of the ping
+// pong table, with their step back from it; and the cat up on the table
+// or the couch.
+const watchFurniture = (world, room) => {
+  const F = world.F, lastSat = new Map(), lastSpat = new Map();
+  const holds = (r, p) => p.x > r.x0 && p.x < r.x1 && p.y > r.y0 && p.y < r.y1;
+  return () => {
+    const where = ", in the room " + room + " at " + F.t.toFixed(1) + " seconds";
+    for (const a of F.actors.values()) {
+      check(isFinite(a.x) && isFinite(a.y), a.key + " has no place on the floor");
+      if (!a.path.length && (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch")) lastSat.set(a.key, F.t);
+      if (a.spat) lastSpat.set(a.key, F.t);
+      const r = inside(F, a);
+      if (!r) continue;
+      const ok = (r.name === "desk" && a.seat && holds(r, a.seat)) || (r.name === "picnic" && a.where === "lunch")
+        || (r.name === "couch" && a.where === "poi:couch")
+        || ((r.name === "desk" || r.name === "picnic" || r.name === "couch") && F.t - (lastSat.has(a.key) ? lastSat.get(a.key) : -9) < 1.2)
+        || (r.name === "pong" && F.t - (lastSpat.has(a.key) ? lastSpat.get(a.key) : -9) < 0.7);
+      check(ok, a.key + " (" + (a.leaving ? "leaving" : a.where || "nowhere yet") + ") is inside the " + r.name + where);
+    }
+    const you = inside(F, F.boss), cat = F.cat.on || F.cat.jump ? null : inside(F, F.cat);
+    const carrier = F.cooler.runner ? inside(F, F.cooler.runner) : null;
+    check(!you, "you are inside the " + (you || {}).name + where);
+    check(!cat, "the cat is inside the " + (cat || {}).name + where);
+    check(!carrier, "the water carrier is inside the " + (carrier || {}).name + where);
+  };
+};
+
 const CHECKS = {
   // A session joining a crew moves the crew's desks along, with the room
   // otherwise as it was. Whoever a desk lands on steps clear of it.
@@ -150,15 +192,9 @@ const CHECKS = {
     });
   },
 
-  // Nobody stands or walks inside the furniture: not a person, not you,
-  // not the cat, not whoever brings the water. Three things are meant to
-  // be inside a box and are let through: someone in a seat (the chair
-  // behind a desk, a picnic bench, the couch) with the step into or out of
-  // it, the two arguing across the far side of the ping pong table with
-  // their step back from it, and the cat on the table or the couch.
+  // Nobody stands or walks inside the furniture, in five rooms where the
+  // cast stays as it is and you walk about by taps and keys.
   nobody_inside_the_furniture() {
-    const seats = { desk: 1, picnic: 1, couch: 1 };
-    const sat = (a) => a.where === "seat" || a.where === "lunch" || a.where === "poi:couch";
     const rooms = [
       { w: 1400, h: 800, cast: mixed().concat(idle(5)), seed: 101 },
       { w: 1400, h: 800, cast: idle(3), seed: 102 },
@@ -167,37 +203,51 @@ const CHECKS = {
       { w: 1024, h: 768, cast: idle(4).concat([m("n1", "alpha", "worker", "needs", { urgency: 3 })]), seed: 105 },
     ];
     rooms.forEach((room) => {
-      const world = open(room), F = world.F, P = F.pong, lastSat = new Map(), lastSpat = new Map();
-      const where = () => room.w + " by " + room.h + " at " + F.t.toFixed(1) + " seconds";
+      const world = open(room), F = world.F, P = F.pong, look = watchFurniture(world, room.w + " by " + room.h);
       let frame = 0, spats = 0, was = null;
       world.step(300, () => {
-        // You walk about too: a tap somewhere every few seconds, and the keys.
-        if (frame % 80 === 0) world.tap(world.random() * F.W, world.random() * F.H);
-        if (frame % 45 === 0) {
-          "wasd".split("").forEach((k) => world.key(k, false));
-          if (world.random() < 0.5) world.key("wasd"[Math.floor(world.random() * 4)], true);
-        }
-        frame++;
+        walkAbout(world, frame++);
         if (P.spat && P.spat !== was) spats++;
         was = P.spat;
-        for (const a of F.actors.values()) {
-          check(isFinite(a.x) && isFinite(a.y), a.key + " has no place on the floor");
-          if (sat(a)) lastSat.set(a.key, F.t);
-          if (a.spat) lastSpat.set(a.key, F.t);
-          const r = inside(F, a);
-          if (!r) continue;
-          const seated = seats[r.name] && (F.t < 1 || F.t - (lastSat.get(a.key) || -9) < 1.2);
-          const arguing = r.name === "pong" && F.t - (lastSpat.get(a.key) || -9) < 0.7;
-          check(seated || arguing, a.key + " (" + a.where + ") is inside the " + r.name + ", in the room " + where());
-        }
-        const you = inside(F, F.boss), cat = F.cat.on || F.cat.jump ? null : inside(F, F.cat);
-        const carrier = F.cooler.runner ? inside(F, F.cooler.runner) : null;
-        check(!you, "you are inside the " + (you || {}).name + ", in the room " + where());
-        check(!cat, "the cat is inside the " + (cat || {}).name + ", in the room " + where());
-        check(!carrier, "the water carrier is inside the " + (carrier || {}).name + ", in the room " + where());
+        look();
       });
       if (room.seed === 102) need(spats >= 3, "only " + spats + " ping pong arguments in 5 minutes with three idle");
     });
+  },
+
+  // The same while sessions come and go, which moves the desks, changes
+  // the size of the people and so of the room, and pushes the open floor
+  // down a row; and while the board itself changes size. Every walk under
+  // way was planned for the room as it was a moment ago.
+  nobody_inside_the_furniture_as_sessions_come_and_go() {
+    const crews = ["alpha", "beta", "gamma"], moods = ["working", "working", "wandering", "wandering", "needs", "asleep", "packed"];
+    [{ w: 1400, h: 800, seed: 201, sizes: null }, { w: 1024, h: 768, seed: 202, sizes: [[768, 1024], [1180, 820], [1024, 768]] }].forEach((room) => {
+      let cast = idle(4).concat([m("w0", "alpha", "worker", "working"), m("w1", "alpha", "worker", "working")]), born = 0, frame = 0;
+      const world = open(Object.assign({ cast }, room)), F = world.F, look = watchFurniture(world, room.w + " by " + room.h + " with sessions coming and going");
+      const pick = (list) => list[Math.floor(world.random() * list.length)];
+      world.step(240, () => {
+        walkAbout(world, frame);
+        // Every three seconds a session joins, or one ends, or one changes what it is doing.
+        if (frame % 90 === 45) {
+          const roll = world.random();
+          if (roll < 0.4 && cast.length < 26) cast = cast.concat([m("s" + born++, pick(crews), "worker", pick(moods), { urgency: 1 + Math.floor(world.random() * 4), days: 3 })]);
+          else if (roll < 0.75 && cast.length > 2) cast = cast.filter((x) => x !== cast[Math.floor(world.random() * cast.length)]);
+          else cast = cast.map((x, i) => (i === Math.floor(world.random() * cast.length) ? Object.assign({}, x, { mood: pick(moods), urgency: 2, days: 3 }) : x));
+          world.cast(cast);
+        }
+        // In one room the board changes size every twenty seconds, as an iPad turned over does.
+        if (room.sizes && frame % 600 === 300) { const size = room.sizes[(frame / 600 | 0) % room.sizes.length]; world.resize(size[0], size[1]); }
+        frame++;
+        look();
+      });
+    });
+    // Someone is on the way in at the door when the board changes size.
+    const cast = idle(3), world = open({ w: 1400, h: 800, cast, seed: 203 }), look = watchFurniture(world, "a board resized as someone walks in");
+    world.step(3);
+    world.cast(cast.concat([m("new", "alpha", "worker", "working")]));
+    world.step(0.2);
+    world.resize(900, 600);
+    world.step(30, look);
   },
 
   // The two playing ping pong step in for a short ball and back for a deep one.

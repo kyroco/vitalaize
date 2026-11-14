@@ -19,6 +19,8 @@ defmodule Wallboard.FloorScriptTest do
 
   @checks [
     {"nobody_inside_the_furniture", "nobody stands or walks inside the furniture, in five rooms"},
+    {"nobody_inside_the_furniture_as_sessions_come_and_go",
+     "nobody is inside the furniture while sessions come and go and the board changes size"},
     {"desks_move_and_land_on_nobody",
      "a desk that moves when a session joins or leaves lands on nobody"},
     {"ping_pong_players_move",
