@@ -231,6 +231,18 @@ const CHECKS = {
       });
     });
     need(spats >= 3, "only " + spats + " ping pong arguments in the five rooms");
+
+    // A walk that brushes the corner of a desk can leave you a hair inside
+    // its edge. A key pressed toward the desk from there must not take you
+    // into it.
+    const world = open({ w: 1400, h: 800, cast: mixed(), seed: 106 }), F = world.F, look = watchFurniture(world, "where you brush a desk and press a key");
+    const desk = F.S.solids.find((r) => r.name === "desk");
+    [["d", desk.x0 + 0.2, desk.y1 - 3], ["a", desk.x1 - 0.2, desk.y1 - 3], ["s", desk.x0 + 6, desk.y0 + 0.2], ["w", desk.x0 + 6, desk.y1 - 0.2]].forEach(([key, x, y]) => {
+      Object.assign(F.boss, { x, y, path: [] });
+      world.key(key, true);
+      world.step(1.5, look);
+      world.key(key, false);
+    });
   },
 
   // The same while sessions come and go, which moves the desks, changes
