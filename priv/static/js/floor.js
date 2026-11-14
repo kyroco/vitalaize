@@ -1290,7 +1290,10 @@
   };
   const endSpat = (G) => {
     if (!G.spat) return;
-    G.spat.who.forEach((a) => { if (a.spat === G.spat) a.spat = null; });
+    // One still on the way to the net when it ends (the other was called
+    // away) drops that walk: its last step was into the table's box, which
+    // is only for the two arguing.
+    G.spat.who.forEach((a) => { if (a.spat === G.spat) { a.spat = null; if (!a.leaving) a.path = []; } });
     G.spat = null;
   };
   // Moves the argument on. Says true once it is over. `crowd` is whoever
