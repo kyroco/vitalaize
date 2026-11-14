@@ -15,6 +15,25 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.7.1
+
+0.7.1 makes the Floor tab's office behave more like a real one:
+
+- The furniture is solid. People, the cat and you walk round the tables,
+  not through them, and the cat jumps onto the ping pong table or the couch
+  to nap.
+- Ping pong players move like players: in for a short ball, back for a deep
+  one, a jump for a smash. They miss, hit the net, and fetch the ball off
+  the floor. Now and then a point is argued over at the net.
+- There is a foosball table, one a side, first to five, on a board wide
+  enough for one. A small board, such as an iPad showing only a few
+  sessions, has no room for it.
+- A session that ends says goodbye to the room and waves, and the people
+  near it wave back, before it walks out of the door.
+- Idle people sit on the couch, carry their coffee about, and face the way
+  they walk.
+- The "YOU ARE HERE" mat is gone from the floor.
+
 ## What's new in 0.7.0
 
 0.7.0 adds the Floor tab, between Agents and Git. It draws every session as

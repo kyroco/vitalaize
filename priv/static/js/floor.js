@@ -62,6 +62,8 @@
       "I am on break. Legally.", "Is that the cat's?", "Best standup all week.",
     ],
     workingLunch: ["Working lunch. Honest.", "Crumbs in the keyboard again.", "Eating with one hand, typing with the other."],
+    couch: ["Five minute break. Maybe ten.", "This couch has seen things.", "I think better sitting down.", "Do not wake me for standup."],
+    coffee: ["Third cup. Do not judge.", "Hot. Hot. Hot.", "This is mostly milk.", "Now I can think."],
   };
   // Where the lunch group sits at the picnic table, far side first.
   const LUNCH = [[-12, -3], [12, -3], [-12, 16], [12, 16]];
@@ -119,11 +121,74 @@
   ];
   const REPLY = ["Not me!", "Shh.", "Same!", "Nice!", "Congrats!", "Again?", "Me!", "Good for you.", "We know."];
   const PONG = {
-    point: ["Ha!", "Nice shot!", "Out!", "Lucky.", "Spin!", "Got you!", "Oof."],
+    point: ["Ha!", "Nice shot!", "Lucky.", "Spin!", "Got you!", "Oof."],
+    miss: ["Nooo.", "Ugh.", "How?!", "I blinked.", "Too fast.", "My shoe was untied."],
+    out: ["Out!", "Long!", "Way out.", "That one left the building."],
+    net: ["Net.", "Into the net.", "The net says no."],
+    smash: ["SMASH!", "Take that!", "Boom!"],
     win: ["Winner stays!", "Who is next?", "Too easy.", "Champion!"],
     lose: ["Rematch!", "I let you win.", "My paddle slipped.", "Good game."],
     next: ["My turn!", "I am up.", "Watch this."],
     chat: ["Best of five?", "That was out.", "Watch the spin.", "My paddle is lagging.", "No slams. House rules."],
+  };
+  const FOOS = {
+    goal: ["GOAL!", "GOOOAL!", "Back of the net!", "Top corner!"],
+    lose: ["Lucky bounce.", "My goalie was asleep.", "Offside. Probably.", "I was not ready!"],
+    win: ["Champion of the table!", "Unbeaten since lunch.", "Too easy."],
+    chat: ["No spinning.", "Loose wrists.", "Watch the goalie.", "Next goal wins?", "Best table in the building."],
+  };
+  // Arguments over a point. Whoever lost the point starts, and they take
+  // turns. All of it is made up. Keep it clean.
+  const SPATS = {
+    pong: [
+      ["That was out!", "It hit the line.", "There is no line.", "There is a line in my heart."],
+      ["Edge ball. My point.", "That was the floor.", "The floor is part of the table.", "It is not.", "Ask the cat."],
+      ["I was not ready!", "You were holding the paddle.", "I was thinking.", "Think faster."],
+      ["Double bounce!", "One bounce. I counted.", "You count from zero.", "Low blow."],
+      ["That went through the net.", "Over the net.", "Through.", "Over.", "We need a camera."],
+      ["My point.", "Check the replay.", "There is no replay.", "Then check the logs.", "There are no logs.", "Classic."],
+      ["You moved the table.", "I did not move the table.", "It was closer before.", "Tables do not move.", "This one has wheels."],
+      ["That hit your shirt.", "Shirts are in play.", "Since when?", "Since the house rules.", "Show me the pull request."],
+      ["It is 2 to 1.", "It is 1 to 2.", "Same thing.", "Order matters. Ask any database."],
+      ["You served too fast.", "It is called a serve.", "It is called an ambush.", "Ambushes are legal."],
+    ],
+    foos: [
+      ["No spinning!", "That was a flick.", "It went round four times.", "A long flick."],
+      ["You lifted the table!", "The floor is uneven.", "Only on your side?", "Strange, I know."],
+      ["That went in and came out.", "Then it is out.", "It was in first!", "Last write wins."],
+      ["My goalie was stuck.", "Oil it.", "With what?", "Try the coffee. It is slippery enough."],
+      ["You scored while I was talking.", "Then stop talking.", "Never."],
+      ["Goalie goals count double.", "Since when?", "Since I scored one."],
+      ["You shook the table.", "I breathed.", "Breathe further away."],
+    ],
+  };
+  const SPAT_END = {
+    replay: ["Fine. Play it again.", "Okay, okay. Replay.", "Let. Do it over.", "Replay, and no more talking."],
+    stand: ["Fine. Your point.", "Whatever. It stands.", "Keep it. I will win the next one.", "You win this round of talking."],
+  };
+  const SPAT_CROWD = ["It was in.", "It was out.", "I was not looking.", "Play on!", "Replay it.", "Can we have the table, then?", "I saw nothing."];
+  // What one says on the way out when its session ends, the last word at
+  // the door, and what the room says back.
+  const BYE = {
+    first: [
+      "Good luck, everyone!", "Have a good one, team!", "Bye all! Be kind to main.", "I am off. Do not break the build.",
+      "See you on the next branch!", "Good luck with the reviews!", "It has been a pleasure. Mostly.", "Keep the tests green!",
+      "Have a great day, folks!", "My work here is done. Probably.", "Somebody water the plant.", "Save me a taco.",
+      "Go easy on the foreman.", "Tell the cat I said bye.", "May your merges be clean!", "Good luck. You will need it. Kidding!",
+      "Clocking out. Be good!", "Think of me when you read the git log.", "Have a good day. Do not work too hard.",
+      "Wish me luck out there!", "It was fun. Same time tomorrow?",
+    ],
+    foreman: ["Crew, you are on your own. Behave.", "Keep shipping. I will know.", "Good luck, crew. Hard hats on.", "Nobody merges while I am gone. Kidding. Maybe."],
+    robot: ["Beep. Goodbye, humans.", "Powering down. Good luck.", "Boop. It was an honor."],
+    camp: ["Archived at last. Bye, all!", "Thanks for the marshmallows.", "Off to the big repo in the sky.", "Good luck, you lot. Keep the fire going."],
+    door: [
+      "Last one out turns off the lights.", "Bye for real this time.", "Do I get to keep the badge?", "Okay. Leaving now. Really.",
+      "Do not all cry at once.", "And... archived.", "Good luck!", "Have a good day!", "Be good to each other.",
+    ],
+    reply: [
+      "Bye!", "See you!", "Good luck!", "Take care!", "Have a good one!", "We will miss you!", "Bring snacks next time!",
+      "Do not forget to write!", "Dibs on the chair.", "Good luck out there!", "Bye! Great work.", "Come back soon!",
+    ],
   };
   // What one that needs you yells, by how loud it has become (2, 3), and
   // what a foreman adds.
@@ -162,14 +227,21 @@
     hook: null, stage: null, canvas: null, bg: null, cast: [], actors: new Map(), S: null,
     t: 0, last: 0, shake: 0, parts: [], keys: {}, lunch: null,
     dir: {
-      askT: 0, askI: 0, infoT: 1, infoI: 0, jokeT: 5, gagT: 20, lunchT: rnd(34, 48), chatT: 2.5, yellT: 7, pongT: 4,
+      askT: 0, askI: 0, infoT: 1, infoI: 0, jokeT: 5, gagT: 20, lunchT: rnd(34, 48), chatT: 2.5, yellT: 7, pongT: 4, foosT: 13,
     },
     // Small talk under way, things to do a moment from now, the water left
-    // in the cooler (1 is full), and the ping pong game.
+    // in the cooler (1 is full), and the two games: ping pong and foosball.
     chats: [], later: [], cooler: { level: 1, target: 1, refillT: 0, runner: null },
-    pong: { on: false, players: [], queue: [], score: [0, 0], ball: 0, dir: 1, rest: 0, games: 0, streak: 0 },
-    boss: { x: 0, y: 0, tx: 0, ty: 0, phase: 0, moving: false, bub: null },
-    cat: { x: 0, y: 0, tx: 0, ty: 0, wait: 2, state: "sit", flip: false },
+    pong: {
+      on: false, players: [], queue: [], score: [0, 0], games: 0, streak: 0, st: "walk", t: 0, ball: null, loose: false,
+      shot: null, drop: null, want: [null, null], server: 0, rally: 0, spat: null, sinceSpat: 0, last: null, fetcher: null,
+    },
+    foos: {
+      on: false, players: [], watch: [], score: [0, 0], st: "walk", t: 0, ball: null, men: [0, 0, 0, 0], spin: [0, 0, 0, 0],
+      spat: null, sinceSpat: 0, last: null,
+    },
+    boss: { x: 0, y: 0, path: [], face: 1, phase: 0, moving: false, bub: null },
+    cat: { x: 0, y: 0, path: [], wait: 2, state: "sit", flip: false, on: null, jump: null, goal: null, lift: 0 },
     bug: null, plane: null, tumble: null, firstCast: true, bgDirty: true, raf: 0, minute: -1,
   };
   let g = null; // whichever canvas is being drawn on
@@ -274,21 +346,66 @@
     });
 
     S.door = { x: 0, y: Math.round(S.corridorY + loungeH * 0.6) };
-    S.yardDoorY = Math.round(S.corridorY + loungeH * 0.5);
+    // The doorway to the yard, kept clear of the coffee counter above it.
+    S.yardDoorY = Math.round(S.corridorY + Math.max(loungeH * 0.5, 40));
     S.fire = { x: Math.round(S.officeW + S.yardW / 2 + 2), y: Math.round(clamp(S.H * 0.74, WALL + 70, S.H - 24)) };
     S.tent = { x: S.fire.x, y: WALL + 26 };
     // The picnic table, between the tent and the fire, where lunch is eaten.
     S.table = { x: S.fire.x, y: Math.round((S.tent.y + S.fire.y) / 2) + 6 };
-    // The ping pong table, on the open floor to the right of your mat.
-    S.pong = { x: Math.round(S.officeW * 0.72), y: Math.round(S.corridorY + loungeH * 0.34) };
+    // The ping pong table, on the open floor to the right.
+    S.pong = {
+      x: Math.max(60, Math.min(Math.round(S.officeW * 0.72), S.officeW - 74)),
+      y: Math.round(S.corridorY + loungeH * 0.34),
+    };
+    // The foosball table, left of it, in a room with the space for one.
+    const foosX = Math.min(Math.round(S.officeW * 0.45), S.pong.x - 68);
+    S.foos = foosX >= 58 && loungeH >= 72 ? { x: foosX, y: Math.round(S.corridorY + loungeH * 0.4) } : null;
+    // Where you start.
     S.home = { x: Math.round(S.officeW * 0.34), y: Math.round(S.corridorY + loungeH * 0.58) };
     S.pois = [
       { name: "coffee", x: S.officeW - 30, y: S.corridorY + 20 },
       { name: "cooler", x: 22, y: S.corridorY + 16 },
       { name: "plant", x: 24, y: S.H - 6 },
-      { name: "couch", x: Math.round(S.officeW * 0.62), y: S.H - 8 },
+      { name: "couch", x: Math.round(S.officeW * 0.62), y: S.H - 13 },
       { name: "grass", x: S.fire.x - 6, y: S.H - 10 },
     ];
+
+    // Where no feet may stand: every piece of furniture is a box, a little
+    // wider than its picture, since feet are the middle of a person. A
+    // thing painted into the room's picture (the couch, the plant) blocks
+    // all of its picture. The two games tables block a little more behind
+    // them, so nobody's name tag lands on the game.
+    const [coffee, cooler, plant, couch] = S.pois, wx = S.officeW;
+    // In a narrow yard the picnic table's box is cut down, to leave a way past it.
+    const picnicW = Math.min(24, Math.floor((S.yardW - 14) / 2));
+    S.solids = [
+      box("wall", wx - 7, 0, wx + 4, S.yardDoorY - 11), box("wall", wx - 7, S.yardDoorY + 5, wx + 4, S.H + 20),
+      box("coffee", coffee.x + 2, coffee.y - 21, wx - 6, coffee.y + 6),
+      box("cooler", 0, cooler.y - 18, cooler.x - 4, cooler.y + 5),
+      // The plant's box stops short of the way in, in a room so low that
+      // the two overlap.
+      box("plant", 0, Math.max(plant.y - 18, S.door.y + 5), plant.x - 3, S.H + 20),
+      box("couch", couch.x - 23, couch.y - 9, couch.x + 23, couch.y + 7),
+      box("pong", S.pong.x - 21, S.pong.y - 13, S.pong.x + 21, S.pong.y + 12),
+      box("tent", S.tent.x - 16, S.tent.y - 13, S.tent.x + 16, S.tent.y + 2),
+      box("picnic", S.table.x - picnicW, S.table.y - 12, S.table.x + picnicW, S.table.y + 13),
+      box("fire", S.fire.x - 11, S.fire.y - 5, S.fire.x + 11, S.fire.y + 4),
+      box("tree", S.W - 24, S.H - 36, S.W + 20, S.H - 6),
+    ];
+    if (S.foos) S.solids.push(box("foos", S.foos.x - 13, S.foos.y - 17, S.foos.x + 13, S.foos.y + 17));
+    S.zones.forEach((z) => z.seats.forEach((s) => S.solids.push(box("desk", s.x - 15, s.y - 6, s.x + 15, s.y + 9))));
+    // The corners people walk round, and which corner can be walked to
+    // from which (worked out the first time it is asked, then kept).
+    S.nodes = [];
+    const roomy = (x, y) => x >= 4 && x <= S.W - 4 && y >= WALL + 16 && y <= S.H - 2;
+    S.solids.forEach((r) => [[r.x0 - 1, r.y0 - 1], [r.x1 + 1, r.y0 - 1], [r.x0 - 1, r.y1 + 1], [r.x1 + 1, r.y1 + 1]].forEach(([nx, ny]) => {
+      if (roomy(nx, ny) && !S.solids.some((q) => inBox(q, nx, ny))) S.nodes.push([nx, ny]);
+    }));
+    S.sees = new Int8Array(S.nodes.length * S.nodes.length);
+    // Where the furniture of the open floor and the yard stands follows from these.
+    S.sig = [S.W, S.H, S.officeW, S.corridorY].join();
+    // The desks move on their own, when a crew gains or loses one.
+    S.desks = S.solids.filter((r) => r.name === "desk").map((r) => r.x0 + "," + r.y0).join(" ");
     F.S = S;
     F.bgDirty = true;
     return true;
@@ -297,14 +414,157 @@
   const clampPt = (x, y) => ({ x: clamp(x, 7, F.S.W - 7), y: clamp(y, WALL + 18, F.S.H - 3) });
   const loungePt = () => ({ x: rnd(26, F.S.officeW - 44), y: rnd(F.S.corridorY + 8, F.S.H - 8) });
 
+  // ---- Things that take up floor ----------------------------------------------
+  // Nobody walks through the furniture. A walk is a straight line when
+  // nothing is in the way; otherwise it goes from corner to corner by the
+  // shortest way round.
+  const box = (name, x0, y0, x1, y1) => ({ name, x0, y0, x1, y1 });
+  const inBox = (r, x, y) => x > r.x0 && x < r.x1 && y > r.y0 && y < r.y1;
+  const solidAt = (x, y) => F.S.solids.find((r) => inBox(r, x, y));
+  // Does the walk from (ax, ay) to (bx, by) cut through the box? Brushing
+  // along its edge does not count.
+  const cuts = (r, ax, ay, bx, by) => {
+    const x0 = r.x0 + 0.3, x1 = r.x1 - 0.3, y0 = r.y0 + 0.3, y1 = r.y1 - 0.3, dx = bx - ax, dy = by - ay;
+    let t0 = 0, t1 = 1;
+    const clip = (p, q) => {
+      if (p === 0) return q > 0;
+      const t = q / p;
+      if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+      else { if (t < t0) return false; if (t < t1) t1 = t; }
+      return true;
+    };
+    return clip(-dx, ax - x0) && clip(dx, x1 - ax) && clip(-dy, ay - y0) && clip(dy, y1 - ay) && t0 < t1;
+  };
+  const clear = (ax, ay, bx, by) => !F.S.solids.some((r) => cuts(r, ax, ay, bx, by));
+
+  // The nearest spot to (x, y) where feet may stand.
+  const freePt = (x, y) => {
+    const S = F.S;
+    let p = { x, y };
+    for (let n = 0; n < 4; n++) {
+      const r = solidAt(p.x, p.y);
+      if (!r) return p;
+      const from = p;
+      const outs = [[r.x0 - 1, p.y], [r.x1 + 1, p.y], [p.x, r.y0 - 1], [p.x, r.y1 + 1]]
+        .filter((q) => q[0] >= 4 && q[0] <= S.W - 4 && q[1] >= WALL + 16 && q[1] <= S.H - 2)
+        .sort((a, b) => Math.hypot(a[0] - from.x, a[1] - from.y) - Math.hypot(b[0] - from.x, b[1] - from.y));
+      const out = outs.find((q) => !solidAt(q[0], q[1])) || outs[0];
+      if (!out) return p;
+      p = { x: out[0], y: out[1] };
+    }
+    return p;
+  };
+
+  // The way from one spot to another, as a list of points to walk to in
+  // turn. Starting or ending inside a box (getting up from a chair) adds a
+  // step out of it or into it.
+  const pathTo = (ax, ay, bx, by) => {
+    const S = F.S, N = S.nodes, n = N.length, out = [];
+    const s = freePt(ax, ay), e = freePt(bx, by);
+    if (s.x !== ax || s.y !== ay) out.push([s.x, s.y]);
+    if (!clear(s.x, s.y, e.x, e.y)) {
+      // The shortest way over the corners: n is the start, n + 1 the end.
+      const dist = new Float64Array(n + 2).fill(Infinity), prev = new Int32Array(n + 2).fill(-1), done = new Uint8Array(n + 2);
+      const pt = (i) => (i < n ? N[i] : i === n ? [s.x, s.y] : [e.x, e.y]);
+      const sees = (i, j) => {
+        if (i >= n || j >= n) { const p = pt(i), q = pt(j); return clear(p[0], p[1], q[0], q[1]); }
+        const k = i * n + j;
+        if (!S.sees[k]) S.sees[k] = S.sees[j * n + i] = clear(N[i][0], N[i][1], N[j][0], N[j][1]) ? 1 : 2;
+        return S.sees[k] === 1;
+      };
+      dist[n] = 0;
+      for (;;) {
+        let u = -1;
+        for (let i = 0; i < n + 2; i++) if (!done[i] && dist[i] < Infinity && (u < 0 || dist[i] < dist[u])) u = i;
+        if (u < 0 || u === n + 1) break;
+        done[u] = 1;
+        const p = pt(u);
+        for (let v = 0; v < n + 2; v++) {
+          if (done[v] || v === n) continue;
+          const q = pt(v), d = dist[u] + Math.hypot(p[0] - q[0], p[1] - q[1]);
+          if (d < dist[v] && sees(u, v)) { dist[v] = d; prev[v] = u; }
+        }
+      }
+      // With no way round found, what is left is the straight line.
+      const mid = [];
+      for (let v = prev[n + 1]; v >= 0 && v !== n; v = prev[v]) mid.unshift([N[v][0], N[v][1]]);
+      mid.forEach((p) => out.push(p));
+    }
+    out.push([e.x, e.y]);
+    if (e.x !== bx || e.y !== by) out.push([bx, by]);
+    return out;
+  };
+
+  // One step of `sp` along a walker's path. Says whether it moved.
+  const walk = (o, sp) => {
+    if (!o.path.length) return false;
+    const [tx, ty] = o.path[0], dx = tx - o.x, dy = ty - o.y, dist = Math.hypot(dx, dy);
+    if (Math.abs(dx) > 0.3) o.face = dx < 0 ? -1 : 1;
+    if (dist <= sp) { o.x = tx; o.y = ty; o.path.shift(); }
+    else { o.x += (dx / dist) * sp; o.y += (dy / dist) * sp; }
+    return true;
+  };
+
+  // One step toward something that moves (you, the bug): straight at it
+  // when nothing is in the way, otherwise round, looking again twice a
+  // second. A target under a table is followed from the nearest floor.
+  // Says whether it moved.
+  const seek = (o, tx, ty, sp, dt) => {
+    // Never further than the walls, and never into the furniture.
+    const q = clampPt(tx, ty), aim = freePt(q.x, q.y);
+    tx = aim.x; ty = aim.y;
+    o.trailT = (o.trailT || 0) - dt;
+    if (clear(o.x, o.y, tx, ty)) o.trail = null;
+    else if (!o.trail || !o.trail.length || o.trailT <= 0) { o.trail = pathTo(o.x, o.y, tx, ty); o.trailT = 0.5; }
+    const next = o.trail && o.trail.length ? o.trail[0] : [tx, ty];
+    const dx = next[0] - o.x, dy = next[1] - o.y, dist = Math.hypot(dx, dy);
+    if (Math.abs(dx) > 0.3) o.face = dx < 0 ? -1 : 1;
+    if (dist <= sp) { o.x = next[0]; o.y = next[1]; if (o.trail) o.trail.shift(); return dist > 0.05; }
+    o.x += (dx / dist) * sp; o.y += (dy / dist) * sp;
+    return true;
+  };
+
+  // A step that stops at the furniture, sliding along it where it can.
+  const slide = (x, y, dx, dy) => {
+    // Already a hair inside something, where a walk that brushed its corner
+    // can leave you: out of it first, and never further in.
+    if (solidAt(x, y)) { const f = freePt(x, y); x = f.x; y = f.y; }
+    for (const [mx, my] of [[dx, dy], [dx, 0], [0, dy]]) {
+      const p = clampPt(x + mx, y + my);
+      if ((mx || my) && !solidAt(p.x, p.y)) return p;
+    }
+    return { x, y };
+  };
+
+  // Is someone already standing at, or headed for, this spot?
+  const crowded = (a, x, y) => {
+    for (const b of F.actors.values()) {
+      if (b === a || b.leaving) continue;
+      const e = b.path.length ? b.path[b.path.length - 1] : [b.x, b.y];
+      if (Math.abs(e[0] - x) < 11 && Math.abs(e[1] - y) < 6) return true;
+    }
+    return Math.abs(F.boss.x - x) < 11 && Math.abs(F.boss.y - y) < 6;
+  };
+  // A free spot from `make`, tried a few times to find one with nobody on it.
+  const spotFrom = (a, make) => {
+    let p = null;
+    for (let n = 0; n < 6; n++) {
+      const q = make();
+      p = freePt(q.x, q.y);
+      if (!crowded(a, p.x, p.y)) break;
+    }
+    return p;
+  };
+
   // ---- People -----------------------------------------------------------------
   const newActor = (m) => {
     const h = hash(m.key);
     return {
-      key: m.key, d: m, x: 0, y: 0, path: [], speed: 26, where: "", aisle: null, targetAisle: null, seat: null,
+      key: m.key, d: m, x: 0, y: 0, path: [], speed: 26, where: "", seat: null, face: 1, trail: null,
       phase: (h % 1000) / 100, skin: SKIN[h % SKIN.length], hair: HAIR[(h >>> 4) % HAIR.length], style: (h >>> 8) % 5,
       wait: 0, moving: false, bub: null, needIdx: 0, campIdx: 0, lunch: null, lunchIdx: 0,
-      chat: null, pong: null, cheer: 0, drank: false, orbit: rnd(0, TAU), patrolI: 0, watched: false,
+      chat: null, pong: null, foos: null, spat: null, cheer: 0, drank: false, cup: 0, couchI: -1, bye: 0, waveT: 0,
+      orbit: rnd(0, TAU), patrolI: 0, watched: false,
       shoutT: rnd(1, 3), glyphT: rnd(0, 1), flopT: rnd(6, 10), flop: 0, signI: h % SIGNS.length, leaving: false, gone: false,
     };
   };
@@ -337,16 +597,17 @@
     if (robot) R(x - 2, by + 1, 4, 3, o.shirt);
     if (o.tie) { R(x - 1, by, 2, 1, "#fff"); R(x, by + 1, 1, 3, "#d43a3a"); }
 
-    // Arms: down, up, or one of each for a wave.
+    // Arms: down, up, one of each for a wave, or held out to the side.
     const sleeve = robot ? metal : o.shirt;
     const f = Math.floor(t * 6) % 2;
-    const arm = (ax, up) => {
-      if (up) { R(ax, by - 3, 1, 4, sleeve); R(ax, by - 4, 1, 1, skin); }
+    const arm = (ax, up, out) => {
+      if (out) { R(ax + (out < 0 ? -2 : 0), by + 1, 3, 1, sleeve); R(ax + out * 3, by + 1, 1, 1, skin); }
+      else if (up) { R(ax, by - 3, 1, 4, sleeve); R(ax, by - 4, 1, 1, skin); }
       else { R(ax, by, 1, 4, sleeve); R(ax, by + 4, 1, 1, skin); }
     };
     const pose = o.pose || "down";
-    arm(x - 5, pose === "cheer" || pose === "holdL" || (pose === "wave" && f === 0));
-    arm(x + 4, pose === "cheer" || pose === "hold" || (pose === "wave" && f === 1));
+    arm(x - 5, pose === "cheer" || pose === "holdL" || (pose === "wave" && f === 0), pose === "outL" ? -1 : 0);
+    arm(x + 4, pose === "cheer" || pose === "hold" || (pose === "wave" && f === 1), pose === "outR" ? 1 : 0);
 
     const hy = y - 16 + (o.headDrop || 0);
     if (robot) {
@@ -504,19 +765,42 @@
 
   // The ping pong table, seen from above: a player at each end.
   const pongTable = () => {
-    const { x, y } = F.S.pong, P = F.pong;
+    const { x, y } = F.S.pong;
     R(x - 16, y + 8, 32, 2, "rgba(0,0,0,0.16)");
     R(x - 14, y + 5, 2, 5, "#39414f"); R(x + 12, y + 5, 2, 5, "#39414f");
     R(x - 16, y - 8, 32, 14, "#f4f4f4"); R(x - 15, y - 7, 30, 12, "#2f8f5b"); R(x - 15, y - 2, 30, 1, "#57b381");
     R(x, y - 10, 1, 17, "#e6ebf0"); R(x - 1, y - 10, 3, 1, "#39414f"); R(x - 1, y + 6, 3, 1, "#39414f");
-    if (!P.on || P.rest > 0 || P.players.length < 2) return;
-    // The ball: an arc from one paddle to the other, and its shadow.
-    const k = P.ball, bx = Math.round(x - 14 + k * 28), up = Math.round(Math.sin(k * Math.PI) * 6);
-    R(bx, y - 1, 2, 1, "rgba(0,0,0,0.2)"); R(bx, y - 4 - up, 2, 2, "#ffffff");
+  };
+  // The ball: `y` is the table or the floor under it, `h` how high it is.
+  // Orange, so it shows on the table and on the floor.
+  const pongBall = () => {
+    const b = F.pong.ball, x = Math.round(b.x), y = Math.round(b.y);
+    if (b.floor || Math.abs(b.x - F.S.pong.x) < 15) R(x, y, 2, 1, "rgba(0,0,0,0.2)");
+    R(x, y - 2 - Math.round(b.h), 2, 2, "#ff9a2e");
+  };
+
+  // The foosball table, seen from above: a goal at the top and at the
+  // bottom, and four rods across it. A rod's handle sticks out on the side
+  // of whoever plays it; left plays red, right plays blue.
+  const RODS = [{ y: -7, team: 0 }, { y: -2, team: 1 }, { y: 3, team: 0 }, { y: 8, team: 1 }];
+  const foosTable = () => {
+    const { x, y } = F.S.foos, K = F.foos;
+    R(x - 9, y + 15, 18, 2, "rgba(0,0,0,0.16)");
+    R(x - 8, y + 11, 2, 5, "#39414f"); R(x + 6, y + 11, 2, 5, "#39414f");
+    R(x - 8, y - 12, 16, 24, "#6b4a2b"); R(x - 8, y - 12, 16, 1, "#8a6238"); R(x - 8, y + 11, 16, 1, "#4f3a25");
+    R(x - 6, y - 10, 12, 20, "#2f8f5b"); R(x - 6, y, 12, 1, "#57b381");
+    R(x - 2, y - 11, 4, 1, "#f4f4f4"); R(x - 2, y + 10, 4, 1, "#f4f4f4");
+    RODS.forEach((rod, i) => {
+      const ry = y + rod.y, spin = F.t < K.spin[i], mx = x + Math.round(K.on ? K.men[i] : 0);
+      R(x - 10, ry, 20, 1, "#c8ced6");
+      R(rod.team ? x + 10 : x - 12, ry - (spin ? 1 : 0), 2, spin ? 3 : 1, "#22252b");
+      [-3, 3].forEach((o) => R(mx + o - 1, ry - 1, 2, spin ? 3 : 2, rod.team ? "#3b82c4" : "#d43a3a"));
+    });
+    if (K.on && K.ball) R(x + Math.round(K.ball.x) - 1, y + Math.round(K.ball.y) - 1, 2, 2, "#ffffff");
   };
 
   const drawCat = () => {
-    const c = F.cat, x = Math.round(c.x), y = Math.round(c.y), t = F.t, fur = "#e59a3c", stripe = "#b86e1f";
+    const c = F.cat, x = Math.round(c.x), y = Math.round(c.y - (c.lift || 0)), t = F.t, fur = "#e59a3c", stripe = "#b86e1f";
     const d = c.flip ? -1 : 1;
     R(x - 4, y, 9, 1, "rgba(0,0,0,0.14)");
     if (c.state === "sleep") {
@@ -625,10 +909,7 @@
     // The couch.
     const s = S.pois[3];
     R(s.x - 17, s.y - 6, 34, 12, "#6c7fa6"); R(s.x - 17, s.y - 8, 34, 4, "#8094bd"); R(s.x - 19, s.y - 5, 4, 11, "#56678a"); R(s.x + 15, s.y - 5, 4, 11, "#56678a");
-    // Your mat.
-    R(S.home.x - 12, S.home.y - 3, 24, 9, "#a33c3c"); R(S.home.x - 11, S.home.y - 2, 22, 7, "#c14b4b");
-    ui(); g.fillStyle = "#ffe9c9"; g.textAlign = "center"; g.textBaseline = "middle"; g.font = font(9 * F.PX / 3, 800);
-    g.fillText("YOU ARE HERE", S.home.x * F.PX, (S.home.y + 1.6) * F.PX);
+    ui(); g.textAlign = "center"; g.textBaseline = "middle";
     g.fillStyle = css("--text-muted", "#777"); g.font = font(10, 700);
     g.fillText("CAMP ARCHIVE", S.tent.x * F.PX, (S.tent.y + 6) * F.PX);
     art();
@@ -638,90 +919,115 @@
   };
 
   // ---- Moving about -------------------------------------------------------------
-  // Among the desks people keep to the aisle beside each desk and to the
-  // open floor below, so nobody walks through furniture (much).
-  const route = (a, tx, ty, taisle) => {
-    const S = F.S, pts = [];
-    let cx = a.x, cy = a.y;
-    if (cy < S.corridorY - 1 && cx < S.officeW && cx > 0) {
-      const ax = a.aisle != null ? a.aisle : cx;
-      if (ty < S.corridorY - 1 && taisle === ax) return [[ax, cy], [ax, ty], [tx, ty]];
-      pts.push([ax, cy], [ax, S.corridorY]);
-      cx = ax;
-    }
-    const inYard = cx > S.officeW, toYard = tx > S.officeW;
-    if (inYard !== toYard) {
-      const inside = [S.officeW - 7, S.yardDoorY], outside = [S.officeW + 7, S.yardDoorY];
-      pts.push(...(toYard ? [inside, outside] : [outside, inside]));
-    }
-    if (ty < S.corridorY - 1 && !toYard) {
-      const ax = taisle != null ? taisle : tx;
-      pts.push([ax, S.corridorY], [ax, ty]);
-    }
-    pts.push([tx, ty]);
-    return pts;
-  };
-
-  const go = (a, where, tx, ty, speed, aisle) => {
-    a.where = where; a.speed = speed; a.targetAisle = aisle == null ? null : aisle; a.drank = false;
-    a.path = route(a, tx, ty, a.targetAisle);
+  // Sends `a` to (tx, ty), round whatever is in between. `enter` is one
+  // more step, into a seat that is inside its furniture: the chair behind
+  // a desk, the far bench of the picnic table, the couch.
+  const go = (a, where, tx, ty, speed, enter) => {
+    a.where = where; a.speed = speed; a.drank = false; a.trail = null;
+    a.path = pathTo(a.x, a.y, tx, ty);
+    if (enter) a.path.push(enter);
   };
   const far = (a, x, y) => Math.hypot(a.x - x, a.y - y) > 2;
 
   const CAMP = [[-18, 2], [18, 2], [-18, -14], [18, -14], [-18, 18], [18, 18], [0, -24]];
   const campSpot = (a) => {
     const o = CAMP[a.campIdx % CAMP.length];
-    return { x: clamp(F.S.fire.x + o[0], F.S.officeW + 8, F.S.W - 7), y: clamp(F.S.fire.y + o[1], WALL + 22, F.S.H - 4) };
+    return freePt(clamp(F.S.fire.x + o[0], F.S.officeW + 8, F.S.W - 7), clamp(F.S.fire.y + o[1], WALL + 22, F.S.H - 4));
   };
   const SLOTS = [[-27, 0], [27, 0], [-17, 24], [17, 24], [-48, 12], [48, 12], [0, 40], [-42, 34], [42, 34]];
   const bossSlot = (a) => {
     const o = SLOTS[a.needIdx % SLOTS.length], ring = 1 + Math.floor(a.needIdx / SLOTS.length) * 0.6;
-    return clampPt(F.boss.x + o[0] * ring, F.boss.y + o[1] * ring);
+    const p = clampPt(F.boss.x + o[0] * ring, F.boss.y + o[1] * ring);
+    return freePt(p.x, p.y);
   };
+  // The two ends of the ping pong table, and the two sides of the foosball
+  // table: where the players stand.
+  const pongEnd = (side) => freePt(F.S.pong.x + (side ? 26 : -26), F.S.pong.y + 5);
+  const foosSide = (side, dy) => freePt(F.S.foos.x + (side ? 15.5 : -15.5), F.S.foos.y + 6 + (dy || 0));
 
   // One that needs you comes to wherever you are, and stays on you.
   const chase = (a, dt) => {
-    const S = F.S, B = F.boss, d = a.d;
-    if (a.x > S.officeW) return go(a, "chase", S.officeW - 12, S.yardDoorY, 50);
-    if (a.y < S.corridorY - 1 && B.y >= S.corridorY - 1) return go(a, "chase", a.aisle != null ? a.aisle : a.x, S.corridorY + 2, 50, a.aisle);
+    const B = F.boss, d = a.d;
     let t = bossSlot(a);
     if (d.urgency === 3) {
       // Ten minutes in: laps around you with a bullhorn.
       a.orbit += dt * 2.4;
-      t = clampPt(B.x + Math.cos(a.orbit) * 25, B.y + 4 + Math.sin(a.orbit) * 13);
+      const p = clampPt(B.x + Math.cos(a.orbit) * 25, B.y + 4 + Math.sin(a.orbit) * 13);
+      t = freePt(p.x, p.y);
     }
-    const dx = t.x - a.x, dy = t.y - a.y, dist = Math.hypot(dx, dy), sp = (40 + d.urgency * 9) * dt;
-    a.where = "boss"; a.aisle = null;
-    if (dist > 1.2) { a.x += (dx / dist) * Math.min(sp, dist); a.y += (dy / dist) * Math.min(sp, dist); a.moving = true; }
+    a.where = "boss";
+    if (Math.hypot(t.x - a.x, t.y - a.y) > 1.2) a.moving = seek(a, t.x, t.y, (40 + d.urgency * 9) * dt, dt);
+  };
+
+  // A session that ended says its goodbyes on the way out: a line and a
+  // wave where it stands, the room waves back, and a last word at the door.
+  const leave = (a, dt) => {
+    const S = F.S, d = a.d;
+    a.wait -= dt;
+    if (a.wait > 0) return;
+    if (a.bye === 0) {
+      a.bye = 1; a.wait = 1.8; a.waveT = F.t + 1.8;
+      const lines = d.mood === "packed" ? BYE.camp : d.tool === "codex" && Math.random() < 0.5 ? BYE.robot
+        : d.role === "foreman" && Math.random() < 0.6 ? BYE.foreman : BYE.first;
+      a.bub = { text: pick(lines), kind: "chat", until: F.t + 3.4 };
+      Array.from(F.actors.values())
+        .filter((b) => !b.leaving && awake(b) && Math.hypot(b.x - a.x, b.y - a.y) < 140)
+        .sort((p, q) => Math.hypot(p.x - a.x, p.y - a.y) - Math.hypot(q.x - a.x, q.y - a.y))
+        .slice(0, 2)
+        .forEach((b, i) => soon(0.9 + i * 0.7, () => {
+          if (F.actors.get(b.key) !== b || b.leaving) return;
+          b.waveT = F.t + 1.3;
+          word(pick(BYE.reply), b.x, b.y - 26, css("--text-body", "#555"), 11, 1.7);
+        }));
+    } else if (a.bye === 1) {
+      a.bye = 2;
+      const p = freePt(11, S.door.y + 1);
+      go(a, "door", p.x, p.y, 32);
+    } else if (a.bye === 2) {
+      // At the door: a turn back to the room.
+      a.bye = 3; a.wait = 1.5; a.waveT = F.t + 1.5; a.face = 1;
+      if (Math.random() < 0.75) a.bub = { text: pick(BYE.door), kind: "chat", until: F.t + 2.6 };
+    } else if (a.bye === 3) {
+      a.bye = 4;
+      go(a, "door", -9, S.door.y, 34);
+    } else a.gone = true;
   };
 
   const think = (a, dt) => {
     const S = F.S, d = a.d;
-    if (a.leaving) {
-      if (a.where !== "door") go(a, "door", -9, S.door.y, 34);
-      else a.gone = true;
-      return;
-    }
+    if (a.leaving) return leave(a, dt);
     // Lunch is for the idle and the working; anything else ends it.
     if (a.lunch && d.mood !== "wandering" && d.mood !== "working") a.lunch = null;
     if (d.mood === "needs") return chase(a, dt);
     // Mid-conversation, nobody wanders off.
     if (a.chat) return;
     if (a.pong && d.mood === "wandering") {
-      // At the table: an end each for the two playing, a line for the rest.
+      // At the table: an end each for the two playing, who are moved about
+      // by the game once they are there. The rest watch from in front of it.
       const P = F.pong, T = S.pong, side = P.players.indexOf(a), spot = P.queue.indexOf(a);
-      const p = side >= 0 ? { x: T.x + (side ? 21 : -21), y: T.y + 5 } : { x: T.x - 9 + spot * 14, y: T.y + 23 };
-      if (a.where !== "pong" || far(a, p.x, p.y)) go(a, "pong", p.x, p.y, 28);
+      const p = side >= 0 ? pongEnd(side) : freePt(T.x - 7 + spot * 14, T.y + 27);
+      if (a.where !== "pong" || (far(a, p.x, p.y) && (side < 0 || P.st === "walk"))) go(a, "pong", p.x, p.y, 30);
+      return;
+    }
+    if (a.foos && d.mood === "wandering") {
+      const K = F.foos, T = S.foos, side = K.players.indexOf(a), spot = K.watch.indexOf(a);
+      const p = side >= 0 ? foosSide(side) : freePt(T.x - 7 + spot * 14, T.y + 32);
+      if (a.where !== "foos" || (far(a, p.x, p.y) && (side < 0 || K.st === "walk"))) go(a, "foos", p.x, p.y, 28);
       return;
     }
     if (a.lunch) {
       // First everyone meets by the yard door, then they go out together.
       if (a.lunch.phase === "meet") {
         const i = a.lunchIdx;
-        if (a.where !== "lunch-meet") go(a, "lunch-meet", S.officeW - 14 - (i % 2) * 9, S.yardDoorY - 1 + Math.floor(i / 2) * 8, 30);
+        if (a.where !== "lunch-meet") {
+          const p = freePt(S.officeW - 14 - (i % 2) * 9, S.yardDoorY - 1 + Math.floor(i / 2) * 8);
+          go(a, "lunch-meet", p.x, p.y, 30);
+        }
       } else if (a.where !== "lunch") {
-        const o = LUNCH[a.lunchIdx % LUNCH.length];
-        go(a, "lunch", S.table.x + o[0], S.table.y + o[1], 24);
+        // The far bench is reached from behind the table.
+        const o = LUNCH[a.lunchIdx % LUNCH.length], tx = S.table.x + o[0], ty = S.table.y + o[1];
+        if (o[1] < 0) go(a, "lunch", tx, S.table.y - 13.5, 24, [tx, ty]);
+        else go(a, "lunch", tx, ty, 24);
       }
       return;
     }
@@ -732,7 +1038,8 @@
     if (!a.seat && want === "seat") want = "wander";
 
     if (want === "seat") {
-      if (a.where !== "seat" || far(a, a.seat.x, a.seat.y)) go(a, "seat", a.seat.x, a.seat.y, 28, a.seat.aisle);
+      // The chair is behind the desk: round to the back of it, then sit.
+      if (a.where !== "seat" || far(a, a.seat.x, a.seat.y)) go(a, "seat", a.seat.x, a.seat.y - 7, 28, [a.seat.x, a.seat.y]);
     } else if (want === "camp") {
       const p = campSpot(a);
       if (a.where !== "camp" || far(a, p.x, p.y)) go(a, "camp", p.x, p.y, 22);
@@ -742,9 +1049,21 @@
         const foremanCoffee = d.role === "foreman" && Math.random() < 0.5;
         // The water cooler is the popular spot.
         const poi = foremanCoffee ? S.pois[0] : Math.random() < 0.66 ? pick(S.pois.concat([S.pois[1]])) : null;
-        const p = poi ? { x: poi.x + rnd(-5, 5), y: poi.y + rnd(-2, 3) } : loungePt();
-        go(a, "poi:" + (poi ? poi.name : "floor"), p.x, p.y, 17);
         a.wait = rnd(5, 12);
+        if (poi && poi.name === "couch") {
+          // A sit on the couch, if there is a place left on it.
+          const taken = Array.from(F.actors.values()).filter((b) => b !== a && b.where === "poi:couch").map((b) => b.couchI);
+          const i = [0, 1].find((n) => taken.indexOf(n) < 0);
+          if (i != null) {
+            const sx = poi.x + (i ? 3 : -9);
+            a.couchI = i; a.wait = rnd(10, 20);
+            return go(a, "poi:couch", sx, poi.y + 8.5, 17, [sx, poi.y + 3]);
+          }
+        }
+        const beside = poi && (poi.name === "cooler" || poi.name === "plant");
+        const p = spotFrom(a, () => (!poi || poi.name === "couch" ? loungePt()
+          : { x: poi.x + (beside ? rnd(-2, 6) : rnd(-5, 5)), y: poi.y + rnd(-2, 3) }));
+        go(a, "poi:" + (poi && poi.name !== "couch" ? poi.name : "floor"), p.x, p.y, 17);
       }
     } else {
       // A working foreman does the rounds of the crew's desks.
@@ -755,15 +1074,16 @@
       a.patrolI++;
       if (a.seat && (a.patrolI % 4 === 0 || !mates.length)) {
         if (!mates.length && a.where === "seat") { a.wait = 3; return; }
-        go(a, "seat", a.seat.x, a.seat.y, 24, a.seat.aisle);
+        go(a, "seat", a.seat.x, a.seat.y - 7, 24, [a.seat.x, a.seat.y]);
         a.wait = rnd(4, 7);
       } else if (mates.length) {
-        const m = mates[a.patrolI % mates.length];
-        go(a, "watch:" + m.key, m.seat.aisle, m.seat.y + 7, 24, m.seat.aisle);
+        // Beside the desk, in the gap between it and the next one.
+        const m = mates[a.patrolI % mates.length], p = freePt(m.seat.aisle, m.seat.y + 7);
+        go(a, "watch:" + m.key, p.x, p.y, 24);
         a.wait = rnd(3.5, 6);
         a.checked = false;
       } else {
-        const p = loungePt();
+        const p = spotFrom(a, loungePt);
         go(a, "poi:floor", p.x, p.y, 20);
         a.wait = rnd(3, 6);
       }
@@ -772,18 +1092,9 @@
 
   const stepActor = (a, dt) => {
     a.moving = false;
-    if (a.path.length) {
-      const [tx, ty] = a.path[0];
-      const dx = tx - a.x, dy = ty - a.y, dist = Math.hypot(dx, dy), sp = a.speed * dt;
-      if (dist <= sp) {
-        a.x = tx; a.y = ty; a.path.shift();
-        if (!a.path.length) a.aisle = a.y < F.S.corridorY - 1 && a.x < F.S.officeW ? a.targetAisle : null;
-      } else { a.x += (dx / dist) * sp; a.y += (dy / dist) * sp; }
-      a.moving = true;
-      // A session that starts needing you drops everything, mid-walk too.
-      if (a.d.mood === "needs" && a.where !== "chase" && !a.leaving) { a.path = a.path.slice(0, a.y < F.S.corridorY - 1 ? 2 : 0); a.where = "chase"; }
-      return;
-    }
+    // A session that starts needing you drops everything, mid-walk too.
+    if (a.path.length && a.d.mood === "needs" && !a.leaving) a.path = [];
+    if (a.path.length) { a.moving = walk(a, a.speed * dt); return; }
     think(a, dt);
   };
 
@@ -812,6 +1123,11 @@
         word(pick(["Empty!", "No water?!", "Who drank it all?", "Not again.", "Dry as a README."]), a.x, a.y - 24, css("--text", "#222"), 11, 1.7);
       }
     }
+    // A coffee is poured, then carried about for a while.
+    if (a.where === "poi:coffee" && !a.path.length && !a.drank) {
+      a.drank = true; a.cup = F.t + rnd(25, 45);
+      word("psssht", a.x + 8, a.y - 22, css("--text-muted", "#888"), 10, 1.3);
+    }
     if (eating && Math.random() < dt * 1.5) {
       spark({ x: a.x + rnd(-2, 3), y: a.y - 9, vx: rnd(-5, 5), vy: -3, g: 26, life: 0.5, max: 0.5, color: "#e8c98f", s: 1 });
     }
@@ -830,7 +1146,8 @@
       a.glyphT -= dt;
       if (a.glyphT <= 0) { a.glyphT = 1.1; spark({ text: pick(["z", "Z", "z"]), x: a.x + 5, y: a.y - 12, vx: 3, vy: -6, life: 1.8, max: 1.8, color: css("--text-muted", "#888"), size: 11 }); }
     }
-    if (d.mood === "needs" && a.where === "boss") {
+    // Not one whose session has ended: it has stopped waiting on you.
+    if (d.mood === "needs" && a.where === "boss" && !a.leaving) {
       a.shoutT -= dt;
       if (a.shoutT <= 0) {
         a.shoutT = rnd(2.2, 4.5) / Math.max(1, d.urgency - 1);
@@ -868,6 +1185,9 @@
     if (d.mood === "asleep") return pick(SAY.asleep);
     if (d.mood === "packed") return pick(SAY.packed);
     if (a.pong && a.where === "pong" && !a.path.length) return pick(PONG.chat);
+    if (a.foos && a.where === "foos" && !a.path.length) return pick(FOOS.chat);
+    if (a.where === "poi:couch" && !a.path.length) return pick(SAY.couch);
+    if (a.cup > F.t && d.mood === "wandering" && Math.random() < 0.5) return pick(SAY.coffee);
     if (a.where === "lunch" && !a.path.length) return pick(d.mood === "working" ? SAY.workingLunch : SAY.lunch);
     if (d.tool === "codex" && Math.random() < 0.5) return pick(SAY.robot);
     if (a.watched) return pick(SAY.watched);
@@ -877,11 +1197,11 @@
     return pick(SAY.idle);
   };
 
-  // ---- Small talk, shouting and ping pong ---------------------------------------------
+  // ---- Small talk, shouting, ping pong and foosball -----------------------------------
   // None of this says anything about a session. One that needs you is
   // never part of it, and drops out the moment it starts needing you.
   const awake = (a) => !a.leaving && a.d.mood !== "needs" && a.d.mood !== "asleep" && a.flop <= 0;
-  const free = (a) => awake(a) && !a.chat && !a.pong && !(a.lunch && a.lunch.phase === "meet");
+  const free = (a) => awake(a) && !a.chat && !a.pong && !a.foos && !(a.lunch && a.lunch.phase === "meet");
 
   const endChat = (c) => {
     c.who.forEach((a) => { if (a.chat === c) { a.chat = null; a.wait = Math.min(a.wait, 1); } });
@@ -900,10 +1220,13 @@
     let pair = null;
     if (near.length && (idle.length < 2 || Math.random() < 0.7)) pair = pick(near);
     else if (idle.length >= 2) {
-      const a = pick(idle), b = pick(idle.filter((x) => x !== a));
-      const p = clampPt(a.x + (b.x < a.x ? -14 : 14), a.y);
-      a.path = [];
-      go(b, "poi:chat", p.x, Math.max(p.y, F.S.corridorY + 2), 24);
+      // One stays put (someone standing still, for choice) and the other
+      // comes over to stand beside them.
+      const stood = idle.filter((x) => !x.path.length);
+      const a = pick(stood.length ? stood : idle), b = pick(idle.filter((x) => x !== a));
+      const q = clampPt(a.x + (b.x < a.x ? -14 : 14), Math.max(a.y, F.S.corridorY + 2)), p = freePt(q.x, q.y);
+      if (!solidAt(a.x, a.y)) a.path = [];
+      go(b, "poi:chat", p.x, p.y, 24);
       pair = [a, b];
     }
     if (!pair) return;
@@ -959,59 +1282,138 @@
     }
   };
 
+  // An argument over a point, at either table. The two take turns through
+  // a script, arms going, and it ends one of two ways: the point is played
+  // again, or it stands.
+  const startSpat = (G, loser, winner, lines) => {
+    const spat = { who: [loser, winner], lines, i: 0, t: 0.5, replay: Math.random() < 0.5, over: false };
+    G.spat = spat; G.sinceSpat = 0;
+    spat.who.forEach((a) => { a.spat = spat; a.bub = null; });
+  };
+  const endSpat = (G) => {
+    if (!G.spat) return;
+    // One still on the way to the net when it ends (the other was called
+    // away) drops that walk: its last step was into the table's box, which
+    // is only for the two arguing.
+    G.spat.who.forEach((a) => { if (a.spat === G.spat) { a.spat = null; if (!a.leaving) a.path = []; } });
+    G.spat = null;
+  };
+  // Moves the argument on. Says true once it is over. `crowd` is whoever
+  // is watching, who may have a view of their own.
+  const runSpat = (G, dt, crowd) => {
+    const s = G.spat;
+    if (s.who.some((a) => a.path.length)) return false;
+    s.t -= dt;
+    if (s.t > 0) return false;
+    if (s.over) return true;
+    const say = (a, text, secs) => {
+      s.who.forEach((x) => { if (x.bub && x.bub.kind === "chat") x.bub = null; });
+      a.bub = { text, kind: "chat", until: F.t + secs };
+    };
+    if (s.i < s.lines.length) {
+      say(s.who[s.i % 2], s.lines[s.i], 2.3);
+      s.i++; s.t = 2.5;
+      if (s.i === 3 && crowd.length && Math.random() < 0.7) {
+        const c = pick(crowd);
+        soon(1.1, () => word(pick(SPAT_CROWD), c.x, c.y - 26, css("--text-body", "#555"), 11, 1.6));
+      }
+      return false;
+    }
+    // Whoever won the point agrees to play it again, or the loser gives in.
+    say(s.who[s.replay ? 1 : 0], pick(s.replay ? SPAT_END.replay : SPAT_END.stand), 2);
+    s.over = true; s.t = 2.1;
+    return false;
+  };
+
+  const pongReset = { score: [0, 0], st: "walk", server: 0, rally: 0, ball: null, loose: false, shot: null, drop: null, fetcher: null };
   const pongOver = () => {
     const P = F.pong;
+    endSpat(P);
     P.players.concat(P.queue).forEach((a) => { a.pong = null; a.wait = 0; });
-    P.on = false; P.players = []; P.queue = []; P.score = [0, 0]; P.games = 0; P.streak = 0;
+    Object.assign(P, pongReset, { on: false, players: [], queue: [], score: [0, 0], want: [null, null], games: 0, streak: 0 });
     F.dir.pongT = rnd(35, 70);
   };
-  const serve = (side) => { const P = F.pong; P.ball = side ? 1 : 0; P.dir = side ? -1 : 1; P.rest = 0.9; };
 
-  // Ping pong for the idle: first to three, then the loser makes way for
-  // whoever is waiting. Two wins in a row and the winner steps aside too,
-  // so everybody gets a turn.
-  const runPong = (all, dt) => {
-    const P = F.pong, D = F.dir, T = F.S.pong;
-    const fit = (a) => F.actors.get(a.key) === a && !a.leaving && a.d.mood === "wandering" && a.pong === P;
-    const pool = () => all.filter((a) => a.d.mood === "wandering" && free(a) && !a.lunch && !a.d.ghost);
-    if (!P.on) {
-      D.pongT -= dt;
-      if (D.pongT > 0) return;
-      D.pongT = 8;
-      const up = pool().sort(() => Math.random() - 0.5).slice(0, 4);
-      if (up.length < 2) return;
-      up.forEach((a) => { a.pong = P; a.bub = null; });
-      P.on = true; P.players = up.slice(0, 2); P.queue = up.slice(2); P.score = [0, 0]; P.games = 0; P.streak = 0;
-      serve(0);
-      word("PING PONG?", up[0].x, up[0].y - 26, css("--text", "#222"), 12, 1.7);
-      if (F.cat.state === "sleep" && Math.abs(F.cat.x - T.x) < 16 && Math.abs(F.cat.y - T.y) < 10) {
-        F.cat.state = "sit"; F.cat.wait = 0; word("meow!", F.cat.x, F.cat.y - 12, "#b86e1f", 10, 1.2);
-      }
-      return;
+  // One shot: where it is going, how hard, and what becomes of it. Most
+  // come back. Some are missed, some go into the net and some go long.
+  const pongHit = (from) => {
+    const P = F.pong, T = F.S.pong, to = 1 - from, hitter = P.players[from], recv = P.players[to];
+    const sgn = to ? 1 : -1;
+    const smash = P.rally >= 2 && Math.random() < 0.15;
+    const fault = P.rally >= 1 && Math.random() < 0.08 ? pick(["net", "out"]) : null;
+    const miss = !fault && Math.random() < (smash ? 0.5 : 0.16);
+    // Across the table it lands high or low (lat), short or deep.
+    const lat = rnd(-1, 1), depth = smash ? rnd(8, 12) : pick([rnd(0, 2), rnd(3, 6), rnd(3, 6), rnd(7, 10)]);
+    const x0 = hitter.x + (from ? -6 : 6), y0 = hitter.y - 5;
+    let x1 = T.x + sgn * (17 + depth), y1 = T.y - 1 + lat * 5, dur;
+    // Where the receiver's feet must be for the paddle to meet it.
+    const q = clampPt(x1 + sgn * 6, y1 + 5), feet = freePt(q.x, q.y);
+    if (fault === "net") { x1 = T.x - sgn * 1.5; dur = Math.abs(x1 - x0) / 70; }
+    else if (fault === "out") { x1 = T.x + sgn * rnd(34, 42); y1 += 5; dur = Math.abs(x1 - x0) / 95; }
+    else {
+      dur = Math.abs(x1 - x0) / (smash ? 130 : rnd(60, 86));
+      // A ball that comes back is one the receiver had time to reach.
+      if (!miss) dur = Math.max(dur, Math.hypot(feet.x - recv.x, feet.y - recv.y) / 46 + 0.05);
     }
-    // Anyone called away (a question for you, real work, lunch) drops out.
-    P.players.concat(P.queue).forEach((a) => { if (!fit(a) && a.pong === P) a.pong = null; });
-    P.queue = P.queue.filter(fit);
-    const left = P.players.filter(fit);
-    if (left.length < 2) {
-      const sub = P.queue.shift() || pool()[0];
-      if (!sub || !left.length) return pongOver();
-      sub.pong = P;
-      P.players = left.concat([sub]); P.score = [0, 0]; serve(0);
+    const kb = clamp((T.x + sgn * rnd(5, 12) - x0) / (x1 - x0), 0.3, 0.9);
+    P.shot = { from, to, x0, y0, x1, y1, t: 0, dur, kb, smash, miss, fault };
+    // The receiver steps in for a short one and back for a deep one: all
+    // the way, or not far enough. The hitter gets back to the middle.
+    const home = pongEnd(from);
+    P.want[to] = fault ? null : miss ? { x: (feet.x + recv.x) / 2, y: recv.y + (feet.y - recv.y) * rnd(-0.3, 0.5) } : feet;
+    P.want[from] = { x: home.x + rnd(-2, 2), y: home.y + rnd(-2, 2) };
+    hitter.swingUntil = F.t + 0.22;
+    P.rally++; P.st = "rally";
+    if (smash) {
+      hitter.jumpUntil = F.t + 0.35;
+      word(pick(PONG.smash), hitter.x, hitter.y - 28, css("--text", "#222"), 12, 1.1);
     }
-    const [a, b] = P.players;
-    if (a.where !== "pong" || b.where !== "pong" || a.path.length || b.path.length) return;
-    if (P.rest > 0) { P.rest -= dt; return; }
-    P.ball += P.dir * dt * 1.9;
-    if (P.ball > 0 && P.ball < 1) return;
-    // It reached an end: returned, or a point for the other side.
-    const at = P.ball >= 1 ? 1 : 0, hitter = P.players[at];
-    if (Math.random() < 0.76) { P.ball = at; P.dir = at ? -1 : 1; hitter.swingUntil = F.t + 0.25; return; }
-    const won = 1 - at, winner = P.players[won], loser = P.players[at];
-    P.score[won]++;
-    if (Math.random() < 0.6) word(pick(PONG.point), winner.x, winner.y - 26, css("--text", "#222"), 11, 1.3);
-    if (P.score[won] < 3) return serve(at);
-    // Game. The loser goes; so does a winner on a second win in a row.
+  };
+
+  // A point is won. The ball ends up past whoever missed it, out on the
+  // floor, or dribbling back off the net.
+  const pongPoint = (won, how) => {
+    const P = F.pong, T = F.S.pong, winner = P.players[won], loser = P.players[1 - won], s = P.shot, sgn = s.to ? 1 : -1;
+    const ink = css("--text", "#222");
+    P.last = { won, how, server: P.server };
+    P.score[won]++; P.rally = 0; P.sinceSpat++; P.server = 1 - won; P.want = [null, null];
+    if (how === "net") {
+      P.drop = { x0: s.x1, y0: s.y1, h0: 2, x1: T.x - sgn * 12, y1: s.y1, bounce: 1, floor: false, t: 0 };
+      P.loose = false;
+    } else {
+      const q = how === "miss" ? clampPt(s.x1 + sgn * rnd(14, 24), s.y1 + 5 + rnd(0, 8)) : clampPt(s.x1 + sgn * rnd(4, 9), s.y1 + rnd(-2, 3));
+      const lie = freePt(q.x, q.y);
+      P.drop = { x0: s.x1, y0: how === "miss" ? s.y1 + 5 : s.y1, h0: how === "miss" ? 9 : 0, x1: lie.x, y1: lie.y, bounce: 3, floor: true, t: 0 };
+      P.loose = true;
+    }
+    if (how === "out") word(pick(PONG.out), winner.x, winner.y - 26, ink, 11, 1.3);
+    else if (how === "net") word(pick(PONG.net), winner.x, winner.y - 26, ink, 11, 1.3);
+    else if (Math.random() < 0.6) word(pick(PONG.point), winner.x, winner.y - 26, ink, 11, 1.3);
+    if (how === "miss" && Math.random() < 0.5) soon(0.5, () => word(pick(PONG.miss), loser.x, loser.y - 26, css("--text-body", "#555"), 11, 1.3));
+    if (Math.random() < 0.35) winner.cheer = 0.7;
+    P.st = "point"; P.t = 1.2;
+  };
+
+  // After a point: whoever is nearer fetches the ball if it is on the
+  // floor, then both go back to their ends for the serve.
+  const pongNext = () => {
+    const P = F.pong, b = P.ball;
+    if (P.loose && b) {
+      const who = P.players.slice().sort((p, q) => Math.hypot(p.x - b.x, p.y - b.y) - Math.hypot(q.x - b.x, q.y - b.y))[0];
+      go(who, "pong", b.x, b.y, 34);
+      P.fetcher = who; P.st = "fetch";
+      // The other one goes back to their end meanwhile: after an argument
+      // they are both still at the net.
+      P.players.forEach((a, side) => {
+        const end = pongEnd(side);
+        if (a !== who && far(a, end.x, end.y)) go(a, "pong", end.x, end.y, 30);
+      });
+    } else P.st = "walk";
+  };
+
+  // Game. The loser goes; so does a winner on a second win in a row.
+  const pongGame = (won, pool) => {
+    const P = F.pong, winner = P.players[won], loser = P.players[1 - won];
     P.games++; P.streak = P.lastWinner === winner ? P.streak + 1 : 1; P.lastWinner = winner;
     winner.cheer = 1.4;
     word(pick(PONG.win), winner.x, winner.y - 28, css("--ok", "#2c9a5a"), 12, 1.8);
@@ -1031,10 +1433,215 @@
       soon(1.4, () => word(pick(PONG.next), next.x, next.y - 26, css("--text", "#222"), 11, 1.5));
     }
     // The winner takes the left end; whoever is new, or lost, the right.
+    // A pair playing again change ends.
     P.players = stay[0] === loser ? [stay[1], stay[0]] : stay;
-    P.score = [0, 0];
     if (out.indexOf(winner) >= 0) { P.streak = 0; P.lastWinner = null; }
-    serve(0); P.rest = 2.2;
+    Object.assign(P, pongReset, { score: [0, 0], want: [null, null] });
+  };
+
+  // Ping pong for the idle: first to three, then the loser makes way for
+  // whoever is waiting. Two wins in a row and the winner steps aside too,
+  // so everybody gets a turn. The two playing move like players: in for a
+  // short ball, back for a deep one, a jump for a smash, a walk to fetch
+  // the ball. Now and then a point is argued over.
+  const runPong = (all, dt) => {
+    const P = F.pong, D = F.dir, T = F.S.pong;
+    const fit = (a) => F.actors.get(a.key) === a && !a.leaving && a.d.mood === "wandering" && a.pong === P;
+    const pool = () => all.filter((a) => a.d.mood === "wandering" && free(a) && !a.lunch && !a.d.ghost);
+    if (!P.on) {
+      D.pongT -= dt;
+      if (D.pongT > 0) return;
+      D.pongT = 8;
+      const up = pool().sort(() => Math.random() - 0.5).slice(0, 4);
+      if (up.length < 2) return;
+      up.forEach((a) => { a.pong = P; a.bub = null; });
+      Object.assign(P, pongReset, { on: true, players: up.slice(0, 2), queue: up.slice(2), score: [0, 0], want: [null, null], games: 0, streak: 0, sinceSpat: 0 });
+      word("PING PONG?", up[0].x, up[0].y - 26, css("--text", "#222"), 12, 1.7);
+      return;
+    }
+    // Anyone called away (a question for you, real work, the session ending) drops out.
+    P.players.concat(P.queue).forEach((a) => { if (!fit(a) && a.pong === P) a.pong = null; });
+    P.queue = P.queue.filter(fit);
+    const left = P.players.filter(fit);
+    if (left.length < 2) {
+      const sub = P.queue.shift() || pool()[0];
+      if (!sub || !left.length) return pongOver();
+      sub.pong = P;
+      endSpat(P);
+      Object.assign(P, pongReset, { players: left.concat([sub]), score: [0, 0], want: [null, null] });
+    }
+    if (P.st === "walk") {
+      // To their ends: think() walks them there.
+      if (P.players.some((a, side) => { const e = pongEnd(side); return a.where !== "pong" || a.path.length || far(a, e.x, e.y); })) return;
+      P.st = "serve"; P.t = 0.9;
+      return;
+    }
+    if (P.st === "serve") {
+      // The server bounces the ball on the paddle, then hits it.
+      const s = P.players[P.server];
+      P.t -= dt;
+      P.ball = { x: s.x + (P.server ? -6 : 6), y: s.y - 5, h: 3 + (P.t < 0.45 ? Math.abs(Math.sin((0.45 - P.t) * 7)) * 4 : 0), floor: false };
+      if (P.t <= 0) pongHit(P.server);
+      return;
+    }
+    if (P.st === "rally") {
+      // Over the net, down onto the table, and up to the paddle.
+      const s = P.shot;
+      s.t += dt;
+      const k = Math.min(1, s.t / s.dur);
+      let h;
+      if (s.fault === "net") h = 3 - k + Math.sin(k * Math.PI) * 3;
+      else if (s.fault === "out") h = 3 * (1 - k) + Math.sin(k * Math.PI) * 10;
+      else if (k < s.kb) h = 3 * (1 - k / s.kb) + Math.sin((k / s.kb) * Math.PI) * (s.smash ? 3 : 6);
+      else h = Math.sin(((k - s.kb) / (1 - s.kb)) * Math.PI * 0.5) * 4;
+      P.ball = { x: s.x0 + (s.x1 - s.x0) * k, y: s.y0 + (s.y1 - s.y0) * k, h, floor: false };
+      P.players.forEach((a, side) => {
+        const w = P.want[side];
+        if (!w) return;
+        const dx = w.x - a.x, dy = w.y - a.y, dist = Math.hypot(dx, dy), sp = Math.min(46 * dt, dist);
+        if (dist < 0.4) return;
+        a.x += (dx / dist) * sp; a.y += (dy / dist) * sp;
+        a.shuffle = F.t + 0.12;
+      });
+      if (k < 1) return;
+      if (s.fault) return pongPoint(s.to, s.fault);
+      if (s.miss) return pongPoint(s.from, "miss");
+      return pongHit(s.to);
+    }
+    if (P.st === "point") {
+      // The ball bounces away and comes to rest.
+      const d = P.drop;
+      d.t = Math.min(1, d.t + dt / 0.8);
+      const k = d.t;
+      P.ball = {
+        x: d.x0 + (d.x1 - d.x0) * k, y: d.y0 + (d.y1 - d.y0) * k, floor: d.floor,
+        h: d.h0 * (1 - k) * (1 - k) + Math.abs(Math.sin(k * Math.PI * 2.5)) * d.bounce * (1 - k),
+      };
+      P.t -= dt;
+      if (P.t > 0) return;
+      const won = P.last.won, winner = P.players[won], loser = P.players[1 - won];
+      if (P.score[won] >= 3) return pongGame(won, pool);
+      if (P.sinceSpat >= 2 && P.last.how !== "net" && Math.random() < 0.3) {
+        // The point is disputed. They meet at the net, across the far side
+        // of the table, to have it out.
+        startSpat(P, loser, winner, pick(SPATS.pong));
+        P.players.forEach((a, side) => go(a, "pong", T.x + (side ? 10 : -10), T.y - 14, 30, [T.x + (side ? 10 : -10), T.y - 7]));
+        P.st = "argue";
+        return;
+      }
+      return pongNext();
+    }
+    if (P.st === "argue") {
+      if (!runSpat(P, dt, P.queue)) return;
+      if (P.spat.replay) { P.score[P.last.won]--; P.server = P.last.server; }
+      endSpat(P);
+      return pongNext();
+    }
+    if (P.st === "fetch" && !P.fetcher.path.length) { P.loose = false; P.ball = null; P.st = "walk"; }
+  };
+
+  const foosOver = () => {
+    const K = F.foos;
+    endSpat(K);
+    K.players.concat(K.watch).forEach((a) => { a.foos = null; a.wait = 0; });
+    Object.assign(K, { on: false, players: [], watch: [], score: [0, 0], st: "walk", ball: null });
+    F.dir.foosT = rnd(40, 80);
+  };
+
+  const foosGoal = (won) => {
+    const K = F.foos, T = F.S.foos, winner = K.players[won], loser = K.players[1 - won];
+    K.score[won]++; K.sinceSpat++; K.last = { won }; K.ball = null;
+    winner.cheer = 1.1;
+    word(pick(FOOS.goal), T.x, T.y - 22, css("--ok", "#2c9a5a"), 13, 1.5);
+    if (Math.random() < 0.45) soon(0.7, () => word(pick(FOOS.lose), loser.x, loser.y - 26, css("--text-body", "#555"), 11, 1.5));
+    K.st = "goal"; K.t = 1.7;
+  };
+
+  // Foosball for the idle: one a side, first to five. The ball really does
+  // bounce about the table: the little men slide across to meet it and
+  // kick it on, and a goal is a ball that got past them.
+  const runFoos = (all, dt) => {
+    const K = F.foos, D = F.dir, T = F.S.foos;
+    if (!T) { if (K.on) foosOver(); return; }
+    const fit = (a) => F.actors.get(a.key) === a && !a.leaving && a.d.mood === "wandering" && a.foos === K;
+    const pool = () => all.filter((a) => a.d.mood === "wandering" && free(a) && !a.lunch && !a.d.ghost);
+    if (!K.on) {
+      D.foosT -= dt;
+      if (D.foosT > 0) return;
+      D.foosT = 9;
+      const up = pool().sort(() => Math.random() - 0.5).slice(0, 3);
+      if (up.length < 2) return;
+      up.forEach((a) => { a.foos = K; a.bub = null; });
+      Object.assign(K, { on: true, players: up.slice(0, 2), watch: up.slice(2), score: [0, 0], st: "walk", ball: null, men: [0, 0, 0, 0], sinceSpat: 0 });
+      word("FOOSBALL?", up[0].x, up[0].y - 26, css("--text", "#222"), 12, 1.7);
+      return;
+    }
+    K.players.concat(K.watch).forEach((a) => { if (!fit(a) && a.foos === K) a.foos = null; });
+    K.watch = K.watch.filter(fit);
+    const left = K.players.filter(fit);
+    if (left.length < 2) {
+      const sub = K.watch.shift() || pool()[0];
+      if (!sub || !left.length) return foosOver();
+      sub.foos = K;
+      endSpat(K);
+      Object.assign(K, { players: left.concat([sub]), score: [0, 0], st: "walk", ball: null });
+    }
+    if (K.st === "walk") {
+      if (K.players.some((a, side) => { const e = foosSide(side); return a.where !== "foos" || a.path.length || far(a, e.x, e.y); })) return;
+      K.st = "drop"; K.t = 0.9;
+    } else if (K.st === "drop") {
+      // The ball is dropped in at the middle.
+      K.t -= dt;
+      K.ball = { x: 0, y: 0, vx: 0, vy: 0 };
+      if (K.t <= 0) { K.ball.vx = rnd(-12, 12); K.ball.vy = (Math.random() < 0.5 ? -1 : 1) * rnd(16, 22); K.st = "play"; }
+    } else if (K.st === "play") {
+      const B = K.ball, was = B.y;
+      B.x += B.vx * dt; B.y += B.vy * dt;
+      if (B.x < -5) { B.x = -5; B.vx = Math.abs(B.vx); } else if (B.x > 5) { B.x = 5; B.vx = -Math.abs(B.vx); }
+      RODS.forEach((rod, i) => {
+        // The two men on a rod are 6 apart; the nearer one goes for it.
+        const want = clamp(B.x >= 0 ? B.x - 3 : B.x + 3, -2, 2);
+        K.men[i] += clamp(want - K.men[i], -13 * dt, 13 * dt);
+        if ((was - rod.y) * (B.y - rod.y) > 0 || was === B.y) return;
+        const reach = Math.min(Math.abs(B.x - K.men[i] + 3), Math.abs(B.x - K.men[i] - 3));
+        if (reach > 1.6 || Math.random() < 0.2) return;
+        // Kicked on, toward the other one's goal: red plays down the table, blue up it.
+        const dir = rod.team ? -1 : 1;
+        B.y = rod.y + dir * 0.6; B.vy = dir * rnd(20, 32); B.vx = clamp((rnd(-3, 3) - B.x) * rnd(0.8, 2.4), -18, 18);
+        K.spin[i] = F.t + 0.22; K.players[rod.team].swingUntil = F.t + 0.2;
+      });
+      if (Math.abs(B.y) > 10) {
+        const top = B.y < 0;
+        if (Math.abs(B.x) <= 2.2) return foosGoal(top ? 1 : 0);
+        B.y = top ? -10 : 10; B.vy = -B.vy;
+      }
+      // Each leans along the table toward the rod the ball is near.
+      K.players.forEach((a, side) => {
+        const p = foosSide(side, clamp(B.y * 0.45, -4, 4)), dy = p.y - a.y;
+        if (Math.abs(dy) > 0.4) { a.y += clamp(dy, -18 * dt, 18 * dt); a.shuffle = F.t + 0.12; }
+      });
+    } else if (K.st === "goal") {
+      K.t -= dt;
+      if (K.t > 0) return;
+      const won = K.last.won, winner = K.players[won], loser = K.players[1 - won];
+      if (K.score[won] >= 5) {
+        winner.cheer = 1.6;
+        word(pick(FOOS.win), winner.x, winner.y - 28, css("--ok", "#2c9a5a"), 12, 1.9);
+        K.st = "done"; K.t = 2.6;
+      } else if (K.sinceSpat >= 2 && Math.random() < 0.28) {
+        // They are already face to face across the table: it is argued there.
+        startSpat(K, loser, winner, pick(SPATS.foos));
+        K.st = "argue";
+      } else { K.st = "drop"; K.t = 0.9; }
+    } else if (K.st === "argue") {
+      if (!runSpat(K, dt, K.watch)) return;
+      if (K.spat.replay) K.score[K.last.won]--;
+      endSpat(K);
+      K.st = "drop"; K.t = 0.9;
+    } else if (K.st === "done") {
+      K.t -= dt;
+      if (K.t <= 0) foosOver();
+    }
   };
 
   // Lunch comes round every couple of minutes, twice as often at midday.
@@ -1047,7 +1654,7 @@
   // two idle, someone working comes along and brings the laptop: lunch
   // never changes what a session is said to be doing.
   const startLunch = (all) => {
-    const idle = all.filter((a) => a.d.mood === "wandering" && !a.d.ghost && !a.pong).sort(() => Math.random() - 0.5);
+    const idle = all.filter((a) => a.d.mood === "wandering" && !a.d.ghost && !a.pong && !a.foos).sort(() => Math.random() - 0.5);
     const busy = all.filter((a) => a.d.mood === "working" && a.d.role !== "foreman" && !a.d.ghost && a.where === "seat" && !a.path.length);
     const group = idle.slice(0, LUNCH.length);
     while (group.length < 2 && busy.length) group.push(busy.splice(Math.floor(Math.random() * busy.length), 1)[0]);
@@ -1086,6 +1693,7 @@
     runChats(all, dt);
     runYells(all, dt);
     runPong(all, dt);
+    runFoos(all, dt);
     const needs = all.filter((a) => a.d.mood === "needs").sort((a, b) => b.d.urgency - a.d.urgency || (a.key < b.key ? -1 : 1));
     const packed = all.filter((a) => a.d.mood === "packed").sort((a, b) => (a.key < b.key ? -1 : 1));
     D.askT -= dt;
@@ -1116,7 +1724,7 @@
     D.jokeT -= dt;
     if (D.jokeT <= 0) {
       D.jokeT = rnd(6, 11);
-      const quiet = all.filter((a) => a.d.mood !== "needs" && !a.bub && !a.chat);
+      const quiet = all.filter((a) => a.d.mood !== "needs" && !a.bub && !a.chat && !a.spat);
       if (quiet.length) { const a = pick(quiet); a.bub = { text: joke(a), kind: "joke", until: F.t + 4.2 }; }
       if (needs.length >= 3 && Math.random() < 0.5) F.boss.bub = { text: pick(SAY.you), kind: "joke", until: F.t + 3.5 };
     }
@@ -1139,26 +1747,96 @@
   };
 
   // ---- One tick ---------------------------------------------------------------------
+  // The spots the cat jumps up to: where it lies, and the floor it jumps
+  // from and back down to.
+  const perch = (name) => {
+    const S = F.S, s = S.pois[3];
+    return name === "pong" ? { x: S.pong.x - 6, y: S.pong.y + 1, fx: S.pong.x - 6, fy: S.pong.y + 13.5 }
+      : { x: s.x + 13, y: s.y + 2, fx: s.x + 13, fy: s.y + 8.5 };
+  };
+  const catHop = (name, up) => {
+    const c = F.cat, p = perch(name);
+    c.jump = { x0: c.x, y0: c.y, x1: up ? p.x : p.fx, y1: up ? p.y : p.fy, t: 0, up, name };
+    c.path = []; c.trail = null; c.goal = null; c.state = "walk";
+  };
+
+  // The cat: naps beside a sleeper, on the ping pong table or on the
+  // couch, hunts the bug, otherwise strolls. It walks round the furniture
+  // like everyone else, and gets onto it with a jump.
+  const stepCat = (dt) => {
+    const S = F.S, c = F.cat;
+    if (c.jump) {
+      const j = c.jump;
+      j.t += dt;
+      const k = Math.min(1, j.t / 0.38);
+      c.x = j.x0 + (j.x1 - j.x0) * k; c.y = j.y0 + (j.y1 - j.y0) * k; c.lift = Math.sin(k * Math.PI) * 6;
+      if (Math.abs(j.x1 - j.x0) > 0.5) c.flip = j.x1 < j.x0;
+      if (k >= 1) {
+        c.jump = null; c.lift = 0; c.on = j.up ? j.name : null;
+        c.state = j.up ? "sleep" : "sit"; c.wait = j.up ? rnd(14, 26) : rnd(1, 3);
+      }
+      return;
+    }
+    // A game on the table it was asleep on: off it goes.
+    if (c.on === "pong" && F.pong.on) {
+      word("meow!", c.x, c.y - 12, "#b86e1f", 10, 1.2);
+      return catHop("pong", false);
+    }
+    if (F.bug && !F.bug.squashed) {
+      if (c.on) return catHop(c.on, false);
+      c.state = "hunt"; c.goal = null; c.path = [];
+      seek(c, F.bug.x, F.bug.y, 30 * dt, dt);
+      c.flip = c.face < 0;
+      if (Math.hypot(c.x - F.bug.x, c.y - F.bug.y) < 7) {
+        F.bug.squashed = 1.2; c.state = "sit"; c.wait = 3; c.trail = null;
+        word("pounce!", c.x, c.y - 12, "#b86e1f", 10, 1.1);
+      }
+      return;
+    }
+    if (c.state === "hunt") { c.state = "sit"; c.wait = 3; c.trail = null; return; }
+    if (c.state === "walk") {
+      if (walk(c, 13 * dt)) { c.flip = c.face < 0; return; }
+      // There. Up onto the table or the couch, or down for a sit or a nap.
+      if (c.goal && !(c.goal === "pong" && F.pong.on)) return catHop(c.goal, true);
+      c.goal = null;
+      c.state = c.nap ? "sleep" : "sit"; c.wait = c.nap ? rnd(14, 26) : rnd(3, 8);
+      return;
+    }
+    c.wait -= dt;
+    if (c.wait > 0) return;
+    if (c.on) return catHop(c.on, false);
+    const sleepers = Array.from(F.actors.values()).filter((a) => a.d.mood === "asleep" && a.where === "seat" && !a.path.length);
+    c.nap = sleepers.length > 0 && Math.random() < 0.4;
+    const s = c.nap ? pick(sleepers).seat : null;
+    // At lunch the cat begs by the picnic table.
+    const beg = !s && F.lunch && F.lunch.phase === "eat" && Math.random() < 0.6;
+    // With nobody playing, the ping pong table is a fine place to nap. So is the couch.
+    const up = s || beg ? null : !F.pong.on && Math.random() < 0.22 ? "pong" : Math.random() < 0.16 ? "couch" : null;
+    const p = s ? { x: s.aisle, y: s.y + 3 } : beg ? { x: S.table.x + 17, y: S.table.y + 15 }
+      : up ? { x: perch(up).fx, y: perch(up).fy } : loungePt();
+    const q = freePt(p.x, p.y);
+    c.goal = up; c.path = pathTo(c.x, c.y, q.x, q.y); c.state = "walk";
+  };
+
   const update = (dt) => {
     const S = F.S, B = F.boss;
     direct(dt);
     for (const a of F.actors.values()) {
       stepActor(a, dt);
       emit(a, dt);
+      if (a.leaving && a.bub && F.t > a.bub.until) a.bub = null;
       if (a.gone) F.actors.delete(a.key);
     }
 
-    // You: the keys, or a walk to wherever was tapped.
+    // You: the keys, or a walk to wherever was tapped. The furniture is in
+    // your way too.
     const kx = (F.keys.d ? 1 : 0) - (F.keys.a ? 1 : 0), ky = (F.keys.s ? 1 : 0) - (F.keys.w ? 1 : 0);
-    B.moving = false;
     if (kx || ky) {
-      const n = Math.hypot(kx, ky);
-      const p = clampPt(B.x + (kx / n) * 64 * dt, B.y + (ky / n) * 64 * dt);
-      B.x = p.x; B.y = p.y; B.tx = B.x; B.ty = B.y; B.moving = true;
-    } else {
-      const dx = B.tx - B.x, dy = B.ty - B.y, dist = Math.hypot(dx, dy);
-      if (dist > 0.8) { const sp = Math.min(64 * dt, dist); B.x += (dx / dist) * sp; B.y += (dy / dist) * sp; B.moving = true; }
-    }
+      const n = Math.hypot(kx, ky), p = slide(B.x, B.y, (kx / n) * 64 * dt, (ky / n) * 64 * dt);
+      B.moving = p.x !== B.x || p.y !== B.y;
+      if (kx) B.face = kx;
+      B.x = p.x; B.y = p.y; B.path = [];
+    } else B.moving = walk(B, 64 * dt);
 
     // What was put off until now.
     F.later = F.later.filter((job) => { if (job.at > F.t) return true; job.run(); return false; });
@@ -1170,49 +1848,22 @@
     else if (C.level < C.target) C.level = Math.min(C.target, C.level + 0.7 * dt);
     if (C.level <= 0.01 && C.target <= 0.01 && !C.runner) {
       C.refillT -= dt;
-      if (C.refillT <= 0) C.runner = { x: -8, y: S.door.y, full: true, pause: 0 };
-    }
-    if (C.runner) {
-      const r = C.runner, tx = r.full ? W.x - 4 : -9, ty = r.full ? W.y + 3 : S.door.y;
-      const dx = tx - r.x, dy = ty - r.y, dist = Math.hypot(dx, dy), sp = 36 * dt;
-      if (r.pause > 0) r.pause -= dt;
-      else if (dist > sp) { r.x += (dx / dist) * sp; r.y += (dy / dist) * sp; }
-      else if (r.full) { r.full = false; r.pause = 1.1; C.target = 1; word("Fresh water!", W.x, W.y - 26, "#2a8fd0", 11, 1.8); }
-      else C.runner = null;
-    }
-
-    // The cat: naps beside a sleeper, hunts the bug, otherwise strolls.
-    const c = F.cat;
-    // A game on the table it was asleep on: off it goes.
-    if (F.pong.on && c.state === "sleep" && Math.abs(c.x - S.pong.x) < 16 && Math.abs(c.y - S.pong.y) < 9) {
-      c.state = "sit"; c.wait = 0; c.nap = false;
-      word("meow!", c.x, c.y - 12, "#b86e1f", 10, 1.2);
-    }
-    if (F.bug && !F.bug.squashed) { c.state = "hunt"; c.tx = F.bug.x; c.ty = F.bug.y; }
-    else if (c.state === "hunt") { c.state = "sit"; c.wait = 3; }
-    if (c.state === "walk" || c.state === "hunt") {
-      const dx = c.tx - c.x, dy = c.ty - c.y, dist = Math.hypot(dx, dy), sp = (c.state === "hunt" ? 30 : 13) * dt;
-      if (Math.abs(dx) > 0.5) c.flip = dx < 0;
-      if (dist <= sp + 1) {
-        if (c.state === "hunt" && F.bug) { F.bug.squashed = 1.2; word("pounce!", c.x, c.y - 12, "#b86e1f", 10, 1.1); }
-        c.state = c.nap ? "sleep" : "sit"; c.wait = c.nap ? rnd(14, 26) : rnd(3, 8);
-      } else { c.x += (dx / dist) * sp; c.y += (dy / dist) * sp; }
-    } else {
-      c.wait -= dt;
-      if (c.wait <= 0) {
-        const sleepers = Array.from(F.actors.values()).filter((a) => a.d.mood === "asleep" && a.where === "seat" && !a.path.length);
-        c.nap = sleepers.length > 0 && Math.random() < 0.4;
-        const s = c.nap ? pick(sleepers).seat : null;
-        // At lunch the cat begs by the picnic table.
-        const beg = !s && F.lunch && F.lunch.phase === "eat" && Math.random() < 0.6;
-        // With nobody playing, the ping pong table is a fine place to nap.
-        const onTable = !s && !beg && !F.pong.on && Math.random() < 0.25;
-        if (onTable) c.nap = true;
-        const p = s ? { x: s.aisle, y: s.y + 3 } : beg ? { x: S.table.x + 17, y: S.table.y + 9 }
-          : onTable ? { x: S.pong.x - 6, y: S.pong.y } : loungePt();
-        c.tx = p.x; c.ty = p.y; c.state = "walk";
+      if (C.refillT <= 0) {
+        const to = freePt(W.x - 2, W.y + 4);
+        C.runner = { x: -8, y: S.door.y, full: true, pause: 0, path: pathTo(-8, S.door.y, to.x, to.y) };
       }
     }
+    if (C.runner) {
+      const r = C.runner;
+      if (r.pause > 0) r.pause -= dt;
+      else if (walk(r, 36 * dt)) { /* on the way */ }
+      else if (r.full) {
+        r.full = false; r.pause = 1.1; C.target = 1; r.path = pathTo(r.x, r.y, -9, S.door.y);
+        word("Fresh water!", W.x, W.y - 26, "#2a8fd0", 11, 1.8);
+      } else C.runner = null;
+    }
+
+    stepCat(dt);
     if (F.bug) {
       if (F.bug.squashed) { F.bug.squashed -= dt; if (F.bug.squashed <= 0) F.bug = null; }
       else { F.bug.x += F.bug.vx * dt; F.bug.y += Math.sin(F.t * 7) * 6 * dt; if (F.bug.x < 2 || F.bug.x > S.officeW - 6) F.bug = null; }
@@ -1225,7 +1876,7 @@
     if (!F.actors.size) {
       if (!F.tumble) F.tumble = { x: -8 };
       F.tumble.x += 24 * dt;
-      if (F.tumble.x > S.officeW + 10) F.tumble.x = -8;
+      if (F.tumble.x > S.officeW - 10) F.tumble.x = -8;
     } else F.tumble = null;
 
     for (let i = F.parts.length - 1; i >= 0; i--) {
@@ -1321,7 +1972,10 @@
   const drawActor = (a) => {
     const d = a.d, o = lookOf(a), S = F.S, t = F.t + a.phase;
     const seated = a.where === "seat" && !a.path.length && a.seat && !far(a, a.seat.x, a.seat.y);
-    o.walking = a.moving;
+    o.walking = a.moving || F.t < (a.shuffle || 0);
+    if (a.moving) o.look = a.face;
+    // On the couch: sat down, legs out of sight.
+    if (a.where === "poi:couch" && !a.path.length) o.seated = true;
     if (seated) {
       o.seated = true;
       if (d.mood === "asleep") { o.sleeping = true; o.headDrop = 3; }
@@ -1329,7 +1983,7 @@
       if (a.staring) o.look = F.boss.x < a.x ? -1 : 1;
       if (a.watched) o.blush = true;
     }
-    if (d.mood === "needs") {
+    if (d.mood === "needs" && !a.leaving) {
       const u = d.urgency;
       o.mouth = u >= 3 ? 2 : 1;
       if (a.where === "boss") {
@@ -1353,14 +2007,45 @@
       o.look = other.x < a.x ? -1 : 1;
       if (a.bub && a.bub.kind === "chat") o.mouth = Math.floor(t * 6) % 2;
     }
+    // A coffee carried about, with a sip now and then.
+    const cup = a.cup > F.t && d.mood === "wandering" && !a.pong && !a.foos && !a.lunch && !a.leaving;
+    const sip = cup && !a.moving && Math.floor(t * 0.6) % 4 === 0;
+    if (sip) o.pose = "hold";
     if (a.cheer > 0 && d.mood !== "needs") { o.pose = "cheer"; o.mouth = 2; o.hop = Math.abs(Math.sin(t * 9)) * 2; }
-    // Ping pong: the paddle hand is the one nearer the table, and those
-    // waiting their turn watch the ball.
+    // Ping pong: the paddle hand is the one nearer the table. The two
+    // playing bounce on their toes and jump for a smash; those waiting
+    // their turn watch the ball.
     const P = F.pong, side = a.pong && a.where === "pong" && !a.path.length ? P.players.indexOf(a) : -1;
     const watching = a.pong && side < 0 && a.where === "pong" && !a.path.length;
     const swing = side >= 0 && F.t < (a.swingUntil || 0);
-    if (side >= 0) { o.look = side ? -1 : 1; if (swing) o.pose = side ? "holdL" : "hold"; }
-    if (watching) o.look = P.ball > 0.5 ? 1 : -1;
+    if (side >= 0 && !a.spat) {
+      o.look = side ? -1 : 1;
+      if (swing) o.pose = side ? "holdL" : "hold";
+      if (P.st === "rally" && a.cheer <= 0) o.hop = Math.abs(Math.sin(t * 8));
+      if (F.t < (a.jumpUntil || 0)) o.hop = Math.sin(((a.jumpUntil - F.t) / 0.35) * Math.PI) * 5;
+    }
+    if (watching && P.ball) o.look = P.ball.x > F.S.pong.x ? 1 : -1;
+    // Foosball: a hand on the rods, jerking as they turn; those watching
+    // follow the ball.
+    const K = F.foos, fside = a.foos && a.where === "foos" && !a.path.length ? K.players.indexOf(a) : -1;
+    if (fside >= 0 && !a.spat && a.cheer <= 0) {
+      o.look = fside ? -1 : 1;
+      const jerk = K.st === "play" && (F.t < (a.swingUntil || 0) || Math.floor(t * 9) % 3 === 0);
+      o.pose = jerk ? "down" : fside ? "outL" : "outR";
+    }
+    if (a.foos && fside < 0 && a.where === "foos" && !a.path.length && K.ball) o.look = K.ball.x > 0 ? 1 : -1;
+    // An argument: face to face, and whoever has the floor waves their arms.
+    if (a.spat && !a.path.length) {
+      const other = a.spat.who[0] === a ? a.spat.who[1] : a.spat.who[0];
+      o.look = other.x < a.x ? -1 : 1;
+      if (a.bub && a.bub.kind === "chat") {
+        o.mouth = 1 + (Math.floor(t * 6) % 2);
+        o.pose = Math.floor(t * 3) % 2 ? "cheer" : other.x < a.x ? "outL" : "outR";
+        o.hop = Math.abs(Math.sin(t * 10)) * 1.5;
+      }
+    }
+    // A wave goodbye, or a wave back.
+    if (F.t < a.waveT && (a.leaving || d.mood !== "needs")) { o.pose = "wave"; if (a.leaving) o.mouth = 1; }
 
     if (a.flop > 0) {
       // Flat on the floor, sign and all.
@@ -1374,13 +2059,13 @@
     const x = Math.round(a.x), y = Math.round(a.y) - Math.round(o.hop || 0);
 
     // What is in the hands.
-    if (d.mood === "needs" && a.where === "boss" && d.urgency === 3) {
+    if (d.mood === "needs" && !a.leaving && a.where === "boss" && d.urgency === 3) {
       // A bullhorn, and the noise coming out of it.
       R(x + 5, y - 12, 2, 2, "#d8dde5"); R(x + 7, y - 13, 2, 4, "#e0352b"); R(x + 9, y - 14, 1, 6, "#e0352b");
       const n = Math.floor(t * 6) % 4;
       for (let i = 0; i < n; i++) { R(x + 12 + i * 3, y - 14 - i, 1, 2, "#e0352b"); R(x + 12 + i * 3, y - 9 + i, 1, 2, "#e0352b"); }
     }
-    if (d.mood === "needs" && a.where === "boss" && d.urgency >= 4) {
+    if (d.mood === "needs" && !a.leaving && a.where === "boss" && d.urgency >= 4) {
       R(x + 4, y - 26, 1, 15, "#7a5633"); R(x - 9, y - 37, 27, 12, "#e0352b"); R(x - 8, y - 36, 25, 10, "#ffffff");
       a.sign = { x: x + 4.5, y: y - 31 };
     } else a.sign = null;
@@ -1390,13 +2075,14 @@
       R(px, py, 2, 3, "#d43a3a"); R(px, py + 3, 1, 1, "#8a6238");
     }
     if (atCooler) { R(x + 5, y - 7, 2, 2, "#e9f7ff"); R(x + 5, y - 6, 2, 1, F.cooler.level > 0.01 ? "#4fb0ea" : "#e9f7ff"); }
-    if (d.role === "foreman" && d.mood !== "asleep" && side < 0 && !(d.mood === "needs" && d.urgency >= 3)) {
+    if (d.role === "foreman" && d.mood !== "asleep" && side < 0 && fside < 0 && !(d.mood === "needs" && d.urgency >= 3)) {
       // The clipboard.
       R(x - 9, y - 9, 4, 5, "#8a6238"); R(x - 8, y - 8, 2, 3, "#ffffff"); R(x - 8, y - 10, 2, 1, "#8a8f98");
     }
-    if (atCoffee || (d.role === "foreman" && d.mood === "wandering" && !a.moving)) {
-      R(x + 5, y - 7, 2, 2, "#f4f4f4");
-      if (Math.floor(t * 2) % 2) R(x + 5, y - 9, 1, 1, "rgba(230,230,235,0.8)");
+    if (atCoffee || cup || (d.role === "foreman" && d.mood === "wandering" && !a.moving && side < 0 && fside < 0)) {
+      const cy = sip ? y - 13 : y - 7;
+      R(x + 5, cy, 2, 2, "#f4f4f4");
+      if (Math.floor(t * 2) % 2) R(x + 5, cy - 2, 1, 1, "rgba(230,230,235,0.8)");
     }
     if (d.mood === "packed" && a.where === "camp" && !a.path.length) {
       // The bag, packed, and a marshmallow held out to the fire.
@@ -1424,7 +2110,7 @@
     const B = F.boss, swamped = (F.needs || []).filter((a) => a.d.urgency >= 3).length >= 2;
     person(B.x, B.y, {
       phase: 0, skin: SKIN[1], hair: HAIR[0], style: 0, shirt: "#f4f4f4", pants: "#2b3140", tie: true, crown: true,
-      walking: B.moving, blush: swamped, mouth: swamped ? 1 : 0,
+      walking: B.moving, look: B.moving ? B.face : 0, blush: swamped, mouth: swamped ? 1 : 0,
     });
     const x = Math.round(B.x), y = Math.round(B.y);
     R(x + 5, y - 6, 2, 2, "#f4f4f4"); R(x + 7, y - 5, 1, 1, "#f4f4f4");
@@ -1455,6 +2141,9 @@
     // Everything standing on the floor, back to front.
     const things = [];
     things.push({ z: S.pong.y + 6, f: pongTable });
+    // The ball is drawn over the two playing, or where it lies on the floor.
+    if (F.pong.on && F.pong.ball) things.push({ z: F.pong.ball.floor ? F.pong.ball.y : S.pong.y + 12.5, f: pongBall });
+    if (S.foos) things.push({ z: S.foos.y + 11, f: foosTable });
     if (F.cooler.runner) {
       const r = F.cooler.runner;
       things.push({ z: r.y, f: () => helper(r.x, r.y, "#2a78d6", F.t, r.full ? "#4fb0ea" : "#e3f1fa") });
@@ -1462,8 +2151,8 @@
     S.zones.forEach((z) => z.seats.forEach((s) => things.push({ z: s.y + 5, f: () => desk(s, F.actors.get(s.key)) })));
     for (const a of F.actors.values()) things.push({ z: a.y, f: () => drawActor(a) });
     things.push({ z: F.boss.y, f: drawBoss });
-    // Asleep on the ping pong table, the cat is drawn over it.
-    const catUp = F.cat.state === "sleep" && Math.abs(F.cat.x - S.pong.x) < 16 && Math.abs(F.cat.y - S.pong.y) < 9;
+    // On the ping pong table, or in the air on the way, the cat is drawn over it.
+    const catUp = F.cat.on === "pong" || (F.cat.jump && F.cat.jump.name === "pong");
     things.push({ z: catUp ? S.pong.y + 7 : F.cat.y, f: drawCat });
     things.push({ z: S.fire.y, f: () => fire(F.campers > 0) });
     things.push({ z: S.table.y + 1, f: table });
@@ -1477,7 +2166,8 @@
     }
     if (F.tumble) {
       things.push({ z: S.H - 20, f: () => {
-        const x = Math.round(F.tumble.x), y = S.corridorY + 30 - Math.round(Math.abs(Math.sin(F.t * 4)) * 4), r = Math.floor(F.t * 6) % 2;
+        // Along the way in from the door, which the furniture leaves clear.
+        const x = Math.round(F.tumble.x), y = S.door.y + 3 - Math.round(Math.abs(Math.sin(F.t * 4)) * 4), r = Math.floor(F.t * 6) % 2;
         R(x - 3, y - 6, 6, 6, "#b89a62"); R(x - 4, y - 5, 8, 4, "#b89a62"); R(x - 2 + r, y - 5, 1, 4, "#8a7040"); R(x + 1 - r, y - 4, 1, 3, "#8a7040");
       } });
     }
@@ -1506,19 +2196,22 @@
     for (const a of F.actors.values()) {
       if (a.flop > 0) continue;
       // At the picnic table they sit close, so the tags are kept short.
-      tag(a.d.tag, a.x, a.y, a.d.mood === "needs" ? "needs" : a.d.role === "foreman" ? "foreman" : "", a.where === "lunch" ? 56 : 88);
+      tag(a.d.tag, a.x, a.y, a.d.mood === "needs" && !a.leaving ? "needs" : a.d.role === "foreman" ? "foreman" : "", a.where === "lunch" ? 56 : 88);
       if (a.sign) {
         g.font = font(9.5 * PX / 3, 800); g.fillStyle = "#b3261e"; g.textAlign = "center"; g.textBaseline = "middle";
         g.fillText(SIGNS[a.signI % SIGNS.length], a.sign.x * PX, a.sign.y * PX);
       }
     }
     tag("YOU", F.boss.x, F.boss.y, "you");
-    // The score over the ping pong table, and the bad news over the cooler.
-    const P = F.pong;
-    if (P.on && P.players.length === 2 && P.players.every((a) => a.where === "pong" && !a.path.length)) {
+    // The score over each table (higher up while two argue behind it),
+    // and the bad news over the cooler.
+    const P = F.pong, K = F.foos;
+    const score = (G, at, up, crowd) => {
       g.font = font(12, 800); g.fillStyle = css("--text", "#222"); g.textAlign = "center"; g.textBaseline = "middle";
-      g.fillText(P.score[0] + " : " + P.score[1], (S.pong.x + 0.5) * PX, (S.pong.y - 14) * PX);
-    }
+      g.fillText(G.score[0] + " : " + G.score[1], (at.x + 0.5) * PX, (at.y - (crowd ? up + 17 : up)) * PX);
+    };
+    if (P.on && P.players.length === 2 && P.players.every((a) => a.where === "pong")) score(P, S.pong, 14, P.st === "argue");
+    if (K.on && S.foos && K.players.length === 2 && K.players.every((a) => a.where === "foos" && !a.path.length)) score(K, S.foos, 17, false);
     if (F.cooler.level <= 0.01) {
       g.font = font(9, 800); g.fillStyle = css("--alert", "#d43a3a"); g.textAlign = "center"; g.textBaseline = "middle";
       g.fillText("EMPTY", (S.pois[1].x - 12.5) * PX, (S.pois[1].y - 20) * PX);
@@ -1541,7 +2234,7 @@
       const below = a.where === "boss" && a.y > F.boss.y + 10;
       bubble({ text: a.d.says, kind: "ask", below }, a.x, below ? a.y : a.y - (a.sign ? 50 : 30), placed);
     }
-    for (const a of F.actors.values()) if (a.bub && a.d.mood !== "needs") bubble(a.bub, a.x, a.y - (a.d.role === "foreman" ? 21 : 18), placed);
+    for (const a of F.actors.values()) if (a.bub && (a.d.mood !== "needs" || a.leaving)) bubble(a.bub, a.x, a.y - (a.d.role === "foreman" ? 21 : 18), placed);
     if (F.boss.bub) bubble(F.boss.bub, F.boss.x, F.boss.y - 21, placed);
     g.setTransform(1, 0, 0, 1, 0, 0);
   };
@@ -1552,11 +2245,10 @@
     let p;
     if (d.mood === "packed") p = campSpot(a);
     else if (d.mood === "needs") p = bossSlot(a);
-    else if (d.mood === "wandering" || !a.seat) p = loungePt();
+    else if (d.mood === "wandering" || !a.seat) p = spotFrom(a, loungePt);
     else p = a.seat;
-    a.x = p.x; a.y = p.y; a.path = [];
+    a.x = p.x; a.y = p.y; a.path = []; a.trail = null;
     a.where = d.mood === "packed" ? "camp" : d.mood === "needs" ? "boss" : p === a.seat ? "seat" : "";
-    a.aisle = p === a.seat ? a.seat.aisle : null;
     a.wait = rnd(0, 4);
   };
 
@@ -1565,8 +2257,26 @@
     const had = F.S;
     if (!layout()) return;
     const S = F.S, keys = new Set(F.cast.map((m) => m.key));
-    if (!had) { F.boss.x = F.boss.tx = S.home.x; F.boss.y = F.boss.ty = S.home.y; F.cat.x = S.home.x + 40; F.cat.y = S.H - 10; }
-    for (const a of F.actors.values()) if (!keys.has(a.key)) a.leaving = true;
+    if (!had) {
+      const b = freePt(S.home.x, S.home.y), c = freePt(S.home.x + 40, S.H - 5);
+      F.boss.x = b.x; F.boss.y = b.y; F.boss.path = [];
+      Object.assign(F.cat, { x: c.x, y: c.y, path: [], on: null, jump: null, goal: null, lift: 0, state: "sit" });
+    }
+    // Whoever is no longer in the cast says goodbye and leaves: one after
+    // another, when several go at once.
+    let going = 0;
+    for (const a of F.actors.values()) {
+      if (keys.has(a.key) || a.leaving) continue;
+      a.leaving = true; a.bye = 0; a.wait = going++ * 0.9; a.seat = null; a.bub = null; a.chat = null;
+      // One that lay down waiting on you gets up to say goodbye.
+      a.flop = 0;
+      // It stops to say goodbye: from its seat, if it is sat in one. One
+      // anywhere else inside the furniture (at the ping pong net in the
+      // middle of an argument, or on the step into a seat) steps clear.
+      const sat = !a.path.length && (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch");
+      a.path = [];
+      if (!sat && solidAt(a.x, a.y)) { const f = freePt(a.x, a.y); a.x = f.x; a.y = f.y; }
+    }
     let camp = 0, need = 0;
     F.cast.forEach((m) => {
       let a = F.actors.get(m.key);
@@ -1576,8 +2286,19 @@
         a.wait = 0; a.bub = null;
         if (m.mood === "needs") { word("!", a.x, a.y - 24, css("--alert", "#d43a3a"), 18, 1.2); a.shoutT = 0.4; }
       }
-      a.d = m; a.leaving = false;
-      a.seat = S.seats.get(m.key) || null;
+      a.d = m; a.leaving = false; a.bye = 0;
+      const seat = S.seats.get(m.key) || null, old = a.seat;
+      a.seat = seat;
+      // Its desk is not the one it was a moment ago: the desks were dealt
+      // out again when someone joined or left the crew, or they moved. A
+      // walk to the old desk is off, and whoever is at the old one, in
+      // what is now another's desk, gets up and out of it. think() sends
+      // them to the new one.
+      if (!fresh && a.where === "seat" && (!seat || !old || seat.x !== old.x || seat.y !== old.y)) {
+        a.path = [];
+        const r = solidAt(a.x, a.y);
+        if (r && !(seat && inBox(r, seat.x, seat.y))) { const f = freePt(a.x, a.y); a.x = f.x; a.y = f.y; }
+      }
       a.color = a.seat ? a.seat.zone.color : (S.zones.find((z) => z.name === m.crew) || { color: CREW[0] }).color;
       if (m.mood === "packed") a.campIdx = camp++;
       if (m.mood === "needs") a.needIdx = need++;
@@ -1589,20 +2310,76 @@
       }
     });
     F.firstCast = false;
+    // More or fewer sessions can change the size of the people, and so of
+    // the room, or push the open floor down a row, or only move the desks.
+    if (had && (had.W !== S.W || had.H !== S.H)) settle("size");
+    else if (had && had.sig !== S.sig) settle("floor");
+    else if (had && had.desks !== S.desks) settle("desks");
   };
 
-  // The room changed size: put everyone back where they belong in it.
-  const resettle = () => {
-    if (!layout()) return;
-    const S = F.S;
-    F.lunch = null; F.chats = []; F.cooler.runner = null;
-    Object.assign(F.pong, { on: false, players: [], queue: [], score: [0, 0] });
-    for (const a of F.actors.values()) { a.seat = S.seats.get(a.key) || null; a.lunch = null; a.chat = null; a.pong = null; place(a); }
-    const p = clampPt(F.boss.x, F.boss.y);
-    F.boss.x = F.boss.tx = p.x; F.boss.y = F.boss.ty = p.y;
-    const c = clampPt(F.cat.x, F.cat.y);
-    F.cat.x = c.x; F.cat.y = c.y; F.cat.state = "sit";
+  // After the room is laid out afresh, a walk planned a moment ago was
+  // planned for a room that is gone. So nobody keeps one: everyone walking
+  // plans again from where they stand, and whoever the furniture landed on
+  // steps clear of it. `what` says how much changed:
+  //   "size"   the room changed size, and everyone is put where they belong;
+  //   "floor"  the open floor moved down or up a row, and its furniture with it;
+  //   "desks"  only the desks moved, when a crew gained or lost one.
+  // With the desks alone the games, the small talk and lunch carry on, and
+  // someone standing on free floor is left be. Otherwise they start over.
+  const settle = (what) => {
+    const S = F.S, C = F.cooler, B = F.boss, c = F.cat, full = what === "size", desks = what === "desks";
+    const clearOf = (o) => { const q = clampPt(o.x, o.y), f = freePt(q.x, q.y); o.x = f.x; o.y = f.y; };
+    if (!desks) {
+      // The bug and the paper plane were somewhere in the room as it was,
+      // which may now be outside the walls. They go.
+      F.bug = null; F.plane = null;
+      F.lunch = null; F.chats = []; C.runner = null;
+      endSpat(F.pong); endSpat(F.foos);
+      Object.assign(F.pong, pongReset, { on: false, players: [], queue: [], score: [0, 0], want: [null, null] });
+      Object.assign(F.foos, { on: false, players: [], watch: [], score: [0, 0], st: "walk", ball: null });
+    }
+    for (const a of F.actors.values()) {
+      a.seat = a.leaving ? null : S.seats.get(a.key) || null;
+      a.trail = null;
+      if (!desks) { a.lunch = null; a.chat = null; a.pong = null; a.foos = null; a.spat = null; }
+      // In the doorway: one on the way out is gone, and one on the way in
+      // starts again from where the door now is.
+      if (a.x < 3) {
+        if (a.leaving) a.gone = true;
+        else { a.x = -9; a.y = S.door.y; a.path = []; a.where = "spawn"; }
+        continue;
+      }
+      if (full && !a.leaving) { place(a); continue; }
+      // Sat where they belong, or (when only the desks moved) standing on
+      // free floor: nothing to do.
+      const still = !a.path.length;
+      if (still && a.seat && a.where === "seat" && !far(a, a.seat.x, a.seat.y)) continue;
+      if (still && desks && (a.where === "lunch" || a.where === "poi:couch" || a.spat || !solidAt(a.x, a.y))) continue;
+      // To wherever they were going, by a new way: think() sends them again.
+      a.path = [];
+      if (a.leaving) a.bye = Math.min(a.bye, 1); else a.where = "";
+      clearOf(a);
+    }
+    // You keep walking to the spot you tapped, unless the room changed size.
+    const end = !full && B.path.length ? B.path[B.path.length - 1] : null;
+    clearOf(B);
+    B.path = [];
+    if (end) { const q = clampPt(end[0], end[1]), to = freePt(q.x, q.y); B.path = pathTo(B.x, B.y, to.x, to.y); }
+    // The cat stays on the table or the couch when only the desks moved.
+    // Anywhere else it sits down and thinks again.
+    if (!(desks && (c.on || c.jump))) {
+      clearOf(c);
+      Object.assign(c, { path: [], on: null, jump: null, goal: null, lift: 0, state: "sit", trail: null, wait: 1 });
+    }
+    // Whoever brings the water goes on to the cooler, or back to the door.
+    if (C.runner) {
+      const r = C.runner, W = S.pois[1], to = r.full ? freePt(W.x - 2, W.y + 4) : { x: -9, y: S.door.y };
+      r.path = pathTo(r.x, r.y, to.x, to.y);
+    }
   };
+
+  // The room changed size.
+  const resettle = () => { if (layout()) settle("size"); };
 
   // ---- Running -------------------------------------------------------------------------
   // Only while the Floor tab is the one showing, so the other tabs and a
@@ -1655,8 +2432,8 @@
     if (a) {
       // You pop up beside whoever was tapped, and their talk box opens.
       poof(B.x, B.y);
-      const to = clampPt(a.x + (a.x > F.S.W - 30 ? -13 : 13), a.y + 2);
-      B.x = B.tx = to.x; B.y = B.ty = to.y;
+      const q = clampPt(a.x + (a.x > F.S.W - 30 ? -13 : 13), a.y + 2), to = freePt(q.x, q.y);
+      B.x = to.x; B.y = to.y; B.path = [];
       poof(B.x, B.y);
       F.hook.pushEvent("floor_talk", { key: a.key });
       return;
@@ -1666,8 +2443,9 @@
       if (F.cat.state === "sleep") { F.cat.state = "sit"; F.cat.wait = 2; }
       return;
     }
-    const to = clampPt(p.x, p.y + 4);
-    B.tx = to.x; B.ty = to.y;
+    // A tap on a table sends you to the nearest floor beside it.
+    const q = clampPt(p.x, p.y + 4), to = freePt(q.x, q.y);
+    B.path = pathTo(B.x, B.y, to.x, to.y);
   };
 
   const onKey = (down) => (e) => {
