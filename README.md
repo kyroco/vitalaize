@@ -15,6 +15,23 @@ The [wiki](https://github.com/kyroco/vitalaize/wiki) covers everything else:
 what each part of the board shows, settings and alerts, connecting other
 machines, known limits, building from source and how it works.
 
+## What's new in 0.7.1
+
+0.7.1 makes the Floor tab's office behave more like a real one:
+
+- The furniture is solid. People, the cat and you walk round the tables,
+  not through them, and the cat jumps onto the ping pong table or the couch
+  to nap.
+- Ping pong players move like players: in for a short ball, back for a deep
+  one, a jump for a smash. They miss, hit the net, and fetch the ball off
+  the floor. Now and then a point is argued over at the net.
+- There is a foosball table, one a side, first to five.
+- A session that ends says goodbye to the room and waves, and the people
+  near it wave back, before it walks out of the door.
+- Idle people sit on the couch, carry their coffee about, and face the way
+  they walk.
+- The "YOU ARE HERE" mat is gone from the floor.
+
 ## What's new in 0.7.0
 
 0.7.0 adds the Floor tab, between Agents and Git. It draws every session as
@@ -33,12 +50,8 @@ you:
 - Tap anyone to see what they are doing and what they asked. On the Mac
   that runs the board, **Open session** opens it in the Claude app.
 - The rest is for fun and says nothing about a session: small talk,
-  shouting, lunch outside as a group, ping pong and foosball (with the odd
-  argument over a point), a cat, and a water cooler that runs dry.
-- The furniture is solid: people, the cat and you walk round the tables,
-  not through them.
-- A session that ends says goodbye to the room and waves on its way out of
-  the door.
+  shouting, lunch outside as a group, ping pong, a cat, and a water cooler
+  that runs dry.
 - grpc_server 1.1.0 and grpc_core 1.1.0 fix five published security
   advisories.
 
