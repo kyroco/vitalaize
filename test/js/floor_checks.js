@@ -239,26 +239,46 @@ const CHECKS = {
   // way was planned for the room as it was a moment ago.
   nobody_inside_the_furniture_as_sessions_come_and_go() {
     const crews = ["alpha", "beta", "gamma"], moods = ["working", "working", "wandering", "wandering", "needs", "asleep", "packed"];
-    [{ w: 1400, h: 800, seed: 201, sizes: null }, { w: 1024, h: 768, seed: 202, sizes: [[768, 1024], [1180, 820], [1024, 768]] }].forEach((room) => {
+    [{ w: 1400, h: 800, seed: 201, sizes: null }, { w: 1024, h: 768, seed: 202, sizes: [[768, 1024], [1180, 820], [480, 300], [1600, 900], [700, 420], [1024, 768]] }].forEach((room) => {
       let cast = idle(4).concat([m("w0", "alpha", "worker", "working"), m("w1", "alpha", "worker", "working")]), born = 0, frame = 0;
       const world = open(Object.assign({ cast }, room)), F = world.F, look = watchFurniture(world, room.w + " by " + room.h + " with sessions coming and going");
       const pick = (list) => list[Math.floor(world.random() * list.length)];
       world.step(240, () => {
         walkAbout(world, frame);
-        // Every three seconds a session joins, or one ends, or one changes what it is doing.
-        if (frame % 90 === 45) {
+        // Every second and a half a session joins, or one ends, or one changes what it is doing.
+        if (frame % 45 === 20) {
           const roll = world.random();
-          if (roll < 0.4 && cast.length < 26) cast = cast.concat([m("s" + born++, pick(crews), "worker", pick(moods), { urgency: 1 + Math.floor(world.random() * 4), days: 3 })]);
+          if (roll < 0.4 && cast.length < 32) cast = cast.concat([m("s" + born++, pick(crews), "worker", pick(moods), { urgency: 1 + Math.floor(world.random() * 4), days: 3 })]);
           else if (roll < 0.75 && cast.length > 2) cast = cast.filter((x) => x !== cast[Math.floor(world.random() * cast.length)]);
           else cast = cast.map((x, i) => (i === Math.floor(world.random() * cast.length) ? Object.assign({}, x, { mood: pick(moods), urgency: 2, days: 3 }) : x));
           world.cast(cast);
         }
-        // In one room the board changes size every twenty seconds, as an iPad turned over does.
-        if (room.sizes && frame % 600 === 300) { const size = room.sizes[(frame / 600 | 0) % room.sizes.length]; world.resize(size[0], size[1]); }
+        // In one room the board changes size every ten seconds, as an iPad turned over does.
+        if (room.sizes && frame % 300 === 150) { const size = room.sizes[(frame / 300 | 0) % room.sizes.length]; world.resize(size[0], size[1]); }
         frame++;
         look();
       });
     });
+    // One session ends and another joins the same crew. The desks stay where
+    // they are but are dealt out again, by name, while someone is on the
+    // way to the desk that was theirs a moment ago.
+    const crew = (keys, mood) => keys.map((k) => m(k, "alpha", "worker", k === "w3" ? mood : "working"));
+    const deal = open({ w: 1400, h: 800, cast: crew(["w0", "w1", "w2", "w3"], "wandering"), seed: 205 }), D = deal.F, dealt = watchFurniture(deal, "where the desks are dealt out again");
+    deal.step(8, dealt);
+    deal.cast(crew(["w0", "w1", "w2", "w3"], "working"));
+    const walker = D.actors.get("w3"), was = desks(D);
+    let turned = false;
+    for (let i = 0; i < 600 && walker.path.length; i++) {
+      // A step or two short of its desk, the desks are dealt out again.
+      if (!turned && walker.path.length <= 2 && Math.hypot(walker.x - walker.seat.x, walker.y - walker.seat.y) < 22) {
+        deal.cast(crew(["w1", "w2", "w3", "w9"], "working"));
+        need(desks(D) === was, "the desks moved when they were only meant to change hands");
+        turned = true;
+      }
+      deal.step(1 / 30, dealt);
+    }
+    need(turned, "w3 never came within reach of its desk");
+    deal.step(15, dealt);
     // A session ends while its person argues a point at the ping pong net,
     // where only the two arguing may stand.
     [0, 1].forEach((which) => {
@@ -440,19 +460,24 @@ const CHECKS = {
   // A session that comes back into the cast before its person is out of
   // the door stays on the floor.
   back_before_it_left() {
+    let tried = 0;
     [0.5, 2, 3.5, 5].forEach((wait, n) => {
       const world = open({ w: 1400, h: 800, cast: mixed(), seed: 40 + n });
       const F = world.F;
       world.step(4);
       world.cast(mixed().filter((x) => x.key !== "a5"));
       world.step(wait);
-      need(F.actors.get("a5") && F.actors.get("a5").leaving, "a5 was already gone " + wait + " seconds after its session ended");
+      // One that stood by the door may be out of it already: nothing to bring back.
+      if (!F.actors.get("a5")) return;
+      need(F.actors.get("a5").leaving, "a5 is on the floor and not leaving, " + wait + " seconds after its session ended");
+      tried++;
       world.cast(mixed());
       world.step(60);
       const a = F.actors.get("a5");
       check(a && !a.leaving, "a5 came back " + wait + " seconds into leaving and is not on the floor");
       check(a.x >= 4 && a.x <= F.S.W, "a5 came back but stands at " + Math.round(a.x) + ", outside the room");
     });
+    need(tried >= 2, "a5 was still on the floor in only " + tried + " of the four tries");
   },
 
   // Nothing draws the sign that used to sit in the middle of the floor.
