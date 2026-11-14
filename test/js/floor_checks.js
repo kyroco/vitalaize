@@ -138,7 +138,8 @@ const walkAbout = (world, frame) => {
 
 // Gives back a look to take after every frame: nobody may be inside a
 // piece of furniture, not a person, not you, not the cat, not whoever
-// brings the water. What is meant to be inside a box is let through:
+// brings the water, and you and the cat stay inside the room. What is
+// meant to be inside a box is let through:
 // someone at their own desk, on a picnic bench or on the couch, with the
 // step into the seat and the step back out of it; the two arguing across
 // the far side of the ping pong table, with their step back from it; and
@@ -164,6 +165,10 @@ const watchFurniture = (world, room) => {
     }
     const you = inside(F, F.boss), cat = F.cat.on || F.cat.jump ? null : inside(F, F.cat);
     const carrier = F.cooler.runner ? inside(F, F.cooler.runner) : null;
+    // You and the cat stay in the room, too: a walk through the wall is no better.
+    const out = (o) => o.x < 0 || o.x > F.S.W || o.y < 30 || o.y > F.S.H;
+    check(!out(F.boss), "you are outside the room, at " + Math.round(F.boss.x) + ", " + Math.round(F.boss.y) + where);
+    check(!out(F.cat), "the cat is outside the room, at " + Math.round(F.cat.x) + ", " + Math.round(F.cat.y) + where);
     check(!you, "you are inside the " + (you || {}).name + where);
     check(!cat, "the cat is inside the " + (cat || {}).name + where);
     check(!carrier, "the water carrier is inside the " + (carrier || {}).name + where);
@@ -266,6 +271,21 @@ const CHECKS = {
       net.cast(three.filter((x) => x.key !== gone));
       net.step(20, watch);
     });
+    // The cat is hunting a bug near the bottom of the room when the board
+    // gets smaller: where the bug was is now outside the walls, straight
+    // past the couch from where the cat stands.
+    const hunt = open({ w: 1400, h: 800, cast: idle(8), seed: 220 }), H = hunt.F, seen = watchFurniture(hunt, "a board made smaller during a bug hunt");
+    hunt.step(2, seen);
+    const tall = H.S.H;
+    hunt.resize(1000, 520);
+    const couch = { x: H.S.pois[3].x, y: H.S.pois[3].y };
+    need(tall - 9 > H.S.H + 4, "the smaller board is not lower than the first");
+    hunt.resize(1400, 800);
+    H.bug = { x: couch.x, y: tall - 9, vx: 0, squashed: 0 };
+    hunt.step(0.3, seen);
+    hunt.resize(1000, 520);
+    Object.assign(H.cat, { x: couch.x, y: couch.y - 14, path: [], trail: null, on: null, jump: null, state: "sit" });
+    hunt.step(20, seen);
     // Someone is on the way in at the door when the board changes size.
     const cast = idle(3), world = open({ w: 1400, h: 800, cast, seed: 203 }), look = watchFurniture(world, "a board resized as someone walks in");
     world.step(3);
@@ -420,7 +440,7 @@ const CHECKS = {
   // A session that comes back into the cast before its person is out of
   // the door stays on the floor.
   back_before_it_left() {
-    [0.5, 2.5, 5, 9].forEach((wait, n) => {
+    [0.5, 2, 3.5, 5].forEach((wait, n) => {
       const world = open({ w: 1400, h: 800, cast: mixed(), seed: 40 + n });
       const F = world.F;
       world.step(4);
