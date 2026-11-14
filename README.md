@@ -33,8 +33,12 @@ you:
 - Tap anyone to see what they are doing and what they asked. On the Mac
   that runs the board, **Open session** opens it in the Claude app.
 - The rest is for fun and says nothing about a session: small talk,
-  shouting, lunch outside as a group, ping pong, a cat, and a water cooler
-  that runs dry.
+  shouting, lunch outside as a group, ping pong and foosball (with the odd
+  argument over a point), a cat, and a water cooler that runs dry.
+- The furniture is solid: people, the cat and you walk round the tables,
+  not through them.
+- A session that ends says goodbye to the room and waves on its way out of
+  the door.
 - grpc_server 1.1.0 and grpc_core 1.1.0 fix five published security
   advisories.
 

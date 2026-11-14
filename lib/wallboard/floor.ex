@@ -25,11 +25,12 @@ defmodule Wallboard.Floor do
 
   What the browser adds for fun says nothing about a session and has no
   rule here: the jokes and small talk, the shouting, the cat, the paper
-  planes, ping pong for the idle, the water cooler that runs dry, and
-  lunch, when a few of the idle walk out to the picnic table together.
-  None of it hides a status: one who needs you drops the paddle or leaves
-  the table at once, and one who is working takes the laptop along to
-  lunch.
+  planes, ping pong and foosball for the idle (and their arguments over a
+  point), the water cooler that runs dry, the goodbyes of a session that
+  has ended, and lunch, when a few of the idle walk out to the picnic
+  table together. None of it hides a status: one who needs you drops the
+  paddle or leaves the table at once, and one who is working takes the
+  laptop along to lunch.
   """
 
   @day 86_400
