@@ -318,6 +318,30 @@ const CHECKS = {
     });
   },
 
+  // One that has waited on you for half an hour lies down on the floor now
+  // and then. When its session ends it gets up, says goodbye and waves
+  // like anyone else: it does not leave lying flat.
+  long_wait_gets_up_to_say_goodbye() {
+    const cast = [m("n1", "alpha", "worker", "needs", { urgency: 4 }), m("w1", "alpha", "worker", "working"), m("w2", "alpha", "worker", "working")];
+    // Its session ends while it lies flat, then at four moments while it stands.
+    [null, 1, 3.5, 6, 8.5].forEach((after, n) => {
+      const world = open({ w: 1400, h: 800, cast, seed: 60 + n });
+      const F = world.F, a = F.actors.get("n1");
+      if (after === null) need(until(world, 60, () => a.flop > 0.5), "n1 never lay down in a minute of waiting");
+      else world.step(after);
+      const when = after === null ? "lying flat" : after + " seconds in";
+      world.cast(cast.slice(1));
+      let waved = false;
+      world.step(40, () => {
+        if (!F.actors.get("n1")) return;
+        check(a.flop <= 0, "n1, whose session ended " + when + ", is lying flat while it leaves");
+        if (a.waveT > F.t) waved = true;
+      });
+      check(waved, "n1, whose session ended " + when + ", left without a wave");
+      check(!F.actors.get("n1"), "n1, whose session ended " + when + ", is still on the floor after 40 seconds");
+    });
+  },
+
   // A session that comes back into the cast before its person is out of
   // the door stays on the floor.
   back_before_it_left() {

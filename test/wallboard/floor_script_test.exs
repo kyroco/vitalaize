@@ -31,6 +31,8 @@ defmodule Wallboard.FloorScriptTest do
      "one called away leaves the game at once and the game does not get stuck"},
     {"goodbye_then_out_of_the_door",
      "a session that ends says goodbye, waves and walks out of the door"},
+    {"long_wait_gets_up_to_say_goodbye",
+     "one that waited half an hour gets up off the floor to say goodbye"},
     {"back_before_it_left", "a session that comes back before it has left stays on the floor"},
     {"no_you_are_here_sign", "the YOU ARE HERE sign is not drawn"}
   ]
