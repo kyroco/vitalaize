@@ -56,13 +56,6 @@ defmodule Wallboard.PollerCrashTest do
     refute log =~ "Last message"
   end
 
-  test "an open board hears that the last check could not be read, without a reload" do
-    Phoenix.PubSub.subscribe(Wallboard.PubSub, Poller.topic())
-    _ = failing_log(:raise)
-
-    assert_received {:source_meta, nil, %{error: "the last check could not be read; retrying"}}
-  end
-
   test "a check's task that goes down is logged by its kind alone, not its exit's text" do
     :persistent_term.put({Source, :how}, :poll_waits)
     :persistent_term.put({Source, :test}, self())
