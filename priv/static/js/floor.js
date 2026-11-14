@@ -402,6 +402,8 @@
     S.sees = new Int8Array(S.nodes.length * S.nodes.length);
     // Where the furniture of the open floor and the yard stands follows from these.
     S.sig = [S.W, S.H, S.officeW, S.corridorY].join();
+    // The desks move on their own, when a crew gains or loses one.
+    S.desks = S.solids.filter((r) => r.name === "desk").map((r) => r.x0 + "," + r.y0).join(" ");
     F.S = S;
     F.bgDirty = true;
     return true;
@@ -2279,6 +2281,47 @@
     // the room, or push the open floor down a row.
     if (had && (had.W !== S.W || had.H !== S.H)) settle(true);
     else if (had && had.sig !== S.sig) settle(false);
+    else if (had && had.desks !== S.desks) stepClear();
+  };
+
+  // The desks moved and nothing else did: a crew gained or lost one, and
+  // its row was centred again. Whoever a desk landed on steps clear of it,
+  // and whoever was walking where one now stands finds a new way. The
+  // games and the small talk carry on.
+  const stepClear = () => {
+    const clearOf = (o) => { if (solidAt(o.x, o.y)) { const f = freePt(o.x, o.y); o.x = f.x; o.y = f.y; } };
+    // Does a walk now cut through something? Its first step may be out of
+    // a seat and its last into one, and those two are meant to.
+    const blocked = (o) => {
+      let x = o.x, y = o.y;
+      return o.path.some(([px, py], i) => {
+        const cut = !clear(x, y, px, py) && !(i === 0 && solidAt(o.x, o.y)) && !(i === o.path.length - 1 && solidAt(px, py));
+        x = px; y = py;
+        return cut;
+      });
+    };
+    // The same walk again, round the desks as they now stand.
+    const reroute = (o) => { const end = o.path[o.path.length - 1]; o.path = pathTo(o.x, o.y, end[0], end[1]); };
+    for (const a of F.actors.values()) {
+      a.trail = null;
+      // Just walking in at the door, or already out of it.
+      if (a.where === "spawn" || a.x < 7) continue;
+      if (a.path.length) {
+        if (!blocked(a)) continue;
+        // To wherever it was going, by a new way: think() sends it again.
+        a.path = [];
+        if (a.leaving) a.bye = Math.min(a.bye, 1); else a.where = "";
+      } else if (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch" || a.spat) continue;
+      clearOf(a);
+    }
+    const B = F.boss, c = F.cat, r = F.cooler.runner;
+    clearOf(B);
+    if (B.path.length && blocked(B)) reroute(B);
+    if (!c.on && !c.jump) {
+      clearOf(c); c.trail = null;
+      if (c.path.length && blocked(c)) reroute(c);
+    }
+    if (r && r.path.length && blocked(r)) reroute(r);
   };
 
   // After the room is laid out afresh. `full`: it changed size, so everyone
