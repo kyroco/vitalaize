@@ -382,7 +382,9 @@
       box("wall", wx - 7, 0, wx + 4, S.yardDoorY - 11), box("wall", wx - 7, S.yardDoorY + 5, wx + 4, S.H + 20),
       box("coffee", coffee.x + 2, coffee.y - 21, wx - 6, coffee.y + 6),
       box("cooler", 0, cooler.y - 18, cooler.x - 4, cooler.y + 5),
-      box("plant", 0, plant.y - 18, plant.x - 3, S.H + 20),
+      // The plant's box stops short of the way in, in a room so low that
+      // the two overlap.
+      box("plant", 0, Math.max(plant.y - 18, S.door.y + 5), plant.x - 3, S.H + 20),
       box("couch", couch.x - 23, couch.y - 9, couch.x + 23, couch.y + 7),
       box("pong", S.pong.x - 21, S.pong.y - 13, S.pong.x + 21, S.pong.y + 12),
       box("tent", S.tent.x - 16, S.tent.y - 13, S.tent.x + 16, S.tent.y + 2),
@@ -2287,82 +2289,72 @@
     });
     F.firstCast = false;
     // More or fewer sessions can change the size of the people, and so of
-    // the room, or push the open floor down a row.
-    if (had && (had.W !== S.W || had.H !== S.H)) settle(true);
-    else if (had && had.sig !== S.sig) settle(false);
-    else if (had && had.desks !== S.desks) stepClear();
+    // the room, or push the open floor down a row, or only move the desks.
+    if (had && (had.W !== S.W || had.H !== S.H)) settle("size");
+    else if (had && had.sig !== S.sig) settle("floor");
+    else if (had && had.desks !== S.desks) settle("desks");
   };
 
-  // The desks moved and nothing else did: a crew gained or lost one, and
-  // its row was centred again. Whoever a desk landed on steps clear of it,
-  // and whoever was walking where one now stands finds a new way. The
-  // games and the small talk carry on.
-  const stepClear = () => {
-    const clearOf = (o) => { if (solidAt(o.x, o.y)) { const f = freePt(o.x, o.y); o.x = f.x; o.y = f.y; } };
-    // Does a walk now cut through something? Its first step may be out of
-    // a seat and its last into one, and those two are meant to.
-    const blocked = (o) => {
-      let x = o.x, y = o.y;
-      return o.path.some(([px, py], i) => {
-        const cut = !clear(x, y, px, py) && !(i === 0 && solidAt(o.x, o.y)) && !(i === o.path.length - 1 && solidAt(px, py));
-        x = px; y = py;
-        return cut;
-      });
-    };
-    // The same walk again, round the desks as they now stand.
-    const reroute = (o) => { const end = o.path[o.path.length - 1]; o.path = pathTo(o.x, o.y, end[0], end[1]); };
-    for (const a of F.actors.values()) {
-      a.trail = null;
-      // Just walking in at the door, or already out of it.
-      if (a.where === "spawn" || a.x < 7) continue;
-      if (a.path.length) {
-        if (!blocked(a)) continue;
-        // To wherever it was going, by a new way: think() sends it again.
-        a.path = [];
-        if (a.leaving) a.bye = Math.min(a.bye, 1); else a.where = "";
-      } else if (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch" || a.spat) continue;
-      clearOf(a);
-    }
-    const B = F.boss, c = F.cat, r = F.cooler.runner;
-    clearOf(B);
-    if (B.path.length && blocked(B)) reroute(B);
-    if (!c.on && !c.jump) {
-      clearOf(c); c.trail = null;
-      if (c.path.length && blocked(c)) reroute(c);
-    }
-    if (r && r.path.length && blocked(r)) reroute(r);
-  };
-
-  // After the room is laid out afresh. `full`: it changed size, so everyone
-  // is put back where they belong in it. Otherwise the furniture has only
-  // shifted: whoever it landed on steps clear and finds a new way. Either
-  // way the games, the small talk and lunch start over.
-  const settle = (full) => {
-    const S = F.S;
-    F.lunch = null; F.chats = []; F.cooler.runner = null;
-    endSpat(F.pong); endSpat(F.foos);
-    Object.assign(F.pong, pongReset, { on: false, players: [], queue: [], score: [0, 0], want: [null, null] });
-    Object.assign(F.foos, { on: false, players: [], watch: [], score: [0, 0], st: "walk", ball: null });
+  // After the room is laid out afresh, a walk planned a moment ago was
+  // planned for a room that is gone. So nobody keeps one: everyone walking
+  // plans again from where they stand, and whoever the furniture landed on
+  // steps clear of it. `what` says how much changed:
+  //   "size"   the room changed size, and everyone is put where they belong;
+  //   "floor"  the open floor moved down or up a row, and its furniture with it;
+  //   "desks"  only the desks moved, when a crew gained or lost one.
+  // With the desks alone the games, the small talk and lunch carry on, and
+  // someone standing on free floor is left be. Otherwise they start over.
+  const settle = (what) => {
+    const S = F.S, C = F.cooler, B = F.boss, c = F.cat, full = what === "size", desks = what === "desks";
     const clearOf = (o) => { const q = clampPt(o.x, o.y), f = freePt(q.x, q.y); o.x = f.x; o.y = f.y; };
+    if (!desks) {
+      F.lunch = null; F.chats = []; C.runner = null;
+      endSpat(F.pong); endSpat(F.foos);
+      Object.assign(F.pong, pongReset, { on: false, players: [], queue: [], score: [0, 0], want: [null, null] });
+      Object.assign(F.foos, { on: false, players: [], watch: [], score: [0, 0], st: "walk", ball: null });
+    }
     for (const a of F.actors.values()) {
       a.seat = a.leaving ? null : S.seats.get(a.key) || null;
-      a.lunch = null; a.chat = null; a.pong = null; a.foos = null; a.spat = null; a.trail = null;
-      // Just walking in at the door, or already out of it.
-      if (a.where === "spawn" || a.x < 7) continue;
+      a.trail = null;
+      if (!desks) { a.lunch = null; a.chat = null; a.pong = null; a.foos = null; a.spat = null; }
+      // In the doorway: one on the way out is gone, and one on the way in
+      // starts again from where the door now is.
+      if (a.x < 3) {
+        if (a.leaving) a.gone = true;
+        else { a.x = -9; a.y = S.door.y; a.path = []; a.where = "spawn"; }
+        continue;
+      }
       if (full && !a.leaving) { place(a); continue; }
+      // Sat where they belong, or (when only the desks moved) standing on
+      // free floor: nothing to do.
+      const still = !a.path.length;
+      if (still && a.seat && a.where === "seat" && !far(a, a.seat.x, a.seat.y)) continue;
+      if (still && desks && (a.where === "lunch" || a.where === "poi:couch" || a.spat || !solidAt(a.x, a.y))) continue;
+      // To wherever they were going, by a new way: think() sends them again.
       a.path = [];
-      if (a.leaving) a.bye = Math.min(a.bye, 1);
-      else if (a.seat && a.where === "seat" && !far(a, a.seat.x, a.seat.y)) continue;
-      else a.where = "";
+      if (a.leaving) a.bye = Math.min(a.bye, 1); else a.where = "";
       clearOf(a);
     }
-    clearOf(F.boss); F.boss.path = [];
-    clearOf(F.cat);
-    Object.assign(F.cat, { path: [], on: null, jump: null, goal: null, lift: 0, state: "sit", trail: null, wait: 1 });
+    // You keep walking to the spot you tapped, unless the room changed size.
+    const end = !full && B.path.length ? B.path[B.path.length - 1] : null;
+    clearOf(B);
+    B.path = [];
+    if (end) { const q = clampPt(end[0], end[1]), to = freePt(q.x, q.y); B.path = pathTo(B.x, B.y, to.x, to.y); }
+    // The cat stays on the table or the couch when only the desks moved.
+    // Anywhere else it sits down and thinks again.
+    if (!(desks && (c.on || c.jump))) {
+      clearOf(c);
+      Object.assign(c, { path: [], on: null, jump: null, goal: null, lift: 0, state: "sit", trail: null, wait: 1 });
+    }
+    // Whoever brings the water goes on to the cooler, or back to the door.
+    if (C.runner) {
+      const r = C.runner, W = S.pois[1], to = r.full ? freePt(W.x - 2, W.y + 4) : { x: -9, y: S.door.y };
+      r.path = pathTo(r.x, r.y, to.x, to.y);
+    }
   };
 
   // The room changed size.
-  const resettle = () => { if (layout()) settle(true); };
+  const resettle = () => { if (layout()) settle("size"); };
 
   // ---- Running -------------------------------------------------------------------------
   // Only while the Floor tab is the one showing, so the other tabs and a
