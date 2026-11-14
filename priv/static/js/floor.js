@@ -526,10 +526,12 @@
 
   // A step that stops at the furniture, sliding along it where it can.
   const slide = (x, y, dx, dy) => {
-    const stuck = !!solidAt(x, y);
+    // Already a hair inside something, where a walk that brushed its corner
+    // can leave you: out of it first, and never further in.
+    if (solidAt(x, y)) { const f = freePt(x, y); x = f.x; y = f.y; }
     for (const [mx, my] of [[dx, dy], [dx, 0], [0, dy]]) {
       const p = clampPt(x + mx, y + my);
-      if ((mx || my) && (stuck || !solidAt(p.x, p.y))) return p;
+      if ((mx || my) && !solidAt(p.x, p.y)) return p;
     }
     return { x, y };
   };
