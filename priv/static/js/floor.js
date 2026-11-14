@@ -2282,7 +2282,18 @@
         if (m.mood === "needs") { word("!", a.x, a.y - 24, css("--alert", "#d43a3a"), 18, 1.2); a.shoutT = 0.4; }
       }
       a.d = m; a.leaving = false; a.bye = 0;
-      a.seat = S.seats.get(m.key) || null;
+      const seat = S.seats.get(m.key) || null, old = a.seat;
+      a.seat = seat;
+      // Its desk is not the one it was a moment ago: the desks were dealt
+      // out again when someone joined or left the crew, or they moved. A
+      // walk to the old desk is off, and whoever is at the old one, in
+      // what is now another's desk, gets up and out of it. think() sends
+      // them to the new one.
+      if (!fresh && a.where === "seat" && (!seat || !old || seat.x !== old.x || seat.y !== old.y)) {
+        a.path = [];
+        const r = solidAt(a.x, a.y);
+        if (r && !(seat && inBox(r, seat.x, seat.y))) { const f = freePt(a.x, a.y); a.x = f.x; a.y = f.y; }
+      }
       a.color = a.seat ? a.seat.zone.color : (S.zones.find((z) => z.name === m.crew) || { color: CREW[0] }).color;
       if (m.mood === "packed") a.campIdx = camp++;
       if (m.mood === "needs") a.needIdx = need++;
