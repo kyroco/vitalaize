@@ -1141,7 +1141,8 @@
       a.glyphT -= dt;
       if (a.glyphT <= 0) { a.glyphT = 1.1; spark({ text: pick(["z", "Z", "z"]), x: a.x + 5, y: a.y - 12, vx: 3, vy: -6, life: 1.8, max: 1.8, color: css("--text-muted", "#888"), size: 11 }); }
     }
-    if (d.mood === "needs" && a.where === "boss") {
+    // Not one whose session has ended: it has stopped waiting on you.
+    if (d.mood === "needs" && a.where === "boss" && !a.leaving) {
       a.shoutT -= dt;
       if (a.shoutT <= 0) {
         a.shoutT = rnd(2.2, 4.5) / Math.max(1, d.urgency - 1);
@@ -1974,7 +1975,7 @@
       if (a.staring) o.look = F.boss.x < a.x ? -1 : 1;
       if (a.watched) o.blush = true;
     }
-    if (d.mood === "needs") {
+    if (d.mood === "needs" && !a.leaving) {
       const u = d.urgency;
       o.mouth = u >= 3 ? 2 : 1;
       if (a.where === "boss") {
@@ -2050,13 +2051,13 @@
     const x = Math.round(a.x), y = Math.round(a.y) - Math.round(o.hop || 0);
 
     // What is in the hands.
-    if (d.mood === "needs" && a.where === "boss" && d.urgency === 3) {
+    if (d.mood === "needs" && !a.leaving && a.where === "boss" && d.urgency === 3) {
       // A bullhorn, and the noise coming out of it.
       R(x + 5, y - 12, 2, 2, "#d8dde5"); R(x + 7, y - 13, 2, 4, "#e0352b"); R(x + 9, y - 14, 1, 6, "#e0352b");
       const n = Math.floor(t * 6) % 4;
       for (let i = 0; i < n; i++) { R(x + 12 + i * 3, y - 14 - i, 1, 2, "#e0352b"); R(x + 12 + i * 3, y - 9 + i, 1, 2, "#e0352b"); }
     }
-    if (d.mood === "needs" && a.where === "boss" && d.urgency >= 4) {
+    if (d.mood === "needs" && !a.leaving && a.where === "boss" && d.urgency >= 4) {
       R(x + 4, y - 26, 1, 15, "#7a5633"); R(x - 9, y - 37, 27, 12, "#e0352b"); R(x - 8, y - 36, 25, 10, "#ffffff");
       a.sign = { x: x + 4.5, y: y - 31 };
     } else a.sign = null;
@@ -2259,6 +2260,8 @@
     for (const a of F.actors.values()) {
       if (keys.has(a.key) || a.leaving) continue;
       a.leaving = true; a.bye = 0; a.wait = going++ * 0.9; a.seat = null; a.bub = null; a.chat = null;
+      // One that lay down waiting on you gets up to say goodbye.
+      a.flop = 0;
       if (!solidAt(a.x, a.y)) a.path = [];
     }
     let camp = 0, need = 0;
