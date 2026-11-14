@@ -150,6 +150,56 @@ const CHECKS = {
     });
   },
 
+  // Nobody stands or walks inside the furniture: not a person, not you,
+  // not the cat, not whoever brings the water. Three things are meant to
+  // be inside a box and are let through: someone in a seat (the chair
+  // behind a desk, a picnic bench, the couch) with the step into or out of
+  // it, the two arguing across the far side of the ping pong table with
+  // their step back from it, and the cat on the table or the couch.
+  nobody_inside_the_furniture() {
+    const seats = { desk: 1, picnic: 1, couch: 1 };
+    const sat = (a) => a.where === "seat" || a.where === "lunch" || a.where === "poi:couch";
+    const rooms = [
+      { w: 1400, h: 800, cast: mixed().concat(idle(5)), seed: 101 },
+      { w: 1400, h: 800, cast: idle(3), seed: 102 },
+      { w: 700, h: 420, cast: mixed(), seed: 103 },
+      { w: 820, h: 1100, cast: mixed().concat(idle(4)), seed: 104 },
+      { w: 1024, h: 768, cast: idle(4).concat([m("n1", "alpha", "worker", "needs", { urgency: 3 })]), seed: 105 },
+    ];
+    rooms.forEach((room) => {
+      const world = open(room), F = world.F, P = F.pong, lastSat = new Map(), lastSpat = new Map();
+      const where = () => room.w + " by " + room.h + " at " + F.t.toFixed(1) + " seconds";
+      let frame = 0, spats = 0, was = null;
+      world.step(300, () => {
+        // You walk about too: a tap somewhere every few seconds, and the keys.
+        if (frame % 80 === 0) world.tap(world.random() * F.W, world.random() * F.H);
+        if (frame % 45 === 0) {
+          "wasd".split("").forEach((k) => world.key(k, false));
+          if (world.random() < 0.5) world.key("wasd"[Math.floor(world.random() * 4)], true);
+        }
+        frame++;
+        if (P.spat && P.spat !== was) spats++;
+        was = P.spat;
+        for (const a of F.actors.values()) {
+          check(isFinite(a.x) && isFinite(a.y), a.key + " has no place on the floor");
+          if (sat(a)) lastSat.set(a.key, F.t);
+          if (a.spat) lastSpat.set(a.key, F.t);
+          const r = inside(F, a);
+          if (!r) continue;
+          const seated = seats[r.name] && (F.t < 1 || F.t - (lastSat.get(a.key) || -9) < 1.2);
+          const arguing = r.name === "pong" && F.t - (lastSpat.get(a.key) || -9) < 0.7;
+          check(seated || arguing, a.key + " (" + a.where + ") is inside the " + r.name + ", in the room " + where());
+        }
+        const you = inside(F, F.boss), cat = F.cat.on || F.cat.jump ? null : inside(F, F.cat);
+        const carrier = F.cooler.runner ? inside(F, F.cooler.runner) : null;
+        check(!you, "you are inside the " + (you || {}).name + ", in the room " + where());
+        check(!cat, "the cat is inside the " + (cat || {}).name + ", in the room " + where());
+        check(!carrier, "the water carrier is inside the " + (carrier || {}).name + ", in the room " + where());
+      });
+      if (room.seed === 102) need(spats >= 3, "only " + spats + " ping pong arguments in 5 minutes with three idle");
+    });
+  },
+
   // The two playing ping pong step in for a short ball and back for a deep one.
   ping_pong_players_move() {
     const world = open({ w: 1400, h: 800, cast: idle(2), seed: 11 });

@@ -18,6 +18,7 @@ defmodule Wallboard.FloorScriptTest do
   @script Path.expand("../js/floor_checks.js", __DIR__)
 
   @checks [
+    {"nobody_inside_the_furniture", "nobody stands or walks inside the furniture, in five rooms"},
     {"desks_move_and_land_on_nobody",
      "a desk that moves when a session joins or leaves lands on nobody"},
     {"ping_pong_players_move",
