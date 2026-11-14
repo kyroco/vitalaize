@@ -510,7 +510,8 @@
   // second. A target under a table is followed from the nearest floor.
   // Says whether it moved.
   const seek = (o, tx, ty, sp, dt) => {
-    const aim = freePt(tx, ty);
+    // Never further than the walls, and never into the furniture.
+    const q = clampPt(tx, ty), aim = freePt(q.x, q.y);
     tx = aim.x; ty = aim.y;
     o.trailT = (o.trailT || 0) - dt;
     if (clear(o.x, o.y, tx, ty)) o.trail = null;
@@ -2313,6 +2314,9 @@
     const S = F.S, C = F.cooler, B = F.boss, c = F.cat, full = what === "size", desks = what === "desks";
     const clearOf = (o) => { const q = clampPt(o.x, o.y), f = freePt(q.x, q.y); o.x = f.x; o.y = f.y; };
     if (!desks) {
+      // The bug and the paper plane were somewhere in the room as it was,
+      // which may now be outside the walls. They go.
+      F.bug = null; F.plane = null;
       F.lunch = null; F.chats = []; C.runner = null;
       endSpat(F.pong); endSpat(F.foos);
       Object.assign(F.pong, pongReset, { on: false, players: [], queue: [], score: [0, 0], want: [null, null] });
