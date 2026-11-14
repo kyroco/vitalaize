@@ -1393,6 +1393,12 @@
       const who = P.players.slice().sort((p, q) => Math.hypot(p.x - b.x, p.y - b.y) - Math.hypot(q.x - b.x, q.y - b.y))[0];
       go(who, "pong", b.x, b.y, 34);
       P.fetcher = who; P.st = "fetch";
+      // The other one goes back to their end meanwhile: after an argument
+      // they are both still at the net.
+      P.players.forEach((a, side) => {
+        const end = pongEnd(side);
+        if (a !== who && far(a, end.x, end.y)) go(a, "pong", end.x, end.y, 30);
+      });
     } else P.st = "walk";
   };
 
