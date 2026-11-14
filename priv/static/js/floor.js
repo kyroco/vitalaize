@@ -2264,7 +2264,12 @@
       a.leaving = true; a.bye = 0; a.wait = going++ * 0.9; a.seat = null; a.bub = null; a.chat = null;
       // One that lay down waiting on you gets up to say goodbye.
       a.flop = 0;
-      if (!solidAt(a.x, a.y)) a.path = [];
+      // It stops to say goodbye: from its seat, if it is sat in one. One
+      // anywhere else inside the furniture (at the ping pong net in the
+      // middle of an argument, or on the step into a seat) steps clear.
+      const sat = !a.path.length && (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch");
+      a.path = [];
+      if (!sat && solidAt(a.x, a.y)) { const f = freePt(a.x, a.y); a.x = f.x; a.y = f.y; }
     }
     let camp = 0, need = 0;
     F.cast.forEach((m) => {
