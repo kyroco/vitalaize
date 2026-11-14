@@ -152,13 +152,18 @@ const watchFurniture = (world, room) => {
     for (const a of F.actors.values()) {
       check(isFinite(a.x) && isFinite(a.y), a.key + " has no place on the floor");
       const r = inside(F, a);
-      // In their own seat: sat still in it, or inside its box on the way in.
-      const own = r && ((r.name === "desk" && a.seat && holds(r, a.seat)) || (r.name === "picnic" && a.where === "lunch")
-        || (r.name === "couch" && a.where === "poi:couch"));
-      if (own || (!a.path.length && (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch"))) lastSat.set(a.key, F.t);
+      // The box of their own seat, and only while they are bound for that
+      // seat or in it: their own desk (one who is leaving says goodbye
+      // from the desk that was theirs), a picnic bench at lunch, the couch.
+      const mine = r && ((r.name === "desk" && a.where === "seat" && ((a.seat && holds(r, a.seat)) || (a.leaving && !a.path.length)))
+        || (r.name === "picnic" && a.where === "lunch") || (r.name === "couch" && a.where === "poi:couch"));
+      // In it they may be sat still, or on the one step into it. Standing
+      // or walking in the box any other way is not let through.
+      const seated = mine && a.path.length <= 1;
+      if (seated) lastSat.set(a.key, F.t);
       if (a.spat) lastSpat.set(a.key, F.t);
       if (!r) continue;
-      const ok = own
+      const ok = seated
         || ((r.name === "desk" || r.name === "picnic" || r.name === "couch") && F.t - (lastSat.has(a.key) ? lastSat.get(a.key) : -9) < 1.2)
         || (r.name === "pong" && F.t - (lastSpat.has(a.key) ? lastSpat.get(a.key) : -9) < 0.7);
       check(ok, a.key + " (" + (a.leaving ? "leaving" : a.where || "nowhere yet") + ") is inside the " + r.name + where);
