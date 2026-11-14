@@ -19,7 +19,8 @@ const path = require("path");
 const vm = require("vm");
 
 // FLOOR_JS names another copy of the script to check: a copy broken on
-// purpose, to see that a check catches the break.
+// purpose, to see that a check catches the break. FLOOR_SEED is a number
+// added to every run's made-up random numbers, to try other runs by hand.
 const FILE = process.env.FLOOR_JS || path.join(__dirname, "..", "..", "priv", "static", "js", "floor.js");
 const SOURCE = fs.readFileSync(FILE, "utf8");
 // The script keeps its state to itself. This hands the checks the state and
@@ -54,7 +55,7 @@ const mixed = () => [
 // the script's state (F), its lists of lines (T), and ways to move it on.
 const open = ({ w, h, cast, seed }) => {
   need(OPENED !== SOURCE, "floor.js no longer has the line the checks hook into: " + HOOK);
-  let s = (seed || 1) >>> 0;
+  let s = ((seed || 1) + (Number(process.env.FLOOR_SEED) || 0)) >>> 0;
   const random = () => {
     s = (s + 0x6d2b79f5) >>> 0;
     let t = s;
@@ -139,9 +140,9 @@ const walkAbout = (world, frame) => {
 // piece of furniture, not a person, not you, not the cat, not whoever
 // brings the water. What is meant to be inside a box is let through:
 // someone at their own desk, on a picnic bench or on the couch, with the
-// step out of the seat; the two arguing across the far side of the ping
-// pong table, with their step back from it; and the cat up on the table
-// or the couch.
+// step into the seat and the step back out of it; the two arguing across
+// the far side of the ping pong table, with their step back from it; and
+// the cat up on the table or the couch.
 const watchFurniture = (world, room) => {
   const F = world.F, lastSat = new Map(), lastSpat = new Map();
   const holds = (r, p) => p.x > r.x0 && p.x < r.x1 && p.y > r.y0 && p.y < r.y1;
@@ -149,12 +150,14 @@ const watchFurniture = (world, room) => {
     const where = ", in the room " + room + " at " + F.t.toFixed(1) + " seconds";
     for (const a of F.actors.values()) {
       check(isFinite(a.x) && isFinite(a.y), a.key + " has no place on the floor");
-      if (!a.path.length && (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch")) lastSat.set(a.key, F.t);
-      if (a.spat) lastSpat.set(a.key, F.t);
       const r = inside(F, a);
+      // In their own seat: sat still in it, or inside its box on the way in.
+      const own = r && ((r.name === "desk" && a.seat && holds(r, a.seat)) || (r.name === "picnic" && a.where === "lunch")
+        || (r.name === "couch" && a.where === "poi:couch"));
+      if (own || (!a.path.length && (a.where === "seat" || a.where === "lunch" || a.where === "poi:couch"))) lastSat.set(a.key, F.t);
+      if (a.spat) lastSpat.set(a.key, F.t);
       if (!r) continue;
-      const ok = (r.name === "desk" && a.seat && holds(r, a.seat)) || (r.name === "picnic" && a.where === "lunch")
-        || (r.name === "couch" && a.where === "poi:couch")
+      const ok = own
         || ((r.name === "desk" || r.name === "picnic" || r.name === "couch") && F.t - (lastSat.has(a.key) ? lastSat.get(a.key) : -9) < 1.2)
         || (r.name === "pong" && F.t - (lastSpat.has(a.key) ? lastSpat.get(a.key) : -9) < 0.7);
       check(ok, a.key + " (" + (a.leaving ? "leaving" : a.where || "nowhere yet") + ") is inside the " + r.name + where);
@@ -189,6 +192,15 @@ const CHECKS = {
         check(!inside(F, F.boss), "with " + to + " desks where there were " + from + ", you are left standing inside a " + (inside(F, F.boss) || {}).name);
         check(!inside(F, F.cat), "with " + to + " desks where there were " + from + ", the cat is left inside a " + (inside(F, F.cat) || {}).name);
       });
+      // And you are on your way to a spot among the desks when they move:
+      // the spot you tapped, or the way to it, may now be under one.
+      const look = watchFurniture(world, "of " + from + " and " + to + " desks");
+      for (let k = 0; k < 10; k++) {
+        world.tap(12 + world.random() * (F.S.officeW - 30), 50 + world.random() * (F.S.corridorY - 46));
+        world.step(0.2 + world.random() * 1.5, look);
+        world.cast(crew(k % 2 ? from : to));
+        world.step(6, look);
+      }
     });
   },
 
@@ -202,17 +214,18 @@ const CHECKS = {
       { w: 820, h: 1100, cast: mixed().concat(idle(4)), seed: 104 },
       { w: 1024, h: 768, cast: idle(4).concat([m("n1", "alpha", "worker", "needs", { urgency: 3 })]), seed: 105 },
     ];
+    let spats = 0;
     rooms.forEach((room) => {
       const world = open(room), F = world.F, P = F.pong, look = watchFurniture(world, room.w + " by " + room.h);
-      let frame = 0, spats = 0, was = null;
+      let frame = 0, was = null;
       world.step(300, () => {
         walkAbout(world, frame++);
         if (P.spat && P.spat !== was) spats++;
         was = P.spat;
         look();
       });
-      if (room.seed === 102) need(spats >= 3, "only " + spats + " ping pong arguments in 5 minutes with three idle");
     });
+    need(spats >= 3, "only " + spats + " ping pong arguments in the five rooms");
   },
 
   // The same while sessions come and go, which moves the desks, changes
