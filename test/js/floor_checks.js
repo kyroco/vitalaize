@@ -254,6 +254,18 @@ const CHECKS = {
         look();
       });
     });
+    // A session ends while its person argues a point at the ping pong net,
+    // where only the two arguing may stand.
+    [0, 1].forEach((which) => {
+      const three = idle(3), net = open({ w: 1400, h: 800, cast: three, seed: 210 + which }), P = net.F.pong;
+      const watch = watchFurniture(net, "where a session ends mid-argument");
+      const arguing = () => P.spat && P.spat.i >= 1 && P.spat.who.every((a) => !a.path.length);
+      for (let i = 0; i < 600 * 30 && !arguing(); i++) net.step(1 / 30, watch);
+      need(arguing(), "no ping pong argument in ten minutes");
+      const gone = P.spat.who[which].key;
+      net.cast(three.filter((x) => x.key !== gone));
+      net.step(20, watch);
+    });
     // Someone is on the way in at the door when the board changes size.
     const cast = idle(3), world = open({ w: 1400, h: 800, cast, seed: 203 }), look = watchFurniture(world, "a board resized as someone walks in");
     world.step(3);
